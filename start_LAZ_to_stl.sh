@@ -28,7 +28,7 @@ echo "Watch progress with:   tail -f $LOG_FILE"
 echo "Watch memory with:     watch -n 5 free -h"
 echo ""
 
-nohup systemd-run --scope --user -p MemoryMax="$MEMORY_MAX" -- python3 main.py \
+nohup systemd-run --scope --user -p MemoryMax="$MEMORY_MAX" -- python3 -u main.py \
     --input "$INPUT_LAZ" \
     --output-dir "$OUTPUT_DIR" \
     --ground-planar-timeout-sec "$GROUND_PLANAR_TIMEOUT_SEC" \
