@@ -1,0 +1,7 @@
+# Ignore everything by default...
+*
+
+# ...except the code
+!.gitignore
+!*.py
+!*.sh
