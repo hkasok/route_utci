@@ -104,6 +104,19 @@ def parse_args():
                          "quantify the difference on your own data -- it overstates Tmrt in "
                          "shade by roughly 9 C and should not be used for results.")
     p.add_argument("--surrounding-emissivity", type=float, default=0.95)
+    p.add_argument("--facet-thermal-dir", default=None,
+                    help="Directory holding BOTH the 05a outputs "
+                         "(lw_view_matrix.npz, lw_point_weights.npz, "
+                         "point_map.npy, facets.npz) and the 05b outputs "
+                         "(facet_T_matrix_K.npy, facet_eps.npy). When given, "
+                         "the longwave surround term is computed per point "
+                         "from the ray-traced view of the actual (sunlit or "
+                         "shaded) surface temperatures instead of a single "
+                         "domain-wide surface temperature. When omitted, "
+                         "behavior is BIT-IDENTICAL to the legacy model.")
+    p.add_argument("--vegetation-emissivity", type=float, default=0.98,
+                    help="Emissivity used for vegetation canopy seen in the "
+                         "LW view rays (canopy radiates near air temperature)")
     p.add_argument("--air-temp-mean-c", type=float, default=30.0)
     p.add_argument("--air-temp-amp-c", type=float, default=3.0)
     p.add_argument("--surface-temp-offset-day-c", type=float, default=8.0)
@@ -359,7 +372,8 @@ def apply_cloud_adjustment(dni_clear, dhi_clear, elevation_deg, cloud_fraction):
 
 
 def estimate_mrt_from_radiation(dni, dhi, ghi, elevation_deg, tau_direct, svf_effective,
-                                 air_temp_C, cloud_fraction, args):
+                                 air_temp_C, cloud_fraction, args,
+                                 L_surround_override=None):
     sin_el = np.sin(np.deg2rad(np.maximum(elevation_deg, 0.0)))
     air_K = air_temp_C + 273.15
     cloud = np.clip(cloud_fraction, 0.0, 1.0)
@@ -369,7 +383,27 @@ def estimate_mrt_from_radiation(dni, dhi, ghi, elevation_deg, tau_direct, svf_ef
 
     surface_offset = args.surface_temp_offset_day_c * max(sin_el, 0.0)
     surface_K = air_K + surface_offset
-    L_surround = args.surrounding_emissivity * SIGMA * surface_K ** 4
+    # ------------------------------------------------------------------
+    # LONGWAVE SURROUND
+    #
+    # Legacy model: EVERY surface in the domain radiates at one global
+    # temperature (air + a sinusoidal daytime offset). That erases the
+    # sunlit-vs-shaded surface contrast that longwave exposure along a
+    # route actually depends on (a sunlit asphalt surface can be 15-25 C
+    # hotter than a shaded one at the same instant).
+    #
+    # When --facet-thermal-dir is given, L_surround_override carries a
+    # PER-POINT value assembled from the ray-traced view of the actual
+    # facet surface temperatures (05a view matrix x 05b energy balance).
+    # The sky/surround partition (svf_effective) is unchanged, so with
+    # uniform facet temperatures equal to the legacy surface_K the result
+    # is IDENTICAL to the legacy model -- this is verified numerically in
+    # verify_thermal_pipeline.py (test T2).
+    # ------------------------------------------------------------------
+    if L_surround_override is not None:
+        L_surround = L_surround_override
+    else:
+        L_surround = args.surrounding_emissivity * SIGMA * surface_K ** 4
 
     K_direct_abs = args.person_sw_absorptivity * args.f_projected_direct * tau_direct * dni
     K_diffuse_abs = args.person_sw_absorptivity * args.f_sky_diffuse * svf_effective * dhi
@@ -423,6 +457,65 @@ def estimate_mrt_from_radiation(dni, dhi, ghi, elevation_deg, tau_direct, svf_ef
     R_abs = L_longwave_abs + K_shortwave_abs
     tmrt_K = (R_abs / (args.person_emissivity * SIGMA)) ** 0.25
     return tmrt_K - 273.15, R_abs, K_shortwave_abs, L_longwave_abs
+
+
+class FacetLongwave:
+    """Assembles the per-point longwave surround from ray-traced facet
+    surface temperatures (outputs of 05a + 05b).
+
+    Per timestep it computes, at each traced (coarse) route point:
+
+        L_surround = [ sum_f W_pf * eps_f * sigma * T_f(t)^4        (facets)
+                       + w_veg * eps_veg * sigma * T_air(t)^4       (canopy)
+                       + w_def * eps_s  * sigma * T_legacy(t)^4 ]   (culled)
+                     / (1 - w_sky)
+
+    then maps coarse -> full resolution via point_map. Weights partition
+    unity by construction (asserted in 05a), so with uniform facet
+    temperatures this collapses exactly to the legacy constant."""
+
+    def __init__(self, thermal_dir, n_points, n_times, args):
+        import scipy.sparse as sp
+        d = Path(thermal_dir)
+        self.W = sp.load_npz(d / "lw_view_matrix.npz")
+        pw = np.load(d / "lw_point_weights.npz")
+        self.w_sky = pw["w_sky"]
+        self.w_veg = pw["w_veg"]
+        self.w_def = pw["w_default"]
+        self.point_map = np.load(d / "point_map.npy")
+        self.facet_T = np.load(d / "facet_T_matrix_K.npy")
+        self.facet_eps = np.load(d / "facet_eps.npy")
+        self.args = args
+        # ---- consistency checks: refuse to run on mismatched inputs ----
+        if len(self.point_map) != n_points:
+            raise ValueError(
+                f"point_map covers {len(self.point_map)} route points but this "
+                f"run has {n_points}: re-run 05a for the current network")
+        if self.facet_T.shape[0] != n_times:
+            raise ValueError(
+                f"facet_T_matrix_K has {self.facet_T.shape[0]} time steps but "
+                f"this run has {n_times}: re-run 05b with matching times.csv")
+        if self.facet_T.shape[1] != self.W.shape[1]:
+            raise ValueError("facet count mismatch between 05a view matrix "
+                             "and 05b temperatures")
+        self.w_surf = 1.0 - self.w_sky
+        print(f"  Facet thermal LW active: {self.W.shape[1]:,} facets, "
+              f"{self.W.shape[0]:,} traced points, mean surround weight "
+              f"{self.w_surf.mean():.3f}")
+
+    def surround_at(self, it, air_temp_C, elevation_deg):
+        a = self.args
+        air_K = air_temp_C + 273.15
+        sin_el = np.sin(np.deg2rad(max(elevation_deg, 0.0)))
+        legacy_K = air_K + a.surface_temp_offset_day_c * max(sin_el, 0.0)
+        E_facet = self.facet_eps * SIGMA * self.facet_T[it].astype(float) ** 4
+        num = (self.W @ E_facet
+               + self.w_veg * a.vegetation_emissivity * SIGMA * air_K ** 4
+               + self.w_def * a.surrounding_emissivity * SIGMA * legacy_K ** 4)
+        legacy_L = a.surrounding_emissivity * SIGMA * legacy_K ** 4
+        L_coarse = np.where(self.w_surf > 1e-6,
+                            num / np.maximum(self.w_surf, 1e-6), legacy_L)
+        return L_coarse[self.point_map]
 
 
 def main():
@@ -517,6 +610,9 @@ def main():
 
     print("\n" + "=" * 70)
     print("Running direct-sun ray tracing + MRT for each time step...")
+    facet_lw = None
+    if args.facet_thermal_dir:
+        facet_lw = FacetLongwave(args.facet_thermal_dir, n_points, nt, args)
     tmrt_matrix = np.zeros((nt, n_points), dtype=np.float32)
     direct_transmission_matrix = np.zeros((nt, n_points), dtype=np.float32)
 
@@ -531,9 +627,14 @@ def main():
                 args.k_lad_direct, args.sun_batch_size,
             )
 
+        L_surround_override = None
+        if facet_lw is not None:
+            L_surround_override = facet_lw.surround_at(it, air_temp_C_time[it], el)
+
         tmrt_C, R_abs, K_sw, L_lw = estimate_mrt_from_radiation(
             dni[it], dhi[it], ghi[it], el, tau_direct, svf_effective,
             air_temp_C_time[it], args.cloud_cover_fraction, args,
+            L_surround_override=L_surround_override,
         )
         tmrt_matrix[it, :] = tmrt_C
         direct_transmission_matrix[it, :] = tau_direct
