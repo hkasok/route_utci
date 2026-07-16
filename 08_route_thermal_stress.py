@@ -1,28 +1,30 @@
 """
-08_route_thermal_stress.py -- find 5 edge-disjoint corner-to-corner routes
-through the pedestrian network, simulate a person walking each route
-(encountering different shade/sun at different times as they walk), and
-compute CUMULATIVE thermal stress along each route using a simple
-single-compartment human heat-balance model.
+08_route_thermal_stress.py -- find edge-disjoint corner-to-corner routes
+through the pedestrian network and compare their UTCI EXPOSURE as a
+person walks each route (encountering different shade/sun at different
+times along the way).
 
-WHY NOT pythermalcomfort's two_nodes_gagge/phs models: those are
-steady-state predictors -- they estimate a person's physiological state
-after equilibrating in ONE FIXED environment, not a person walking
-through CHANGING conditions over time. For genuine cumulative exposure
-along a route, this script instead integrates a transparent
-single-compartment core-body-temperature heat balance forward in time,
-step by step, as the walker's position (and therefore local Tmrt) and
-time (and therefore solar/met conditions) both change together. This
-mirrors the approach used in published route-based heat-exposure studies
-(e.g. core temperature rise along sun vs. shaded routes).
+SCOPE (important): this stage reports UTCI, an "equivalent temperature"
+comfort index, spatially along each route. It does NOT compute a body
+core-temperature rise. Core-temperature rise is a physiological state
+that only the JOS-3 multi-node thermoregulation model (stage 09) computes
+from a genuine time-stepped heat balance on the body; expressing a "core
+rise" from MRT or UTCI would conflate three distinct quantities
+(radiation, a feels-like index, and an actual body temperature). So:
+  * stage 08 (here): UTCI along the route -- WHERE stress concentrates.
+  * stage 09 (JOS-3): the one and only core-temperature-rise number.
+
+UTCI is computed with pythermalcomfort (Brode et al. 2012 operational
+polynomial) using the SAME call as stage 07, driven at each route point
+by that point's ray-traced Tmrt at the walker's actual arrival time.
+
+Routes are ranked by MEAN and PEAK UTCI along the route (lower = cooler).
 
 ROUTE FINDING: "edge-disjoint" is verified via networkx's max-flow-based
 algorithm (not just a greedy heuristic), and corner selection
 automatically searches nearby candidate node pairs for one whose graph
-edge-connectivity can actually support 5 disjoint routes -- the literal
-nearest-to-corner nodes are not guaranteed to support this (a low-degree
-or bottlenecked node cannot, as a matter of graph theory, be the source
-of more disjoint paths than its own edge connectivity allows).
+edge-connectivity can actually support the requested number of disjoint
+routes.
 
 Run:
     python3 08_route_thermal_stress.py \
@@ -42,49 +44,12 @@ import networkx as nx
 import osmnx as ox
 import matplotlib.pyplot as plt
 from scipy.spatial import cKDTree
+from pythermalcomfort.models import utci
 
 
-# ============================================================
-# Simple single-compartment heat balance model (see module docstring)
-# ============================================================
-SIGMA = 5.670374419e-8
-BODY_MASS_KG = 70.0
-BODY_SPECIFIC_HEAT = 3492.0       # J/(kg*K) -- standard value, Fiala/Gagge-type models
-BODY_SURFACE_AREA_M2 = 1.8        # DuBois area
-METABOLIC_WALKING_WM2 = 135.0     # W/m^2, walking ~4 km/h (matches UTCI's reference activity)
-SKIN_TEMP_ASSUMED_C = 35.0        # fixed assumed skin temp (single-compartment simplification)
-CORE_TEMP_SETPOINT_C = 37.0
-MAX_SWEAT_COOLING_WM2 = 350.0
-SWEAT_GAIN_WM2_PER_C = 150.0
-
-
-def convective_coefficient(wind_ms):
-    return 8.3 * max(wind_ms, 0.1) ** 0.6
-
-
-def radiative_coefficient(tmrt_c, tskin_c=SKIN_TEMP_ASSUMED_C):
-    t_mean_k = (tmrt_c + tskin_c) / 2 + 273.15
-    return 4 * 0.97 * SIGMA * t_mean_k ** 3
-
-
-def evaporative_capacity_wm2(rh_pct, wind_ms):
-    rh_factor = np.clip(1.0 - (rh_pct - 30) / 100.0, 0.15, 1.0)
-    wind_factor = np.clip(0.5 + 0.5 * wind_ms / 3.0, 0.5, 1.3)
-    return MAX_SWEAT_COOLING_WM2 * rh_factor * wind_factor
-
-
-def step_core_temp(tcore_c, ta_c, tmrt_c, rh_pct, wind_ms, dt_s):
-    hc = convective_coefficient(wind_ms)
-    hr = radiative_coefficient(tmrt_c)
-    C = hc * (ta_c - SKIN_TEMP_ASSUMED_C)
-    R = hr * (tmrt_c - SKIN_TEMP_ASSUMED_C)
-    E_max = evaporative_capacity_wm2(rh_pct, wind_ms)
-    E_demand = max(0.0, SWEAT_GAIN_WM2_PER_C * (tcore_c - CORE_TEMP_SETPOINT_C))
-    E = min(E_demand, E_max)
-    S_wm2 = METABOLIC_WALKING_WM2 + C + R - E
-    S_watts = S_wm2 * BODY_SURFACE_AREA_M2
-    dtcore = S_watts / (BODY_MASS_KG * BODY_SPECIFIC_HEAT) * dt_s
-    return tcore_c + dtcore, S_wm2, E
+# UTCI thermal-stress category boundaries (deg C) for reporting a route's
+# exposure in physiologically meaningful terms (Brode et al. 2012).
+UTCI_STRONG_STRESS_C = 32.0   # >= this = "strong heat stress" or worse
 
 
 def air_temperature_c(hour_of_day, mean_c, amp_c, peak_hour):
@@ -220,7 +185,7 @@ def main():
     # unwrap in case times cross midnight boundary at the array edges
     mrt_tree = cKDTree(mrt_xyz[:, :2])
 
-    print("\nSimulating the walk along each route (heat-balance integration)...")
+    print("\nComputing UTCI along each route (at each point's arrival time)...")
     results = []
     for i, route in enumerate(routes):
         xy = route["xy"]
@@ -234,61 +199,67 @@ def main():
         # nearest precomputed Tmrt sample point for each route point
         _, nearest_idx = mrt_tree.query(xy)
 
-        tcore = CORE_TEMP_SETPOINT_C
-        tcore_trace = np.zeros(n_pts)
-        tmrt_trace = np.zeros(n_pts)
-        heat_storage_trace = np.zeros(n_pts)
-
+        # Local Tmrt and air temperature at each point's actual arrival time
+        h = arrival_hour % 24.0
+        tmrt_trace = np.empty(n_pts)
         for j in range(n_pts):
-            h = arrival_hour[j] % 24.0
-            # interpolate Tmrt at this point's time series to the exact arrival hour
             tmrt_series = tmrt_matrix[:, nearest_idx[j]]
-            tmrt_now = np.interp(h, time_hours, tmrt_series, period=24.0)
-            ta_now = air_temperature_c(h, args.air_temp_mean_c, args.air_temp_amp_c,
-                                        args.air_temp_peak_hour)
-            dt_s = (arrival_hour[j] - arrival_hour[j - 1]) * 3600.0 if j > 0 else 0.0
-            tcore, S, E = step_core_temp(tcore, ta_now, tmrt_now, args.relative_humidity_pct,
-                                          args.wind_speed_ms, dt_s)
-            tcore_trace[j] = tcore
-            tmrt_trace[j] = tmrt_now
-            heat_storage_trace[j] = S
+            tmrt_trace[j] = np.interp(h[j], time_hours, tmrt_series, period=24.0)
+        ta_trace = air_temperature_c(h, args.air_temp_mean_c, args.air_temp_amp_c,
+                                     args.air_temp_peak_hour)
+
+        # UTCI along the route -- SAME pythermalcomfort call as stage 07,
+        # vectorized over all route points at once.
+        utci_trace = utci(tdb=ta_trace, tr=tmrt_trace,
+                          v=args.wind_speed_ms, rh=args.relative_humidity_pct,
+                          limit_inputs=False).utci
+        utci_trace = np.asarray(utci_trace, dtype=float)
 
         walk_duration_min = cumdist[-1] / args.walking_speed_ms / 60.0
+        # exposure "dose" above the strong-heat-stress threshold, in
+        # UTCI-degree-minutes (integral of max(0, UTCI-32) dt over the walk)
+        dt_min = np.diff(arrival_hour) * 60.0
+        excess = np.maximum(0.0, 0.5 * (utci_trace[1:] + utci_trace[:-1])
+                            - UTCI_STRONG_STRESS_C)
+        strong_stress_dose_degmin = float(np.sum(excess * dt_min))
+
         results.append({
             "route_id": i + 1,
             "xy": xy,
             "cumdist_m": cumdist,
             "arrival_hour": arrival_hour,
-            "tcore_trace_c": tcore_trace,
             "tmrt_trace_c": tmrt_trace,
-            "heat_storage_trace_wm2": heat_storage_trace,
+            "utci_trace_c": utci_trace,
             "length_m": route["length_m"],
             "walk_duration_min": walk_duration_min,
-            "final_tcore_rise_c": tcore_trace[-1] - CORE_TEMP_SETPOINT_C,
+            "mean_utci_c": float(np.mean(utci_trace)),
+            "max_utci_c": float(np.max(utci_trace)),
             "mean_tmrt_c": float(np.mean(tmrt_trace)),
             "max_tmrt_c": float(np.max(tmrt_trace)),
-            "peak_heat_storage_wm2": float(np.max(heat_storage_trace)),
+            "strong_stress_dose_degmin": strong_stress_dose_degmin,
         })
         print(f"  Route {i+1}: {route['length_m']:.0f} m, {walk_duration_min:.1f} min walk, "
-              f"final core temp rise = {results[-1]['final_tcore_rise_c']:+.3f} C")
+              f"mean UTCI = {results[-1]['mean_utci_c']:.1f} C, "
+              f"peak UTCI = {results[-1]['max_utci_c']:.1f} C")
 
-    # Rank routes by final core temp rise (lower = better/cooler)
-    ranking = sorted(results, key=lambda r: r["final_tcore_rise_c"])
-    print("\nRoute ranking (best/coolest to worst/hottest):")
+    # Rank routes by MEAN UTCI (primary), then PEAK UTCI (tie-break);
+    # lower = cooler / more comfortable.
+    ranking = sorted(results, key=lambda r: (r["mean_utci_c"], r["max_utci_c"]))
+    print("\nRoute ranking by UTCI exposure (coolest to hottest):")
     for rank, r in enumerate(ranking):
         print(f"  #{rank+1}: Route {r['route_id']} -- "
-              f"final core temp rise {r['final_tcore_rise_c']:+.3f} C, "
+              f"mean UTCI {r['mean_utci_c']:.1f} C, peak UTCI {r['max_utci_c']:.1f} C, "
               f"mean Tmrt {r['mean_tmrt_c']:.1f} C")
 
     # ---- Save results ----
     summary_rows = [{
         "route_id": r["route_id"], "length_m": r["length_m"],
         "walk_duration_min": r["walk_duration_min"],
-        "final_tcore_rise_c": r["final_tcore_rise_c"],
+        "mean_utci_c": r["mean_utci_c"], "max_utci_c": r["max_utci_c"],
         "mean_tmrt_c": r["mean_tmrt_c"], "max_tmrt_c": r["max_tmrt_c"],
-        "peak_heat_storage_wm2": r["peak_heat_storage_wm2"],
+        "strong_stress_dose_degmin": r["strong_stress_dose_degmin"],
     } for r in results]
-    pd.DataFrame(summary_rows).sort_values("final_tcore_rise_c").to_csv(
+    pd.DataFrame(summary_rows).sort_values(["mean_utci_c", "max_utci_c"]).to_csv(
         out_dir / "route_ranking_summary.csv", index=False)
 
     # ---- Visualization 1: spatial map of the 5 routes ----
@@ -306,37 +277,46 @@ def main():
         ax.add_collection(LineCollection(building_segments, colors="lightgray", linewidths=0.4))
     for r, color in zip(results, route_colors):
         ax.plot(r["xy"][:, 0], r["xy"][:, 1], "-", color=color, linewidth=2.5,
-                label=f"Route {r['route_id']}: {r['final_tcore_rise_c']:+.2f}\u00b0C core rise "
+                label=f"Route {r['route_id']}: mean UTCI {r['mean_utci_c']:.1f}\u00b0C, "
+                      f"peak {r['max_utci_c']:.1f}\u00b0C "
                       f"({r['length_m']:.0f} m, {r['walk_duration_min']:.0f} min)")
     ax.scatter(*pos[start_node], marker="o", s=150, color="black", zorder=5, label="Start")
     ax.scatter(*pos[end_node], marker="s", s=150, color="black", zorder=5, label="End")
     ax.set_aspect("equal")
     ax.legend(loc="upper left", fontsize=9, framealpha=0.9)
-    ax.set_title(f"5 edge-disjoint routes, departure at {args.departure_hour:.0f}:00 -- "
-                 f"cumulative thermal stress comparison")
+    ax.set_title(f"{len(results)} edge-disjoint routes, departure at "
+                 f"{args.departure_hour:.0f}:00 -- UTCI exposure comparison")
     ax.set_xlabel("X [m]"); ax.set_ylabel("Y [m]")
     fig.tight_layout()
     fig.savefig(out_dir / "routes_map.png", dpi=140)
     plt.close(fig)
     print(f"\nSaved: {out_dir / 'routes_map.png'}")
 
-    # ---- Visualization 2: cumulative core temp rise vs distance, all routes overlaid ----
+    # ---- Visualization 2: UTCI vs distance walked, all routes overlaid ----
+    # (UTCI is the requested route-detail quantity; Tmrt shown beneath for
+    #  physical context. No core-temperature rise here -- that is JOS-3 only.)
     fig, axes = plt.subplots(2, 1, figsize=(10, 9), sharex=True)
     for r, color in zip(results, route_colors):
-        axes[0].plot(r["cumdist_m"], r["tcore_trace_c"] - CORE_TEMP_SETPOINT_C,
-                     color=color, linewidth=2, label=f"Route {r['route_id']}")
+        axes[0].plot(r["cumdist_m"], r["utci_trace_c"],
+                     color=color, linewidth=2,
+                     label=f"Route {r['route_id']} (mean {r['mean_utci_c']:.1f}\u00b0C)")
         axes[1].plot(r["cumdist_m"], r["tmrt_trace_c"], color=color, linewidth=1.5, alpha=0.8)
-    axes[0].set_ylabel("Core temperature rise [\u00b0C]")
-    axes[0].axhline(0, color="gray", linewidth=0.5)
+    # UTCI thermal-stress category reference lines
+    for thr, lab in [(26, "moderate"), (32, "strong"), (38, "very strong")]:
+        axes[0].axhline(thr, color="gray", linewidth=0.6, linestyle="--")
+        axes[0].text(0.0, thr, f" {lab} heat stress \u2265{thr}\u00b0C",
+                     fontsize=7, color="gray", va="bottom")
+    axes[0].set_ylabel("UTCI [\u00b0C]")
     axes[0].legend(fontsize=9)
-    axes[0].set_title("Cumulative thermal strain vs. distance walked")
+    axes[0].set_title("UTCI encountered along each route "
+                      "(at each point's actual arrival time)")
     axes[1].set_ylabel("Local Tmrt [\u00b0C]")
     axes[1].set_xlabel("Distance walked [m]")
-    axes[1].set_title("Tmrt encountered along each route (at each point's actual arrival time)")
+    axes[1].set_title("Tmrt along each route (radiant context)")
     fig.tight_layout()
-    fig.savefig(out_dir / "cumulative_stress_comparison.png", dpi=140)
+    fig.savefig(out_dir / "utci_along_route_comparison.png", dpi=140)
     plt.close(fig)
-    print(f"Saved: {out_dir / 'cumulative_stress_comparison.png'}")
+    print(f"Saved: {out_dir / 'utci_along_route_comparison.png'}")
 
     print(f"\n[route_result] n_routes={len(results)} start={start_node} end={end_node} "
           f"connectivity={connectivity} output_dir={out_dir}")

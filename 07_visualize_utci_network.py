@@ -50,20 +50,57 @@ from pythermalcomfort.models import utci
 
 
 # ============================================================
-# Standard UTCI thermal stress categories (Brode et al. 2012 / utci.org)
+# UTCI thermal stress categories (Brode et al. 2012 / utci.org)
 # ============================================================
-UTCI_CATEGORY_BOUNDS = [-40, -27, -13, 0, 9, 26, 32, 38, 46]
-UTCI_CATEGORY_LABELS = [
+# MIAMI SPECIALIZATION: sub-zero (and indeed all cold-stress) UTCI never
+# occurs here -- the observed minimum in a full July day is ~+19 C -- so
+# the cold half of the standard 10-category scale is dead range that only
+# wastes color resolution. We therefore keep only the categories at or
+# above "No thermal stress" and, for CLARITY, split EACH retained category
+# into two half-bands (a lighter lower half and a darker upper half). This
+# doubles the visual resolution exactly where all Miami values sit.
+#
+# Set --full-utci-scale to restore the classic full cold-to-hot scale.
+
+# --- Full standard scale (used only with --full-utci-scale) ---
+UTCI_FULL_BOUNDS = [-40, -27, -13, 0, 9, 26, 32, 38, 46]
+UTCI_FULL_LABELS = [
     "Extreme cold stress", "Very strong cold stress", "Strong cold stress",
     "Moderate cold stress", "Slight cold stress", "No thermal stress",
     "Moderate heat stress", "Strong heat stress", "Very strong heat stress",
     "Extreme heat stress",
 ]
-# Standard cold(purple/blue) -> comfortable(green) -> hot(yellow/red/maroon)
-# progression, matching how UTCI is conventionally mapped in the literature.
-UTCI_CATEGORY_COLORS = [
+UTCI_FULL_COLORS = [
     "#4d004b", "#810f7c", "#8856a7", "#8c96c6", "#9ebcda",
     "#66c2a4", "#fed976", "#fd8d3c", "#e31a1c", "#800026",
+]
+
+# --- Miami warm-only scale: categories from "No thermal stress" up,
+#     each split into two half-bands at its midpoint. The upper open
+#     category (Extreme heat, >=46) is split at a nominal 50 C so it, too,
+#     gets a light/dark pair. ---
+#   No thermal stress   [9, 26)  -> 9,   17.5, 26
+#   Moderate heat       [26,32)  -> 26,  29,   32
+#   Strong heat         [32,38)  -> 32,  35,   38
+#   Very strong heat    [38,46)  -> 38,  42,   46
+#   Extreme heat        [46, +)  -> 46,  50,  (+inf)
+UTCI_CATEGORY_BOUNDS = [9, 17.5, 26, 29, 32, 35, 38, 42, 46, 50]
+UTCI_CATEGORY_LABELS = [
+    "No thermal stress (lower)", "No thermal stress (upper)",
+    "Moderate heat stress (lower)", "Moderate heat stress (upper)",
+    "Strong heat stress (lower)", "Strong heat stress (upper)",
+    "Very strong heat stress (lower)", "Very strong heat stress (upper)",
+    "Extreme heat stress (lower)", "Extreme heat stress (upper)",
+]
+# Two shades per category: lighter (lower half) then darker (upper half),
+# keeping the conventional green -> yellow -> orange -> red -> maroon hue
+# progression so the scale still reads as "hotter = more intense".
+UTCI_CATEGORY_COLORS = [
+    "#a1d99b", "#66c2a4",   # no thermal stress: light green -> teal-green
+    "#ffffb2", "#fed976",   # moderate heat:     pale yellow -> gold
+    "#feb24c", "#fd8d3c",   # strong heat:       light orange -> orange
+    "#fc4e2a", "#e31a1c",   # very strong heat:  red-orange -> red
+    "#bd0026", "#800026",   # extreme heat:      crimson -> maroon
 ]
 
 
@@ -73,6 +110,9 @@ def parse_args():
                     help="Output directory from 05_mrt_network_raytrace.py")
     p.add_argument("--output-dir", required=True)
     p.add_argument("--buildings-stl", default=None)
+    p.add_argument("--full-utci-scale", action="store_true",
+                    help="Use the classic full cold-to-hot 10-category UTCI "
+                         "scale instead of the Miami warm-only split scale")
 
     p.add_argument("--air-temp-mean-c", type=float, default=29.0,
                     help="Diurnal mean air temp, deg C (default: 29.0, Miami summer)")
@@ -97,11 +137,21 @@ def air_temperature_c(hour_of_day, mean_c, amp_c, peak_hour):
     return mean_c + amp_c * np.cos(2.0 * np.pi * (hour_of_day - peak_hour) / 24.0)
 
 
-def utci_colormap():
-    cmap = mcolors.ListedColormap(UTCI_CATEGORY_COLORS)
-    # 9 interior boundaries + extend='both' (unbounded first/last bin) = 10
-    # bins total, matching the 10 category colors exactly.
-    norm = mcolors.BoundaryNorm(UTCI_CATEGORY_BOUNDS, cmap.N, extend="both")
+def select_scale(full_scale):
+    """Return (bounds, labels, colors) for the requested scale."""
+    if full_scale:
+        return UTCI_FULL_BOUNDS, UTCI_FULL_LABELS, UTCI_FULL_COLORS
+    return UTCI_CATEGORY_BOUNDS, UTCI_CATEGORY_LABELS, UTCI_CATEGORY_COLORS
+
+
+def utci_colormap(full_scale=False):
+    bounds, _, colors = select_scale(full_scale)
+    cmap = mcolors.ListedColormap(colors)
+    # For the Miami scale the lowest band starts AT "No thermal stress"
+    # (>=9 C); values below that never occur here, so only the TOP is
+    # extended (extend='max'). The full scale extends both ends as before.
+    extend = "both" if full_scale else "max"
+    norm = mcolors.BoundaryNorm(bounds, cmap.N, extend=extend)
     return cmap, norm
 
 
@@ -114,8 +164,9 @@ def load_building_footprint_lines(stl_path):
 
 
 def make_static_overview(path_xy, utci_matrix, times, out_path, n_panels, point_size,
-                          building_segments=None):
-    cmap, norm = utci_colormap()
+                          building_segments=None, full_scale=False):
+    cmap, norm = utci_colormap(full_scale)
+    bounds, labels, colors = select_scale(full_scale)
     nt = len(times)
     panel_indices = np.linspace(0, nt - 1, n_panels).astype(int)
 
@@ -144,35 +195,55 @@ def make_static_overview(path_xy, utci_matrix, times, out_path, n_panels, point_
     fig.suptitle("UTCI along pedestrian network -- 24 hour progression\n"
                   "(Miami summer representative Ta/RH/wind, spatially-resolved shade)",
                   fontsize=13)
-    cbar = fig.colorbar(sc, ax=axes.tolist(), fraction=0.025, pad=0.03, ticks=UTCI_CATEGORY_BOUNDS)
+    cbar = fig.colorbar(sc, ax=axes.tolist(), fraction=0.025, pad=0.03, ticks=bounds)
     cbar.set_label("UTCI thermal stress category")
-    cbar.ax.set_yticklabels([f"{b}" for b in UTCI_CATEGORY_BOUNDS])
+    cbar.ax.set_yticklabels([f"{b:g}" for b in bounds])
     # Secondary text listing category names for reference
-    legend_text = "\n".join(f"{c}: {l}" for c, l in zip(UTCI_CATEGORY_COLORS, UTCI_CATEGORY_LABELS))
+    legend_text = "\n".join(f"{c}: {l}" for c, l in zip(colors, labels))
     fig.savefig(out_path, dpi=130, bbox_inches="tight")
     plt.close(fig)
 
 
-def make_category_legend(out_path):
-    fig, ax = plt.subplots(figsize=(5, 4))
-    for i, (color, label) in enumerate(zip(UTCI_CATEGORY_COLORS, UTCI_CATEGORY_LABELS)):
-        lo = UTCI_CATEGORY_BOUNDS[i - 1] if i > 0 else "<"
-        hi = UTCI_CATEGORY_BOUNDS[i] if i < len(UTCI_CATEGORY_BOUNDS) else ">"
-        rng = f"[{lo}, {hi}) °C" if i not in (0, len(UTCI_CATEGORY_LABELS) - 1) else (
-            f"< {UTCI_CATEGORY_BOUNDS[0]} °C" if i == 0 else f">= {UTCI_CATEGORY_BOUNDS[-1]} °C")
-        ax.barh(len(UTCI_CATEGORY_LABELS) - i, 1, color=color)
-        ax.text(1.05, len(UTCI_CATEGORY_LABELS) - i, f"{label}  ({rng})",
-                va="center", fontsize=10)
+def make_category_legend(out_path, full_scale=False):
+    bounds, labels, colors = select_scale(full_scale)
+    n = len(labels)
+    fig, ax = plt.subplots(figsize=(5.8, 4.2))
+    # Build the [lo, hi) range string for band i under each scale.
+    #  * full scale (extend='both'): band 0 is "< bounds[0]", band n-1 is
+    #    ">= bounds[-1]", interior band i is [bounds[i-1], bounds[i]).
+    #  * warm-only scale (extend='max'): the `bounds` array has exactly n
+    #    entries where bounds[i] is the LOWER edge of band i, so band i is
+    #    [bounds[i], bounds[i+1]) and the last band is ">= bounds[-1]".
+    def band_range(i):
+        if full_scale:
+            if i == 0:
+                return f"< {bounds[0]:g} °C"
+            if i == n - 1:
+                return f">= {bounds[-1]:g} °C"
+            return f"[{bounds[i - 1]:g}, {bounds[i]:g}) °C"
+        # warm-only: bounds[i] is band i's lower edge
+        if i == n - 1:
+            return f">= {bounds[-1]:g} °C"
+        return f"[{bounds[i]:g}, {bounds[i + 1]:g}) °C"
+
+    for i, (color, label) in enumerate(zip(colors, labels)):
+        ax.barh(n - i, 1, color=color)
+        ax.text(1.05, n - i, f"{label}  ({band_range(i)})",
+                va="center", fontsize=9)
     ax.set_xlim(0, 3)
-    ax.set_ylim(0, len(UTCI_CATEGORY_LABELS) + 1)
+    ax.set_ylim(0, n + 1)
     ax.axis("off")
-    ax.set_title("UTCI thermal stress categories", fontsize=12)
+    title = ("UTCI thermal stress categories" if full_scale
+             else "UTCI categories (Miami warm-only, split shades)")
+    ax.set_title(title, fontsize=12)
     fig.savefig(out_path, dpi=130, bbox_inches="tight")
     plt.close(fig)
 
 
-def make_interactive_animation(path_xy, utci_matrix, times, out_path, n_sub, building_segments=None):
+def make_interactive_animation(path_xy, utci_matrix, times, out_path, n_sub,
+                               building_segments=None, full_scale=False):
     import plotly.graph_objects as go
+    bounds_list, _, colors = select_scale(full_scale)
 
     n_points = len(path_xy)
     n_sub = min(n_sub, n_points)
@@ -183,14 +254,15 @@ def make_interactive_animation(path_xy, utci_matrix, times, out_path, n_sub, bui
     time_labels = [t.strftime("%H:%M") for t in times]
 
     # plotly colorscale built from the same discrete category boundaries/colors
-    bounds = np.array(UTCI_CATEGORY_BOUNDS, dtype=float)
-    lo, hi = bounds[0] - 5, bounds[-1] + 10
+    bounds = np.array(bounds_list, dtype=float)
+    lo = bounds[0] - (5 if full_scale else 0)   # warm-only: clamp at first bound
+    hi = bounds[-1] + 10
     positions = np.concatenate(([lo], bounds, [hi]))
     norm_positions = (positions - lo) / (hi - lo)
     colorscale = []
-    for i in range(len(UTCI_CATEGORY_COLORS)):
-        colorscale.append([norm_positions[i], UTCI_CATEGORY_COLORS[i]])
-        colorscale.append([norm_positions[i + 1], UTCI_CATEGORY_COLORS[i]])
+    for i in range(len(colors)):
+        colorscale.append([norm_positions[i], colors[i]])
+        colorscale.append([norm_positions[i + 1], colors[i]])
 
     base_traces = []
     if building_segments is not None:
@@ -205,7 +277,7 @@ def make_interactive_animation(path_xy, utci_matrix, times, out_path, n_sub, bui
     point_trace = go.Scattergl(
         x=xy_sub[:, 0], y=xy_sub[:, 1], mode="markers",
         marker=dict(size=3, color=utci_sub[0], colorscale=colorscale, cmin=lo, cmax=hi,
-                    colorbar=dict(title="UTCI [°C]", tickvals=UTCI_CATEGORY_BOUNDS)),
+                    colorbar=dict(title="UTCI [°C]", tickvals=bounds_list)),
         hovertemplate="UTCI: %{marker.color:.1f} °C<extra></extra>",
     )
     frames = []
@@ -288,17 +360,17 @@ def main():
     print("\nBuilding static overview with standard UTCI category colors...")
     static_path = out_dir / "utci_static_overview.png"
     make_static_overview(path_xy, utci_matrix, times, static_path, args.n_static_panels,
-                          args.point_size, building_segments)
+                          args.point_size, building_segments, full_scale=args.full_utci_scale)
     print(f"  Saved: {static_path}")
 
     legend_path = out_dir / "utci_category_legend.png"
-    make_category_legend(legend_path)
+    make_category_legend(legend_path, full_scale=args.full_utci_scale)
     print(f"  Saved: {legend_path}")
 
     print("\nBuilding interactive animated HTML...")
     html_path = out_dir / "utci_animated.html"
     make_interactive_animation(path_xy, utci_matrix, times, html_path,
-                                args.n_animated_points, building_segments)
+                                args.n_animated_points, building_segments, full_scale=args.full_utci_scale)
     size_mb = html_path.stat().st_size / 1e6
     print(f"  Saved: {html_path} ({size_mb:.1f} MB)")
 
