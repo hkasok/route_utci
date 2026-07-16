@@ -46,14 +46,85 @@ import matplotlib.pyplot as plt
 from scipy.spatial import cKDTree
 from pythermalcomfort.models import utci
 
+from weather_provider import add_weather_args, provider_from_args
+
 
 # UTCI thermal-stress category boundaries (deg C) for reporting a route's
 # exposure in physiologically meaningful terms (Brode et al. 2012).
 UTCI_STRONG_STRESS_C = 32.0   # >= this = "strong heat stress" or worse
 
 
-def air_temperature_c(hour_of_day, mean_c, amp_c, peak_hour):
-    return mean_c + amp_c * np.cos(2.0 * np.pi * (hour_of_day - peak_hour) / 24.0)
+def export_routes_for_gis(results, out_dir, origin, project_crs):
+    """Write each route's geometry in formats other software can validate
+    against: GeoJSON (lat/lon, universal), a per-vertex CSV (lat/lon +
+    projected + UTCI/Tmrt/arrival time along the route), and GPX tracks.
+
+    Local frame -> true coordinates: add the origin shift back to recover
+    projected CRS coordinates, then reproject to EPSG:4326 (lat/lon).
+    """
+    import json
+    from pyproj import Transformer
+
+    to_wgs84 = Transformer.from_crs(project_crs, "EPSG:4326", always_xy=True)
+
+    features, csv_rows, gpx_tracks = [], [], []
+    for r in results:
+        xy_proj = r["xy"] + origin                     # back to projected CRS
+        lon, lat = to_wgs84.transform(xy_proj[:, 0], xy_proj[:, 1])
+        rid = r["route_id"]
+
+        features.append({
+            "type": "Feature",
+            "properties": {
+                "route_id": rid,
+                "length_m": round(r["length_m"], 1),
+                "walk_duration_min": round(r["walk_duration_min"], 1),
+                "mean_utci_c": round(r["mean_utci_c"], 2),
+                "max_utci_c": round(r["max_utci_c"], 2),
+                "mean_tmrt_c": round(r["mean_tmrt_c"], 2),
+                "max_tmrt_c": round(r["max_tmrt_c"], 2),
+            },
+            "geometry": {
+                "type": "LineString",
+                "coordinates": [[float(a), float(b)] for a, b in zip(lon, lat)],
+            },
+        })
+
+        for k in range(len(lat)):
+            csv_rows.append({
+                "route_id": rid, "seq": k,
+                "lat": round(float(lat[k]), 8), "lon": round(float(lon[k]), 8),
+                "x_proj_m": round(float(xy_proj[k, 0]), 3),
+                "y_proj_m": round(float(xy_proj[k, 1]), 3),
+                "cumdist_m": round(float(r["cumdist_m"][k]), 2),
+                "arrival_hour": round(float(r["arrival_hour"][k]), 4),
+                "tmrt_c": round(float(r["tmrt_trace_c"][k]), 2),
+                "utci_c": round(float(r["utci_trace_c"][k]), 2),
+            })
+        gpx_tracks.append((rid, lat, lon))
+
+    fc = {"type": "FeatureCollection", "name": "route_utci_routes",
+          "crs": {"type": "name",
+                  "properties": {"name": "urn:ogc:def:crs:OGC:1.3:CRS84"}},
+          "features": features}
+    (out_dir / "routes.geojson").write_text(json.dumps(fc, indent=2))
+    pd.DataFrame(csv_rows).to_csv(out_dir / "routes_points.csv", index=False)
+
+    gpx = ['<?xml version="1.0" encoding="UTF-8"?>',
+           '<gpx version="1.1" creator="route_utci" '
+           'xmlns="http://www.topografix.com/GPX/1/1">']
+    for rid, lat, lon in gpx_tracks:
+        gpx.append(f'  <trk><name>route_{rid}</name><trkseg>')
+        for la, lo in zip(lat, lon):
+            gpx.append(f'    <trkpt lat="{la:.8f}" lon="{lo:.8f}"></trkpt>')
+        gpx.append('  </trkseg></trk>')
+    gpx.append('</gpx>')
+    (out_dir / "routes.gpx").write_text("\n".join(gpx))
+
+    print("\nExported routes for external tools:")
+    print(f"  {out_dir / 'routes.geojson'}   (lat/lon; QGIS/ArcGIS/geojson.io)")
+    print(f"  {out_dir / 'routes_points.csv'} (per-vertex lat/lon + UTCI/Tmrt)")
+    print(f"  {out_dir / 'routes.gpx'}        (Google Earth / GPS tools)")
 
 
 # ============================================================
@@ -123,9 +194,45 @@ def parse_args():
     p.add_argument("--buildings-stl", default=None)
 
     p.add_argument("--n-routes", type=int, default=5)
-    p.add_argument("--walking-speed-ms", type=float, default=1.1, help="~4 km/h (default: 1.1)")
-    p.add_argument("--departure-hour", type=float, default=8.0,
-                    help="Hour of day (0-24) the walk begins (default: 8.0)")
+
+    # --- Explicit start / end control (optional) ---
+    # By default the two opposite BBOX corners drive endpoint selection.
+    # Provide either lat/lon OR local-frame x/y to pin the endpoints.
+    p.add_argument("--start-latlon", nargs=2, type=float, default=None,
+                    metavar=("LAT", "LON"),
+                    help="Explicit route START as latitude longitude "
+                         "(overrides the auto bottom-left corner).")
+    p.add_argument("--end-latlon", nargs=2, type=float, default=None,
+                    metavar=("LAT", "LON"),
+                    help="Explicit route END as latitude longitude "
+                         "(overrides the auto top-right corner).")
+    p.add_argument("--start-xy", nargs=2, type=float, default=None,
+                    metavar=("X", "Y"),
+                    help="Explicit START in the LOCAL (origin-shifted) frame, "
+                         "meters. Alternative to --start-latlon.")
+    p.add_argument("--end-xy", nargs=2, type=float, default=None,
+                    metavar=("X", "Y"),
+                    help="Explicit END in the LOCAL frame, meters.")
+
+    # --- Georeferencing for exporting routes to other software ---
+    p.add_argument("--local-origin-x", type=float, default=0.0,
+                    help="Origin-shift X that was applied when building the "
+                         "network (must match extract_osm_pedestrian_network.py "
+                         "so exported routes get true coordinates).")
+    p.add_argument("--local-origin-y", type=float, default=0.0,
+                    help="Origin-shift Y (see --local-origin-x).")
+    p.add_argument("--project-crs", default="EPSG:6346",
+                    help="Projected CRS of the network/local frame "
+                         "(default EPSG:6346 = NAD83(2011) UTM 17N, Miami). "
+                         "Routes are exported in this CRS AND in lat/lon.")
+
+    p.add_argument("--walking-speed-ms", type=float, default=1.3,
+                    help="Average adult walking pace (default: 1.3 m/s ~= 4.7 km/h). "
+                         "UTCI's reference activity is ~1.1 m/s; 1.3 better matches "
+                         "a healthy adult crossing campus.")
+    p.add_argument("--departure-hour", type=float, default=13.0,
+                    help="Hour of day (0-24) the walk begins (default: 13.0, "
+                         "solar-afternoon heat. Use 8.0 for a morning walk).")
     p.add_argument("--route-sample-spacing-m", type=float, default=1.0,
                     help="Spatial resampling interval along each route, meters -- the "
                          "actual heat-balance integration timestep is derived from real "
@@ -133,11 +240,7 @@ def parse_args():
                          "speed), not a fixed value, so this controls resolution not "
                          "physical accuracy directly (default: 1.0)")
 
-    p.add_argument("--air-temp-mean-c", type=float, default=29.0)
-    p.add_argument("--air-temp-amp-c", type=float, default=4.0)
-    p.add_argument("--air-temp-peak-hour", type=float, default=15.0)
-    p.add_argument("--relative-humidity-pct", type=float, default=70.0)
-    p.add_argument("--wind-speed-ms", type=float, default=3.1)
+    add_weather_args(p)
     return p.parse_args()
 
 
@@ -145,6 +248,9 @@ def main():
     args = parse_args()
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    weather = provider_from_args(args)
+    print(f"Weather source: {weather.describe()}")
 
     print("Loading routable network...")
     G_multi = ox.load_graphml(args.graphml)
@@ -156,14 +262,58 @@ def main():
     ys = [p[1] for p in pos.values()]
     xmin, xmax, ymin, ymax = min(xs), max(xs), min(ys), max(ys)
 
-    print(f"\nSearching for a corner pair supporting {args.n_routes} edge-disjoint routes...")
-    start_node, end_node, connectivity = find_best_corner_pair(
-        G_simple, pos, (xmin, ymin), (xmax, ymax), args.n_routes
-    )
-    print(f"  Start: node {start_node} at {pos[start_node]}")
-    print(f"  End:   node {end_node} at {pos[end_node]}")
-    print(f"  Edge connectivity: {connectivity} "
-          f"({'>= requested' if connectivity >= args.n_routes else 'LESS than requested'} {args.n_routes})")
+    # Resolve explicit endpoints (lat/lon or local xy) to LOCAL-frame points.
+    origin = np.array([args.local_origin_x, args.local_origin_y])
+
+    def latlon_to_local(lat, lon):
+        from pyproj import Transformer
+        tf = Transformer.from_crs("EPSG:4326", args.project_crs, always_xy=True)
+        X, Y = tf.transform(lon, lat)          # note: always_xy -> (lon,lat)
+        return np.array([X, Y]) - origin
+
+    def nearest_node(pt_local):
+        node_ids = list(pos.keys())
+        P = np.array([pos[n] for n in node_ids])
+        d = np.hypot(P[:, 0] - pt_local[0], P[:, 1] - pt_local[1])
+        return node_ids[int(np.argmin(d))]
+
+    start_pt = end_pt = None
+    if args.start_latlon is not None:
+        start_pt = latlon_to_local(*args.start_latlon)
+    elif args.start_xy is not None:
+        start_pt = np.array(args.start_xy, dtype=float)
+    if args.end_latlon is not None:
+        end_pt = latlon_to_local(*args.end_latlon)
+    elif args.end_xy is not None:
+        end_pt = np.array(args.end_xy, dtype=float)
+
+    if start_pt is not None and end_pt is not None:
+        start_node = nearest_node(start_pt)
+        end_node = nearest_node(end_pt)
+        connectivity = nx.edge_connectivity(G_simple, start_node, end_node)
+        print(f"\nUsing EXPLICIT endpoints:")
+        print(f"  Start: node {start_node} at {pos[start_node]} "
+              f"(requested local {tuple(np.round(start_pt, 1))})")
+        print(f"  End:   node {end_node} at {pos[end_node]} "
+              f"(requested local {tuple(np.round(end_pt, 1))})")
+        print(f"  Edge connectivity between them: {connectivity}")
+        if connectivity < args.n_routes:
+            print(f"  WARNING: only {connectivity} edge-disjoint routes exist "
+                  f"between these endpoints (< requested {args.n_routes}); "
+                  f"will return {connectivity}.")
+    else:
+        if start_pt is not None or end_pt is not None:
+            print("  NOTE: provide BOTH start and end to pin endpoints; "
+                  "falling back to automatic corner selection.")
+        print(f"\nSearching for a corner pair supporting {args.n_routes} "
+              f"edge-disjoint routes...")
+        start_node, end_node, connectivity = find_best_corner_pair(
+            G_simple, pos, (xmin, ymin), (xmax, ymax), args.n_routes
+        )
+        print(f"  Start: node {start_node} at {pos[start_node]}")
+        print(f"  End:   node {end_node} at {pos[end_node]}")
+        print(f"  Edge connectivity: {connectivity} "
+              f"({'>= requested' if connectivity >= args.n_routes else 'LESS than requested'} {args.n_routes})")
 
     node_paths = list(nx.edge_disjoint_paths(G_simple, start_node, end_node))[:args.n_routes]
     print(f"  Found {len(node_paths)} routes")
@@ -199,19 +349,22 @@ def main():
         # nearest precomputed Tmrt sample point for each route point
         _, nearest_idx = mrt_tree.query(xy)
 
-        # Local Tmrt and air temperature at each point's actual arrival time
+        # Local Tmrt at each point's actual arrival time
         h = arrival_hour % 24.0
         tmrt_trace = np.empty(n_pts)
         for j in range(n_pts):
             tmrt_series = tmrt_matrix[:, nearest_idx[j]]
             tmrt_trace[j] = np.interp(h[j], time_hours, tmrt_series, period=24.0)
-        ta_trace = air_temperature_c(h, args.air_temp_mean_c, args.air_temp_amp_c,
-                                     args.air_temp_peak_hour)
+        # Air temperature, RH and wind at each arrival time (dynamic if a
+        # weather CSV was supplied; parametric/constant otherwise)
+        ta_trace = np.asarray(weather.air_temp_c(h), dtype=float)
+        rh_trace = np.asarray(weather.rh_pct(h), dtype=float) * np.ones(n_pts)
+        wind_trace = np.asarray(weather.wind_ms(h), dtype=float) * np.ones(n_pts)
 
         # UTCI along the route -- SAME pythermalcomfort call as stage 07,
         # vectorized over all route points at once.
         utci_trace = utci(tdb=ta_trace, tr=tmrt_trace,
-                          v=args.wind_speed_ms, rh=args.relative_humidity_pct,
+                          v=wind_trace, rh=rh_trace,
                           limit_inputs=False).utci
         utci_trace = np.asarray(utci_trace, dtype=float)
 
@@ -261,6 +414,9 @@ def main():
     } for r in results]
     pd.DataFrame(summary_rows).sort_values(["mean_utci_c", "max_utci_c"]).to_csv(
         out_dir / "route_ranking_summary.csv", index=False)
+
+    # ---- Export route geometries for external validation software ----
+    export_routes_for_gis(results, out_dir, origin, args.project_crs)
 
     # ---- Visualization 1: spatial map of the 5 routes ----
     building_segments = None

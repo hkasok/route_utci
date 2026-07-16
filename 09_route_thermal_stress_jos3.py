@@ -49,12 +49,11 @@ import matplotlib.pyplot as plt
 from scipy.spatial import cKDTree
 from pythermalcomfort.models import JOS3
 
+from weather_provider import add_weather_args, provider_from_args
+from subject_profiles import PROFILES, get_profile, apply_profile_to_model
+
 
 CORE_TEMP_SETPOINT_C = 37.0  # used only for reporting "rise from baseline"
-
-
-def air_temperature_c(hour_of_day, mean_c, amp_c, peak_hour):
-    return mean_c + amp_c * np.cos(2.0 * np.pi * (hour_of_day - peak_hour) / 24.0)
 
 
 # ============================================================
@@ -124,9 +123,14 @@ def parse_args():
     p.add_argument("--buildings-stl", default=None)
 
     p.add_argument("--n-routes", type=int, default=5)
-    p.add_argument("--walking-speed-ms", type=float, default=1.1, help="~4 km/h (default: 1.1)")
-    p.add_argument("--departure-hour", type=float, default=8.0,
-                    help="Hour of day (0-24) the walk begins (default: 8.0)")
+    p.add_argument("--walking-speed-ms", type=float, default=1.3,
+                    help="Average adult walking pace (default: 1.3 m/s ~= 4.7 km/h). "
+                         "UTCI's reference activity is ~1.1 m/s; 1.3 better matches "
+                         "a healthy adult crossing campus. Faster pace also raises "
+                         "metabolic heat in JOS-3, which is realistic.")
+    p.add_argument("--departure-hour", type=float, default=13.0,
+                    help="Hour of day (0-24) the walk begins (default: 13.0, "
+                         "solar-afternoon heat. Use 8.0 for a morning walk).")
     p.add_argument("--route-sample-spacing-m", type=float, default=1.0,
                     help="Spatial resampling interval along each route, meters (default: 1.0)")
     p.add_argument("--equilibration-min", type=float, default=10.0,
@@ -138,16 +142,25 @@ def parse_args():
                     help="Physical activity ratio (metabolic rate / basal rate) for "
                          "walking pace -- JOS-3 default for sitting quietly is 1.2; "
                          "walking ~4-5 km/h is typically 2.5-3.3 per ISO 8996 (default: 2.5)")
-    p.add_argument("--person-height-m", type=float, default=1.72)
-    p.add_argument("--person-weight-kg", type=float, default=74.0)
-    p.add_argument("--person-age", type=int, default=30)
-    p.add_argument("--person-sex", default="male", choices=["male", "female"])
+    p.add_argument("--subject-profile", default=None,
+                    choices=sorted(PROFILES.keys()),
+                    help="Literature-backed virtual subject preset "
+                         "(healthy_adult, child, elderly_male, "
+                         "elderly_female, obese_adult, acclimatized_adult, "
+                         "...). Sets age/sex/height/weight/fat, cardiac "
+                         "index, and (for acclimatized) a core-setpoint "
+                         "shift, all cited in subject_profiles.py. When "
+                         "given, it overrides the --person-* values below "
+                         "unless you also pass those explicitly. See the "
+                         "profile's printed caveat: for elderly/ill the "
+                         "model captures only body geometry + perfusion, "
+                         "which under-states real risk.")
+    p.add_argument("--person-height-m", type=float, default=None)
+    p.add_argument("--person-weight-kg", type=float, default=None)
+    p.add_argument("--person-age", type=int, default=None)
+    p.add_argument("--person-sex", default=None, choices=["male", "female"])
 
-    p.add_argument("--air-temp-mean-c", type=float, default=29.0)
-    p.add_argument("--air-temp-amp-c", type=float, default=4.0)
-    p.add_argument("--air-temp-peak-hour", type=float, default=15.0)
-    p.add_argument("--relative-humidity-pct", type=float, default=70.0)
-    p.add_argument("--wind-speed-ms", type=float, default=3.1)
+    add_weather_args(p)
     return p.parse_args()
 
 
@@ -155,6 +168,36 @@ def main():
     args = parse_args()
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    weather = provider_from_args(args)
+    print(f"Weather source: {weather.describe()}")
+
+    # ---- Resolve the virtual subject -------------------------------------
+    # Precedence: an explicit --person-* flag always wins; otherwise the
+    # --subject-profile preset supplies the value; otherwise the healthy
+    # default. This lets you pick a preset and still tweak one field.
+    if args.subject_profile:
+        prof = get_profile(args.subject_profile)
+        print(f"\nSubject profile: {prof.label}")
+        print(f"  rationale: {prof.rationale}")
+        if prof.caveat:
+            print(f"  CAVEAT: {prof.caveat}")
+    else:
+        prof = None
+    subj_height = (args.person_height_m if args.person_height_m is not None
+                   else (prof.height if prof else 1.72))
+    subj_weight = (args.person_weight_kg if args.person_weight_kg is not None
+                   else (prof.weight if prof else 74.0))
+    subj_age = (args.person_age if args.person_age is not None
+                else (prof.age if prof else 30))
+    subj_sex = (args.person_sex if args.person_sex is not None
+                else (prof.sex if prof else "male"))
+    subj_fat = prof.fat if prof else 15.0
+    subj_ci = prof.ci if prof else 2.59       # JOS-3 default cardiac index
+    subj_setpoint_shift = prof.setpoint_shift_c if prof else 0.0
+    print(f"  body: age {subj_age}, {subj_sex}, {subj_height} m, "
+          f"{subj_weight} kg, fat {subj_fat}%, cardiac index {subj_ci} "
+          f"L/min/m^2, setpoint shift {subj_setpoint_shift:+.2f} C")
 
     print("Loading routable network...")
     G_multi = ox.load_graphml(args.graphml)
@@ -208,8 +251,10 @@ def main():
 
         _, nearest_idx = mrt_tree.query(xy)
 
-        model = JOS3(height=args.person_height_m, weight=args.person_weight_kg,
-                     age=args.person_age, sex=args.person_sex)
+        model = JOS3(height=subj_height, weight=subj_weight,
+                     age=subj_age, sex=subj_sex, fat=subj_fat, ci=subj_ci)
+        if subj_setpoint_shift:
+            model.cr_set_point = model.cr_set_point + subj_setpoint_shift
         model.par = args.activity_par
         # surface-area weights for a single scalar "whole-body mean core temp"
         # summary metric from the 17 segment values
@@ -225,10 +270,9 @@ def main():
         # state creating a startup transient in the results.
         h0 = args.departure_hour % 24.0
         tmrt0 = np.interp(h0, time_hours, tmrt_matrix[:, nearest_idx[0]], period=24.0)
-        ta0 = air_temperature_c(h0, args.air_temp_mean_c, args.air_temp_amp_c,
-                                 args.air_temp_peak_hour)
+        ta0 = weather.air_temp_c(h0)
         model.tdb, model.tr = ta0, tmrt0
-        model.rh, model.v = args.relative_humidity_pct, args.wind_speed_ms
+        model.rh, model.v = weather.rh_pct(h0), weather.wind_ms(h0)
         if args.equilibration_min > 0:
             model.simulate(times=int(args.equilibration_min), dtime=60, output=False)
         start_core_c = weighted_core_c(model)
@@ -241,12 +285,11 @@ def main():
             h = arrival_hour[j] % 24.0
             tmrt_series = tmrt_matrix[:, nearest_idx[j]]
             tmrt_now = np.interp(h, time_hours, tmrt_series, period=24.0)
-            ta_now = air_temperature_c(h, args.air_temp_mean_c, args.air_temp_amp_c,
-                                        args.air_temp_peak_hour)
+            ta_now = weather.air_temp_c(h)
             dt_s = (arrival_hour[j] - arrival_hour[j - 1]) * 3600.0 if j > 0 else 0.0
 
             model.tdb, model.tr = ta_now, tmrt_now
-            model.rh, model.v = args.relative_humidity_pct, args.wind_speed_ms
+            model.rh, model.v = weather.rh_pct(h), weather.wind_ms(h)
             if dt_s > 0:
                 model.simulate(times=1, dtime=dt_s, output=False)
 

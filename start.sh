@@ -1,125 +1,216 @@
 #!/usr/bin/env bash
 #
-# start.sh -- run the whole route_utci pipeline in the correct order,
-# EXCEPT the STL geometry build (LiDAR -> buildings/vegetation/ground).
-# Those .stl files are assumed to already exist (produced by main.py /
-# start_LAZ_to_stl.sh); this script consumes them.
+# start.sh -- run the route_utci pipeline, optionally starting from any step.
 #
-# Stage order:
-#   OSM   extract pedestrian network            -> pedestrian_network.graphml + path_polylines.pkl
-#   05    MRT ray tracing (LEGACY surround)     -> mrt_out/          (path_xyz, times.csv, svf ...)
-#   05a   select route-visible thermal facets   -> thermal_out/      (facets + LW view matrix)
-#   05b   1D facet surface-energy balance        -> thermal_out/      (facet_T_matrix_K.npy ...)
-#   05★   MRT ray tracing (FACET surface temps) -> mrt_facet_out/    (improved longwave)
-#   06    visualize MRT network
-#   07    visualize UTCI network
-#   08    route thermal stress (UTCI-based)
-#   09    route thermal stress (JOS-3)
+# ============================================================================
+#  START FROM ANY STEP:   ./start.sh <N>       (default N = 2)
+# ============================================================================
+#  N  STEP                              PRODUCES
+#  1  Geometry build (LAZ -> STL)       building/vegetation/ground_final.stl
+#  2  OSM pedestrian network            pedestrian_network.graphml, polylines
+#  3  MRT ray tracing + SVF (stage 05)  path_xyz.npy, times.csv, svf_*.npy
+#  4  Facet selection (stage 05a)       facets.npz, LW view matrix
+#  5  Facet energy balance (stage 05b)  facet_T_matrix_K.npy (surface temps)
+#  6  Facet-thermal MRT (stage 05*)     improved tmrt_matrix_C.npy
+#  7  Visualizations (stages 06, 07)    MRT + UTCI maps / animations
+#  8  Route thermal stress (08, 09)     UTCI exposure + JOS-3 core temp
 #
-# 06-09 are run against the IMPROVED (facet-thermal) MRT results by
-# default. Set VIS_MRT_DIR=mrt_out to visualize the legacy results, or
-# run this script twice with different OUT_ROOT values to compare.
+#  Examples:
+#     ./start.sh          # start at step 2 (OSM) -- assumes STL already built
+#     ./start.sh 1        # full run including the LAZ -> STL geometry build
+#     ./start.sh 3        # re-run everything from MRT onward (geometry+OSM kept)
+#     ./start.sh 7        # only (re)build the visualizations and route stress
+#     ./start.sh 8        # only re-run the route-stress stages (08, 09)
 #
-# Usage:
-#   ./start.sh                 # uses the defaults below
-#   GEOM_DIR=out_full/02_final DATE=2025-07-06 ./start.sh
-#   SKIP_OSM=1 ./start.sh      # reuse an existing OSM network
+#  Starting at step N runs N, N+1, ... to the end. Steps before N are assumed
+#  already done; the script checks their outputs exist and stops with a clear
+#  message if something required is missing. Geometry (step 1) is NOT run
+#  unless you explicitly start at step 1, because it is the slow LAZ pipeline.
 #
-# Every stage is skippable via SKIP_<STAGE>=1 (OSM/05/05A/05B/05FACET/06/07/08/09)
-# and re-running is safe: completed stages can be skipped individually.
+#  You can still force-skip an individual stage with SKIP_<NAME>=1
+#  (GEOM/OSM/05/05A/05B/05FACET/06/07/08/09), e.g. SKIP_07=1 ./start.sh 7.
+# ============================================================================
 
 set -euo pipefail
 cd "$(dirname "$0")"
 
-# ----------------------------------------------------------------------
-# Configuration (override any of these from the environment)
-# ----------------------------------------------------------------------
-PY="${PY:-python3}"
+START_STEP="${1:-2}"
+case "$START_STEP" in 1|2|3|4|5|6|7|8) ;; *)
+    echo "ERROR: step must be 1-8 (got '$START_STEP'). See the table in this file." >&2
+    exit 1 ;; esac
 
-# Where the already-built STL geometry lives, and the canonical filenames
+# ############################################################################
+# #  CRITICAL INPUTS  --  the settings you are most likely to change.        #
+# #  Every value can also be overridden from the environment, e.g.           #
+# #     DATE=2025-08-01 DEPARTURE_HOUR=15.0 ./start.sh 3                      #
+# ############################################################################
+
+# ---- WHEN: day of the solar run and time of the walk -----------------------
+DATE="${DATE:-2025-07-06}"            # day of year for solar ray tracing
+                                      #   (July 6 = peak Miami summer sun)
+DEPARTURE_HOUR="${DEPARTURE_HOUR:-13.0}"    # hour the walk BEGINS (0-24);
+                                      #   13.0 = solar-afternoon heat, 8.0 = AM
+WALKING_SPEED_MS="${WALKING_SPEED_MS:-1.3}" # walking pace, m/s
+                                      #   1.3 ~= 4.7 km/h, average adult
+# JOS-3 virtual subject for stage 09 (stage 8). Presets (cited in
+# subject_profiles.py): healthy_adult, healthy_adult_female, child,
+# elderly_male, elderly_female, obese_adult, acclimatized_adult.
+# Empty = JOS-3 default healthy adult.
+SUBJECT_PROFILE="${SUBJECT_PROFILE:-}"
+
+# ---- WHERE: site location (used for sun position) --------------------------
+LAT="${LAT:-25.7560}"                 # latitude  (FIU MMC campus, Miami)
+LON="${LON:--80.3770}"                # longitude
+TZ="${TZ:-America/New_York}"          # timezone
+
+# ---- ROUTE ENDPOINTS + GEOREFERENCING (stage 08) ---------------------------
+# Origin shift applied when the OSM network was built (must match
+# extract_osm_pedestrian_network.py) so exported routes get TRUE lat/lon.
+LOCAL_ORIGIN_X="${LOCAL_ORIGIN_X:-0.0}"
+LOCAL_ORIGIN_Y="${LOCAL_ORIGIN_Y:-0.0}"
+PROJECT_CRS="${PROJECT_CRS:-EPSG:6346}"   # NAD83(2011) UTM 17N (Miami)
+# Optional explicit start/end as "lat lon" (leave empty = auto bbox corners).
+# e.g. START_LATLON="25.7585 -80.3760"  END_LATLON="25.7532 -80.3735"
+START_LATLON="${START_LATLON:-}"
+END_LATLON="${END_LATLON:-}"
+N_ROUTES="${N_ROUTES:-3}"             # number of edge-disjoint routes to compare
+
+# ---- WEATHER: real time series (preferred) or parametric fallback ----------
+# If a weather CSV exists it is used for stages 08/09 (columns: hour|time,
+# air_temp_C, rh_pct, wind_ms; missing columns fall back to the constants
+# below). Point WEATHER_CSV at weather_miami_july06.csv to match the July 6
+# solar run exactly.
+WEATHER_CSV="${WEATHER_CSV:-$PWD/run_output/weather.csv}"
+RH_PCT="${RH_PCT:-70}"                # constant RH if no CSV / no rh column
+WIND_MS="${WIND_MS:-3.1}"             # constant wind if no CSV / no wind col
+CLOUD="${CLOUD:-0.0}"                 # cloud-cover fraction for the solar run
+                                      #   (0 = clear sky; keep 05 and 05b equal)
+
+# ---- GEOMETRY: pre-built STL inputs (NOT regenerated unless step 1) --------
 GEOM_DIR="${GEOM_DIR:-out_full/02_final}"
 BUILDINGS_STL="${BUILDINGS_STL:-$GEOM_DIR/building_final.stl}"
 VEGETATION_STL="${VEGETATION_STL:-$GEOM_DIR/vegetation_final.stl}"
 GROUND_STL="${GROUND_STL:-$GEOM_DIR/ground_and_water_final.stl}"
+# Only used when starting at step 1 (the LAZ -> STL build):
+INPUT_LAZ="${INPUT_LAZ:-}"            # path to the input .laz (required for step 1)
+GEOM_OUTPUT_DIR="${GEOM_OUTPUT_DIR:-./out_full}"
+
+# ############################################################################
+# #  SECONDARY SETTINGS  --  sensible defaults; change only if you know why. #
+# ############################################################################
+PY="${PY:-python3}"
 
 # Output directories
 OUT_ROOT="${OUT_ROOT:-run_output}"
 OSM_DIR="${OSM_DIR:-$OUT_ROOT/osm_paths}"
-MRT_DIR="${MRT_DIR:-$OUT_ROOT/mrt_out}"           # legacy-surround MRT
-THERMAL_DIR="${THERMAL_DIR:-$OUT_ROOT/thermal_out}"   # 05a + 05b outputs
-MRT_FACET_DIR="${MRT_FACET_DIR:-$OUT_ROOT/mrt_facet_out}"  # facet-thermal MRT
+MRT_DIR="${MRT_DIR:-$OUT_ROOT/mrt_out}"                   # legacy-surround MRT
+THERMAL_DIR="${THERMAL_DIR:-$OUT_ROOT/thermal_out}"       # 05a + 05b outputs
+MRT_FACET_DIR="${MRT_FACET_DIR:-$OUT_ROOT/mrt_facet_out}" # facet-thermal MRT
 VIS_DIR="${VIS_DIR:-$OUT_ROOT/viz}"
 
-# The MRT results the visualizations/route-stress stages consume.
-# Default: the IMPROVED facet-thermal results.
+# Which MRT results the visualization / route stages consume
+# (default: the IMPROVED facet-thermal results; set to $MRT_DIR for legacy)
 VIS_MRT_DIR="${VIS_MRT_DIR:-$MRT_FACET_DIR}"
 GRAPHML="${GRAPHML:-$OSM_DIR/pedestrian_network.graphml}"
 POLYLINES="${POLYLINES:-$OSM_DIR/path_polylines.pkl}"
 
-# Shared physical / sampling parameters. Values used in radiation MUST be
-# consistent between 05, 05a, 05b (the scripts also hard-check counts).
-DATE="${DATE:-2025-07-06}"
-LAT="${LAT:-25.7560}"
-LON="${LON:--80.3770}"
-TZ="${TZ:-America/New_York}"
+# Radiation / sampling parameters -- MUST stay consistent across 05, 05a, 05b
 DT_MIN="${DT_MIN:-10}"
 DS_PATH="${DS_PATH:-0.25}"
-CLOUD="${CLOUD:-0.0}"
 K_LAD_DIRECT="${K_LAD_DIRECT:-0.45}"
 K_LAD_DIFFUSE="${K_LAD_DIFFUSE:-0.30}"
 
-# 05a / 05b specific
+# Facet pipeline (05a / 05b)
 POINT_STRIDE="${POINT_STRIDE:-8}"
 MAX_DISTANCE="${MAX_DISTANCE:-300}"
 SPINUP_DAYS="${SPINUP_DAYS:-2}"
-WIND_SPEED="${WIND_SPEED:-1.5}"
+WIND_SPEED="${WIND_SPEED:-1.5}"       # near-surface wind for 05b convection
 
-# Downstream microclimate assumptions for 07/08/09
-RH_PCT="${RH_PCT:-70}"
-WIND_MS="${WIND_MS:-3.1}"
-
-# ----------------------------------------------------------------------
+# ----------------------------------------------------------------------------
 # Helpers
-# ----------------------------------------------------------------------
+# ----------------------------------------------------------------------------
 log()  { printf '\n\033[1;36m==== %s ====\033[0m\n' "$*"; }
 skip() { local v="SKIP_$1"; [ "${!v:-0}" = "1" ]; }
+active() { [ "$START_STEP" -le "$1" ]; }   # true if step N is at/after start
 
 require_file() {
     if [ ! -f "$1" ]; then
         echo "ERROR: required input not found: $1" >&2
-        echo "       (set the matching path variable or build the STL first)" >&2
+        echo "       Step $START_STEP assumes earlier steps already ran." >&2
+        echo "       Re-run from an earlier step (e.g. ./start.sh ${2:-1}) or set the path." >&2
         exit 1
     fi
 }
 
-log "Checking pre-built STL geometry (NOT regenerated)"
-require_file "$BUILDINGS_STL"
-require_file "$VEGETATION_STL"
-require_file "$GROUND_STL"
-echo "  buildings : $BUILDINGS_STL"
-echo "  vegetation: $VEGETATION_STL"
-echo "  ground    : $GROUND_STL"
+# Assemble the optional weather argument once
+if [ -f "$WEATHER_CSV" ]; then
+    WEATHER_ARG=(--weather-csv "$WEATHER_CSV")
+    WEATHER_NOTE="real series: $WEATHER_CSV"
+else
+    WEATHER_ARG=()
+    WEATHER_NOTE="parametric (RH ${RH_PCT}%, wind ${WIND_MS} m/s constant)"
+fi
+
+log "route_utci pipeline -- starting at step $START_STEP"
+cat <<EOF
+  Date (solar)     : $DATE
+  Departure hour   : $DEPARTURE_HOUR:00
+  Walking speed    : $WALKING_SPEED_MS m/s
+  Location         : lat $LAT, lon $LON ($TZ)
+  Weather          : $WEATHER_NOTE
+  Geometry (STL)   : $GEOM_DIR
+  Output root      : $OUT_ROOT
+EOF
 mkdir -p "$OUT_ROOT"
 
-# ----------------------------------------------------------------------
-# OSM pedestrian network
-# ----------------------------------------------------------------------
-if skip OSM || { [ -f "$GRAPHML" ] && [ -f "$POLYLINES" ] && [ "${FORCE_OSM:-0}" != 1 ]; }; then
-    log "OSM network -- skipped (exists or SKIP_OSM=1)"
-else
-    log "Extracting OSM pedestrian network"
-    "$PY" extract_osm_pedestrian_network.py --output-dir "$OSM_DIR"
+# ----------------------------------------------------------------------------
+# STEP 1 -- Geometry build (LAZ -> STL).  Slow; only if explicitly started
+# here. Runs main.py in the foreground so the pipeline continues after it.
+# ----------------------------------------------------------------------------
+if active 1 && ! skip GEOM; then
+    log "STEP 1  Geometry build (LAZ -> STL)"
+    if [ -z "$INPUT_LAZ" ]; then
+        echo "ERROR: starting at step 1 requires INPUT_LAZ=/path/to/file.laz" >&2
+        echo "       e.g.  INPUT_LAZ=/data/site.laz ./start.sh 1" >&2
+        exit 1
+    fi
+    require_file "$INPUT_LAZ" 1
+    "$PY" -u main.py --input "$INPUT_LAZ" --output-dir "$GEOM_OUTPUT_DIR"
+elif active 1; then
+    log "STEP 1  Geometry build -- SKIP_GEOM=1, skipped"
 fi
-require_file "$POLYLINES"
 
-# ----------------------------------------------------------------------
-# 05  MRT ray tracing -- LEGACY surround (also produces path_xyz + times.csv
-#     that 05a/05b depend on)
-# ----------------------------------------------------------------------
-if skip 05; then
-    log "05 legacy MRT -- skipped"
-else
-    log "05  MRT ray tracing (legacy surround)"
+# From here on the STL geometry must exist (built above or pre-existing).
+if active 2; then
+    log "Checking pre-built STL geometry"
+    require_file "$BUILDINGS_STL" 1
+    require_file "$VEGETATION_STL" 1
+    require_file "$GROUND_STL" 1
+    echo "  buildings : $BUILDINGS_STL"
+    echo "  vegetation: $VEGETATION_STL"
+    echo "  ground    : $GROUND_STL"
+fi
+
+# ----------------------------------------------------------------------------
+# STEP 2 -- OSM pedestrian network
+# ----------------------------------------------------------------------------
+if active 2 && ! skip OSM; then
+    if [ -f "$GRAPHML" ] && [ -f "$POLYLINES" ] && [ "${FORCE_OSM:-0}" != 1 ]; then
+        log "STEP 2  OSM network -- already present, skipped (FORCE_OSM=1 to rebuild)"
+    else
+        log "STEP 2  Extracting OSM pedestrian network"
+        "$PY" extract_osm_pedestrian_network.py --output-dir "$OSM_DIR"
+    fi
+fi
+if active 3; then require_file "$POLYLINES" 2; fi
+
+# ----------------------------------------------------------------------------
+# STEP 3 -- MRT ray tracing + SVF (stage 05, legacy surround).
+# Produces path_xyz + times.csv that 05a/05b depend on. SVF is computed ONCE
+# here (it is geometry-only) and reused across all timesteps internally.
+# ----------------------------------------------------------------------------
+if active 3 && ! skip 05; then
+    log "STEP 3  MRT ray tracing + SVF (stage 05)"
     "$PY" 05_mrt_network_raytrace.py \
         --buildings-stl "$BUILDINGS_STL" \
         --vegetation-stl "$VEGETATION_STL" \
@@ -131,16 +222,16 @@ else
         --cloud-cover-fraction "$CLOUD" \
         --k-lad-direct "$K_LAD_DIRECT" --k-lad-diffuse "$K_LAD_DIFFUSE"
 fi
-require_file "$MRT_DIR/path_xyz.npy"
-require_file "$MRT_DIR/times.csv"
+if active 4; then
+    require_file "$MRT_DIR/path_xyz.npy" 3
+    require_file "$MRT_DIR/times.csv" 3
+fi
 
-# ----------------------------------------------------------------------
-# 05a  Select route-visible thermal facets + LW view matrix
-# ----------------------------------------------------------------------
-if skip 05A; then
-    log "05a facet selection -- skipped"
-else
-    log "05a  Selecting route-visible thermal facets"
+# ----------------------------------------------------------------------------
+# STEP 4 -- Facet selection + LW view matrix (stage 05a)
+# ----------------------------------------------------------------------------
+if active 4 && ! skip 05A; then
+    log "STEP 4  Selecting route-visible thermal facets (stage 05a)"
     "$PY" 05a_thermal_facets_select.py \
         --buildings-stl "$BUILDINGS_STL" \
         --vegetation-stl "$VEGETATION_STL" \
@@ -149,15 +240,14 @@ else
         --output-dir "$THERMAL_DIR" \
         --point-stride "$POINT_STRIDE" --max-distance "$MAX_DISTANCE"
 fi
-require_file "$THERMAL_DIR/facets.npz"
+if active 5; then require_file "$THERMAL_DIR/facets.npz" 4; fi
 
-# ----------------------------------------------------------------------
-# 05b  1D facet surface-energy balance (same weather via times.csv)
-# ----------------------------------------------------------------------
-if skip 05B; then
-    log "05b energy balance -- skipped"
-else
-    log "05b  Facet 1D surface-energy balance"
+# ----------------------------------------------------------------------------
+# STEP 5 -- Facet 1D surface-energy balance (stage 05b).
+# Same weather as stage 05 (reads times.csv); keep CLOUD equal to step 3.
+# ----------------------------------------------------------------------------
+if active 5 && ! skip 05B; then
+    log "STEP 5  Facet 1D surface-energy balance (stage 05b)"
     "$PY" 05b_facet_energy_balance.py \
         --buildings-stl "$BUILDINGS_STL" \
         --vegetation-stl "$VEGETATION_STL" \
@@ -169,15 +259,13 @@ else
         --cloud-cover-fraction "$CLOUD" \
         --k-lad-direct "$K_LAD_DIRECT" --k-lad-diffuse "$K_LAD_DIFFUSE"
 fi
-require_file "$THERMAL_DIR/facet_T_matrix_K.npy"
+if active 6; then require_file "$THERMAL_DIR/facet_T_matrix_K.npy" 5; fi
 
-# ----------------------------------------------------------------------
-# 05★  MRT ray tracing again, now consuming the facet surface temperatures
-# ----------------------------------------------------------------------
-if skip 05FACET; then
-    log "05 facet-thermal MRT -- skipped"
-else
-    log "05  MRT ray tracing (facet surface temperatures)"
+# ----------------------------------------------------------------------------
+# STEP 6 -- MRT ray tracing again, consuming facet surface temperatures
+# ----------------------------------------------------------------------------
+if active 6 && ! skip 05FACET; then
+    log "STEP 6  Facet-thermal MRT ray tracing (stage 05*)"
     "$PY" 05_mrt_network_raytrace.py \
         --buildings-stl "$BUILDINGS_STL" \
         --vegetation-stl "$VEGETATION_STL" \
@@ -190,32 +278,25 @@ else
         --k-lad-direct "$K_LAD_DIRECT" --k-lad-diffuse "$K_LAD_DIFFUSE" \
         --facet-thermal-dir "$THERMAL_DIR"
 fi
-require_file "$VIS_MRT_DIR/tmrt_matrix_C.npy"
+if active 7; then
+    require_file "$VIS_MRT_DIR/tmrt_matrix_C.npy" 6
+    echo
+    echo "Visualization / route-stress stages consume: $VIS_MRT_DIR"
+    echo "(set VIS_MRT_DIR=$MRT_DIR to use the legacy-surround results instead)"
+fi
 
-echo
-echo "Visualization / route-stress stages consume: $VIS_MRT_DIR"
-echo "(set VIS_MRT_DIR=$MRT_DIR to use the legacy-surround results instead)"
-
-# ----------------------------------------------------------------------
-# 06  Visualize MRT network
-# ----------------------------------------------------------------------
-if skip 06; then
-    log "06 MRT visualization -- skipped"
-else
-    log "06  Visualizing MRT network"
+# ----------------------------------------------------------------------------
+# STEP 7 -- Visualizations (stages 06 MRT, 07 UTCI)
+# ----------------------------------------------------------------------------
+if active 7 && ! skip 06; then
+    log "STEP 7  Visualizing MRT network (stage 06)"
     "$PY" 06_visualize_mrt_network.py \
         --results-dir "$VIS_MRT_DIR" \
         --buildings-stl "$BUILDINGS_STL" \
         --output-dir "$VIS_DIR/mrt"
 fi
-
-# ----------------------------------------------------------------------
-# 07  Visualize UTCI network
-# ----------------------------------------------------------------------
-if skip 07; then
-    log "07 UTCI visualization -- skipped"
-else
-    log "07  Visualizing UTCI network"
+if active 7 && ! skip 07; then
+    log "STEP 7  Visualizing UTCI network (stage 07)"
     "$PY" 07_visualize_utci_network.py \
         --results-dir "$VIS_MRT_DIR" \
         --buildings-stl "$BUILDINGS_STL" \
@@ -223,37 +304,43 @@ else
         --relative-humidity-pct "$RH_PCT" --wind-speed-ms "$WIND_MS"
 fi
 
-# ----------------------------------------------------------------------
-# 08  Route thermal stress (UTCI-based)
-# ----------------------------------------------------------------------
-if skip 08; then
-    log "08 route thermal stress (UTCI) -- skipped"
-else
-    log "08  Route thermal stress (UTCI)"
+# ----------------------------------------------------------------------------
+# STEP 8 -- Route thermal stress (08 UTCI exposure, 09 JOS-3 core temp)
+# ----------------------------------------------------------------------------
+if active 8 && ! skip 08; then
+    log "STEP 8  Route thermal stress -- UTCI exposure (stage 08)"
+    ENDPOINT_ARG=()
+    [ -n "$START_LATLON" ] && ENDPOINT_ARG+=(--start-latlon $START_LATLON)
+    [ -n "$END_LATLON" ]   && ENDPOINT_ARG+=(--end-latlon $END_LATLON)
     "$PY" 08_route_thermal_stress.py \
         --graphml "$GRAPHML" \
         --mrt-results-dir "$VIS_MRT_DIR" \
         --buildings-stl "$BUILDINGS_STL" \
         --output-dir "$VIS_DIR/route_utci" \
-        --relative-humidity-pct "$RH_PCT" --wind-speed-ms "$WIND_MS"
+        --n-routes "$N_ROUTES" \
+        --departure-hour "$DEPARTURE_HOUR" \
+        --walking-speed-ms "$WALKING_SPEED_MS" \
+        --relative-humidity-pct "$RH_PCT" --wind-speed-ms "$WIND_MS" \
+        --local-origin-x "$LOCAL_ORIGIN_X" --local-origin-y "$LOCAL_ORIGIN_Y" \
+        --project-crs "$PROJECT_CRS" \
+        "${ENDPOINT_ARG[@]}" "${WEATHER_ARG[@]}"
 fi
-
-# ----------------------------------------------------------------------
-# 09  Route thermal stress (JOS-3)
-# ----------------------------------------------------------------------
-if skip 09; then
-    log "09 route thermal stress (JOS-3) -- skipped"
-else
-    log "09  Route thermal stress (JOS-3)"
+if active 8 && ! skip 09; then
+    log "STEP 8  Route thermal stress -- JOS-3 core temperature (stage 09)"
+    SUBJECT_ARG=()
+    [ -n "$SUBJECT_PROFILE" ] && SUBJECT_ARG=(--subject-profile "$SUBJECT_PROFILE")
     "$PY" 09_route_thermal_stress_jos3.py \
         --graphml "$GRAPHML" \
         --mrt-results-dir "$VIS_MRT_DIR" \
         --buildings-stl "$BUILDINGS_STL" \
         --output-dir "$VIS_DIR/route_jos3" \
-        --relative-humidity-pct "$RH_PCT" --wind-speed-ms "$WIND_MS"
+        --departure-hour "$DEPARTURE_HOUR" \
+        --walking-speed-ms "$WALKING_SPEED_MS" \
+        --relative-humidity-pct "$RH_PCT" --wind-speed-ms "$WIND_MS" \
+        "${SUBJECT_ARG[@]}" "${WEATHER_ARG[@]}"
 fi
 
-log "Pipeline complete"
+log "Pipeline complete (started at step $START_STEP)"
 echo "  MRT (legacy)     : $MRT_DIR"
 echo "  Facets + temps   : $THERMAL_DIR"
 echo "  MRT (facet therm): $MRT_FACET_DIR"
