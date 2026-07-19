@@ -33,7 +33,7 @@ our pipeline uses route_id / cumdist_m / tmrt_c / utci_c -- both handled.
       --ours    "run_output/viz/route_utci/routes_points.csv" \
       --output-dir compare_out
 
-If --output-dir is omitted the plot is shown interactively instead of saved.
+If --output-dir is omitted, outputs are saved automatically in compare_out.
 --------------------------------------------------------------------------
 """
 
@@ -154,8 +154,9 @@ def main():
                     help="SOLWEIG per-point CSV(s) or glob (default: the 3 "
                          "route_*_point_results.csv in the SOLWEIG "
                          "route_results_solweig folder)")
-    ap.add_argument("--output-dir", default=None,
-                    help="If given, save plots+CSVs here; else show plot")
+    ap.add_argument("--output-dir", default="compare_out",
+                    help="Directory for plots and CSV outputs "
+                         "(default: compare_out)")
     ap.add_argument("--grid-spacing-m", type=float, default=2.0)
     args = ap.parse_args()
 
