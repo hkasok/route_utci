@@ -1,6 +1,6 @@
 """
 compare_mrt_solweig.py -- STANDALONE comparison of per-route MRT (and UTCI)
-between this pipeline's route output and a SOLWEIG route output.
+between this pipeline's route output and a SOLWEIG route output..
 
 This is a separate utility: it does NOT import or modify the route_utci
 pipeline. Point it at the two sets of per-point CSVs and it prints agreement
