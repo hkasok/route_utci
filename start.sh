@@ -144,11 +144,10 @@ require_file() {
 
 # Assemble the optional weather argument once
 if [ -f "$WEATHER_CSV" ]; then
-    WEATHER_ARG=(--weather-csv "$WEATHER_CSV")
+    WEATHER_ARG=(--weather-csv "$WEATHER_CSV" --require-weather-csv)
     WEATHER_NOTE="real series: $WEATHER_CSV"
 else
-    WEATHER_ARG=()
-    WEATHER_NOTE="parametric (RH ${RH_PCT}%, wind ${WIND_MS} m/s constant)"
+    echo "FATAL: weather CSV not found: $WEATHER_CSV" >&2; exit 1
 fi
 
 log "route_utci pipeline -- starting at step $START_STEP"
