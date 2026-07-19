@@ -80,7 +80,7 @@ N_ROUTES="${N_ROUTES:-3}"             # number of edge-disjoint routes to compar
 # air_temp_C, rh_pct, wind_ms; missing columns fall back to the constants
 # below). Point WEATHER_CSV at weather_miami_july06.csv to match the July 6
 # solar run exactly.
-WEATHER_CSV="${WEATHER_CSV:-$PWD/run_output/weather.csv}"
+WEATHER_CSV="${WEATHER_CSV:-$PWD/weather.csv}"
 RH_PCT="${RH_PCT:-70}"                # constant RH if no CSV / no rh column
 WIND_MS="${WIND_MS:-3.1}"             # constant wind if no CSV / no wind col
 CLOUD="${CLOUD:-0.0}"                 # cloud-cover fraction for the solar run
