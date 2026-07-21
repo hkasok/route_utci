@@ -12,9 +12,113 @@ verification for each lives in verify_thermal_pipeline.py:
   nearest_hit_multi           -> checked on a synthetic scene (known hits)
 """
 
+import json
+
 import numpy as np
 
 SIGMA = 5.670374419e-8  # Stefan-Boltzmann, W m^-2 K^-4
+
+# ---------------------------------------------------------------------------
+# SINGLE SOURCE OF TRUTH FOR SURFACE RADIATIVE PROPERTIES
+#
+# These values are consumed by BOTH sides of the radiation calculation:
+#
+#   05b_facet_energy_balance.py  -- how much shortwave a ground facet ABSORBS
+#                                   (drives its surface temperature)
+#   05_mrt_network_raytrace.py   -- how much shortwave the ground REFLECTS
+#                                   onto the pedestrian
+#
+# Before this was centralised the two disagreed: the ground reflected 20% of
+# incident shortwave toward a pedestrian while absorbing as though it
+# reflected only 12%. That is not a tuning difference, it is a violation of
+# energy conservation for the same physical surface, and it biased ground
+# facets warm while simultaneously overstating reflected load on the person.
+# Change the value HERE and both stages follow.
+#
+# GROUND_ALBEDO reference points:
+#   0.12  previous 05b value -- darker than any standard urban class
+#   0.16  grass / unmanaged vegetation
+#   0.18  dark asphalt   <-- default; matches the SOLWEIG land-cover class
+#   0.20  cobble stone / concrete, previous 05 pedestrian-side value
+# ---------------------------------------------------------------------------
+GROUND_ALBEDO = 0.18
+
+DEFAULT_MATERIALS = {
+    "ground": {"k": 1.00, "C": 2.0e6, "depth": 0.50, "n_layers": 8,
+               "albedo": GROUND_ALBEDO, "emissivity": 0.95,
+               "bottom_bc": "fixed"},     # fixed T_deep at depth
+    "wall":   {"k": 1.40, "C": 1.8e6, "depth": 0.25, "n_layers": 6,
+               "albedo": 0.30, "emissivity": 0.90,
+               "bottom_bc": "interior"},  # convective to indoor air
+    "roof":   {"k": 1.00, "C": 1.6e6, "depth": 0.25, "n_layers": 6,
+               "albedo": 0.15, "emissivity": 0.92,
+               "bottom_bc": "interior"},
+}
+
+# Filename written by 05b into its output directory and read back by 05, so
+# the two stages can be checked against each other rather than trusted.
+MATERIALS_MANIFEST = "materials_used.json"
+
+
+def load_materials(material_json=None):
+    """Resolve the material table, applying an optional JSON override.
+
+    Returns a deep-ish copy so callers cannot mutate the module defaults.
+    """
+    materials = {k: dict(v) for k, v in DEFAULT_MATERIALS.items()}
+    if material_json:
+        with open(material_json) as f:
+            overrides = json.load(f)
+        for name, over in overrides.items():
+            if name not in materials:
+                raise KeyError(
+                    f"--material-json references unknown surface class "
+                    f"'{name}'; expected one of {sorted(materials)}")
+            materials[name].update(over)
+    return materials
+
+
+def resolve_ground_albedo(args, facet_thermal_dir=None):
+    """Ground albedo for the pedestrian-side reflected-shortwave term.
+
+    Precedence:
+      1. An explicit --ground-albedo on the command line (wins, but is
+         cross-checked below and warned about if it disagrees).
+      2. The manifest written by 05b, if a facet-thermal directory is given.
+         This is authoritative because it is what actually heated the ground.
+      3. --material-json, if supplied.
+      4. The module default, GROUND_ALBEDO.
+    """
+    from pathlib import Path
+
+    explicit = getattr(args, "ground_albedo", None)
+    source = "module default"
+    albedo = GROUND_ALBEDO
+
+    if getattr(args, "material_json", None):
+        albedo = load_materials(args.material_json)["ground"]["albedo"]
+        source = f"--material-json ({args.material_json})"
+
+    manifest_albedo = None
+    if facet_thermal_dir:
+        manifest = Path(facet_thermal_dir) / MATERIALS_MANIFEST
+        if manifest.is_file():
+            with open(manifest) as f:
+                manifest_albedo = json.load(f)["ground"]["albedo"]
+            albedo = manifest_albedo
+            source = f"05b manifest ({manifest})"
+
+    if explicit is not None:
+        if manifest_albedo is not None and abs(explicit - manifest_albedo) > 1e-9:
+            print(f"  WARNING: --ground-albedo {explicit:.3f} disagrees with "
+                  f"the {manifest_albedo:.3f} that 05b actually used to heat "
+                  f"the ground facets. The reflected-shortwave term and the "
+                  f"ground energy balance will not conserve energy. Drop "
+                  f"--ground-albedo to inherit the consistent value.")
+        albedo = explicit
+        source = "--ground-albedo (explicit)"
+
+    return float(albedo), source
 
 # Facet class codes (kept as small ints so they can live in compact arrays)
 CLASS_GROUND = 0
