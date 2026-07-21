@@ -48,6 +48,8 @@ import pandas as pd
 import pvlib
 import trimesh
 
+from thermal_common import resolve_ground_albedo
+
 
 def parse_args():
     p = argparse.ArgumentParser(description="24h MRT ray tracing over the full pedestrian network")
@@ -94,7 +96,18 @@ def parse_args():
     p.add_argument("--f-projected-direct", type=float, default=0.25)
     p.add_argument("--f-sky-diffuse", type=float, default=0.50)
     p.add_argument("--f-ground-reflected", type=float, default=0.50)
-    p.add_argument("--ground-albedo", type=float, default=0.20)
+    p.add_argument("--ground-albedo", type=float, default=None,
+                    help="Ground albedo for the pedestrian's reflected-shortwave "
+                         "term. LEAVE UNSET to inherit the value that 05b "
+                         "actually used to heat the ground (read from the "
+                         "materials manifest in --facet-thermal-dir), falling "
+                         "back to --material-json and then to "
+                         "thermal_common.GROUND_ALBEDO. Setting it explicitly "
+                         "can break energy consistency and will warn.")
+    p.add_argument("--material-json", default=None,
+                    help="Same override file passed to 05b; used only to "
+                         "resolve the ground albedo when no facet-thermal "
+                         "manifest is available.")
     p.add_argument("--reflected-model", choices=["local", "global"], default="local",
                     help="How ground-reflected shortwave is estimated. 'local' (default, "
                          "CORRECT) scales it by the sunlight actually reaching the ground at "
@@ -520,6 +533,17 @@ class FacetLongwave:
 
 def main():
     args = parse_args()
+
+    # ------------------------------------------------------------------
+    # GROUND ALBEDO CONSISTENCY
+    # The albedo used here (how much shortwave the ground reflects ONTO the
+    # pedestrian) must equal the albedo 05b used (how much the ground does
+    # NOT absorb). Resolve it from the 05b manifest when available rather
+    # than carrying an independent default.
+    # ------------------------------------------------------------------
+    args.ground_albedo, _alb_src = resolve_ground_albedo(
+        args, facet_thermal_dir=args.facet_thermal_dir)
+    print(f"Ground albedo: {args.ground_albedo:.3f}  [source: {_alb_src}]")
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
