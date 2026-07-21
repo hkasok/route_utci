@@ -56,24 +56,16 @@ import pandas as pd
 import trimesh
 
 from thermal_common import (CLASS_GROUND, CLASS_NAMES, CLASS_ROOF, CLASS_WALL,
-                            SIGMA, get_intersector,
+                            DEFAULT_MATERIALS, MATERIALS_MANIFEST, SIGMA,
+                            get_intersector, load_materials,
                             make_hemisphere_directions_about_normal,
                             sky_longwave_down, solve_tridiagonal_batched,
                             sun_vector_enu,
                             vegetation_transmission_from_intersections)
 
-# Per-class material / model defaults. Override any entry via --material-json.
-DEFAULT_MATERIALS = {
-    "ground": {"k": 1.00, "C": 2.0e6, "depth": 0.50, "n_layers": 8,
-               "albedo": 0.12, "emissivity": 0.95,
-               "bottom_bc": "fixed"},     # fixed T_deep at depth
-    "wall":   {"k": 1.40, "C": 1.8e6, "depth": 0.25, "n_layers": 6,
-               "albedo": 0.30, "emissivity": 0.90,
-               "bottom_bc": "interior"},  # convective to indoor air
-    "roof":   {"k": 1.00, "C": 1.6e6, "depth": 0.25, "n_layers": 6,
-               "albedo": 0.15, "emissivity": 0.92,
-               "bottom_bc": "interior"},
-}
+# Per-class material / model defaults now live in thermal_common.py so that
+# 05 (pedestrian-side reflected shortwave) and 05b (facet absorption) cannot
+# drift apart. Override any entry via --material-json.
 CLASS_TO_NAME = {CLASS_GROUND: "ground", CLASS_WALL: "wall", CLASS_ROOF: "roof"}
 
 
@@ -100,8 +92,11 @@ def parse_args():
     p.add_argument("--env-emissivity", type=float, default=0.95,
                    help="Emissivity of surrounding surfaces as seen BY a "
                         "facet (for its incoming LW)")
-    p.add_argument("--environment-albedo", type=float, default=0.20,
-                   help="Albedo of surroundings reflecting SW onto facets")
+    p.add_argument("--environment-albedo", type=float, default=None,
+                   help="Albedo of surroundings reflecting SW onto facets. "
+                        "Default: the resolved ground albedo, since at "
+                        "pedestrian level the reflecting surround is "
+                        "predominantly ground.")
     p.add_argument("--cloud-cover-fraction", type=float, default=0.0,
                    help="MUST match the value used in 05 (times.csv stores "
                         "cloud-adjusted DNI/DHI but L_sky needs the fraction)")
@@ -238,11 +233,35 @@ def main():
     out_dir = Path(args.output_dir); out_dir.mkdir(parents=True, exist_ok=True)
     facets_dir = Path(args.facets_dir)
 
-    materials = {k: dict(v) for k, v in DEFAULT_MATERIALS.items()}
-    if args.material_json:
-        with open(args.material_json) as f:
-            for name, over in json.load(f).items():
-                materials[name].update(over)
+    materials = load_materials(args.material_json)
+
+    # The surround reflecting shortwave back onto a facet at street level is
+    # predominantly ground, so default it to the ground albedo rather than an
+    # unrelated hard-coded constant.
+    if args.environment_albedo is None:
+        args.environment_albedo = materials["ground"]["albedo"]
+        env_alb_src = "inherited from ground albedo"
+    else:
+        env_alb_src = "explicit --environment-albedo"
+
+    print("=" * 70)
+    print("Surface radiative properties (single source: thermal_common.py)")
+    for name in ("ground", "wall", "roof"):
+        m = materials[name]
+        print(f"  {name:<7s} albedo {m['albedo']:.3f}   "
+              f"emissivity {m['emissivity']:.3f}")
+    print(f"  environment albedo {args.environment_albedo:.3f} "
+          f"({env_alb_src})")
+
+    # Write the manifest that 05 reads back, so the pedestrian-side reflected
+    # shortwave uses the SAME ground albedo that actually heated the ground.
+    manifest = {name: {"albedo": float(m["albedo"]),
+                       "emissivity": float(m["emissivity"])}
+                for name, m in materials.items()}
+    manifest["_environment_albedo"] = float(args.environment_albedo)
+    with open(out_dir / MATERIALS_MANIFEST, "w") as f:
+        json.dump(manifest, f, indent=2)
+    print(f"  Wrote {out_dir / MATERIALS_MANIFEST}")
 
     print("=" * 70)
     print("Loading facets and forcing...")
