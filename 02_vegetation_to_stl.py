@@ -1,8 +1,12 @@
 """
 02_vegetation_to_stl.py -- cluster vegetation points into individual trees and
-represent each as a convex hull (minimal watertight solid that wraps that
-tree's actual point cloud shape). No trunk, no parametric ellipsoid
-assumption -- just the tightest simple closed shape around each cluster.
+represent each as a robust bounding sphere. LiDAR vegetation returns are
+noisy (stray points, mixed classification, multi-path returns), so instead
+of a convex hull that wraps every point exactly -- including outliers -- we
+fit a sphere centered on the cluster's median position with a radius sized
+to contain a configurable fraction of the points (default 90%), and let the
+rest fall outside. This trades exact crown-shape fidelity for a
+noise-tolerant proxy that's cheap to compute and cheap to raytrace.
 
 Pipeline:
   0. Height-above-ground filter (ground_height_filter.py): drops points too
@@ -27,7 +31,8 @@ Run:
         --output vegetation.stl \
         --ground-npy split/ground_and_water_points.npy \
         --min-height-above-ground 1.5 \
-        --cell-size 0.5 --connect-radius 1 --min-hull-points 10
+        --cell-size 0.5 --connect-radius 1 --min-hull-points 10 \
+        --sphere-contain-fraction 0.9
 """
 
 import argparse
@@ -40,8 +45,23 @@ from tree_crown_segmentation import segment_tree_crowns, should_segment
 from ground_height_filter import filter_above_ground
 
 
+def fit_sphere(points, contain_fraction=0.9, min_radius=0.5):
+    """Robust bounding sphere for one tree's points.
+
+    Center is the per-axis median (resistant to stray outlier points), and
+    the radius is set to the `contain_fraction` quantile of distances from
+    that center, so the sphere contains most -- not necessarily all -- of
+    the cluster. Points further out (noise, multi-path returns) are simply
+    left outside instead of dragging the whole shape out to reach them.
+    """
+    center = np.median(points, axis=0)
+    dists = np.linalg.norm(points - center, axis=1)
+    radius = max(float(np.quantile(dists, contain_fraction)), min_radius)
+    return center, radius
+
+
 def parse_args():
-    p = argparse.ArgumentParser(description="Vegetation points -> per-tree convex hull STL")
+    p = argparse.ArgumentParser(description="Vegetation points -> per-tree bounding-sphere STL")
     p.add_argument("--input", required=True, help="Path to vegetation_points.npy (Nx3 array)")
     p.add_argument("--output", required=True, help="Output STL path")
 
@@ -65,6 +85,19 @@ def parse_args():
     p.add_argument("--min-hull-points", type=int, default=10,
                     help="Skip final tree clusters with fewer than this many points "
                          "(default: 10)")
+    p.add_argument("--sphere-contain-fraction", type=float, default=0.9,
+                    help="Fraction of each tree's points the fitted bounding sphere must "
+                         "contain (radius = this quantile of distances from the cluster's "
+                         "median center). Lower values are more resistant to noisy/outlier "
+                         "LiDAR returns but shrink the sphere further from the full point "
+                         "spread (default: 0.9)")
+    p.add_argument("--sphere-min-radius", type=float, default=0.5,
+                    help="Floor on fitted sphere radius, meters -- avoids degenerate "
+                         "slivers for very tight clusters (default: 0.5)")
+    p.add_argument("--sphere-subdivisions", type=int, default=2,
+                    help="Icosphere subdivision level for each tree mesh -- higher is "
+                         "smoother but more faces (0=20 faces, 1=80, 2=320, 3=1280) "
+                         "(default: 2)")
 
     p.add_argument("--crown-chm-res", type=float, default=0.25,
                     help="Canopy height model resolution for crown segmentation, meters "
@@ -138,7 +171,7 @@ def main():
     unique_macro = np.unique(macro_labels)
     print(f"[veg] Found {len(unique_macro)} macro-clusters")
 
-    hull_meshes = []
+    tree_meshes = []
     n_trees_kept = 0
     n_trees_skipped = 0
     n_macro_segmented = 0
@@ -167,25 +200,33 @@ def main():
                 n_trees_skipped += 1
                 continue
             try:
-                hull = trimesh.Trimesh(vertices=tree_pts).convex_hull
+                center, radius = fit_sphere(
+                    tree_pts,
+                    contain_fraction=args.sphere_contain_fraction,
+                    min_radius=args.sphere_min_radius,
+                )
+                sphere = trimesh.creation.icosphere(
+                    subdivisions=args.sphere_subdivisions, radius=radius
+                )
+                sphere.apply_translation(center)
             except Exception as e:
-                print(f"[veg] WARNING: hull failed for a cluster of {len(tree_pts)} points: {e}")
+                print(f"[veg] WARNING: sphere fit failed for a cluster of {len(tree_pts)} points: {e}")
                 n_trees_skipped += 1
                 continue
-            hull_meshes.append(hull)
+            tree_meshes.append(sphere)
             n_trees_kept += 1
 
     print(f"[veg] Macro-clusters segmented into multiple trees: {n_macro_segmented}")
     print(f"[veg] Macro-clusters treated as a single tree: {n_macro_passthrough}")
     print(f"[veg] Trees kept: {n_trees_kept}, skipped (too few points): {n_trees_skipped}")
 
-    if not hull_meshes:
-        print("[veg] No valid tree hulls produced -- writing empty placeholder STL.")
+    if not tree_meshes:
+        print("[veg] No valid tree spheres produced -- writing empty placeholder STL.")
         trimesh.Trimesh().export(str(out_path))
         print(f"[veg_result] n_trees=0 total_faces=0 output={out_path}")
         return
 
-    combined = trimesh.util.concatenate(hull_meshes)
+    combined = trimesh.util.concatenate(tree_meshes)
     combined.export(str(out_path))
 
     total_faces = len(combined.faces)
