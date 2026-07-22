@@ -1,12 +1,22 @@
 """
 02_vegetation_to_stl.py -- cluster vegetation points into individual trees and
-represent each as a robust bounding sphere. LiDAR vegetation returns are
-noisy (stray points, mixed classification, multi-path returns), so instead
-of a convex hull that wraps every point exactly -- including outliers -- we
-fit a sphere centered on the cluster's median position with a radius sized
-to contain a configurable fraction of the points (default 90%), and let the
-rest fall outside. This trades exact crown-shape fidelity for a
-noise-tolerant proxy that's cheap to compute and cheap to raytrace.
+represent each crown as a flat-side-down hemisphere (a dome). LiDAR
+vegetation returns are noisy (stray points, mixed classification, multi-path
+returns), so instead of a convex hull that wraps every point exactly -- or a
+full sphere whose lower half wastefully fills the trunk/pedestrian zone -- we
+fit a robust dome to each crown's CORE mass:
+
+  * flat circular base sits at a low percentile of the crown's height (so it
+    starts above pedestrian head height and never clips below ground), and
+  * a half-sphere bulges upward, with radius set from a high percentile of
+    the horizontal point spread (ignoring the outermost stray branch tips)
+    and capped at a realistic maximum crown radius.
+
+Outlier points (single leaves, thin protruding branches, low hanging shoots)
+are deliberately left outside the dome rather than inflating it. Neighboring
+domes are allowed to overlap freely. This trades exact crown-shape fidelity
+for a noise-tolerant, physically-plausible proxy that's cheap to compute and
+cheap to raytrace. See fit_hemisphere() for the full fitting rules.
 
 Pipeline:
   0. Height-above-ground filter (ground_height_filter.py): drops points too
@@ -32,7 +42,7 @@ Run:
         --ground-npy split/ground_and_water_points.npy \
         --min-height-above-ground 1.5 \
         --cell-size 0.5 --connect-radius 1 --min-hull-points 10 \
-        --sphere-contain-fraction 0.9
+        --crown-horiz-quantile 0.9 --max-crown-radius 10.0
 """
 
 import argparse
@@ -45,23 +55,89 @@ from tree_crown_segmentation import segment_tree_crowns, should_segment
 from ground_height_filter import filter_above_ground
 
 
-def fit_sphere(points, contain_fraction=0.9, min_radius=0.5):
-    """Robust bounding sphere for one tree's points.
+def fit_hemisphere(points, horiz_quantile=0.9, base_z_quantile=0.15,
+                   min_radius=1.0, max_radius=10.0):
+    """Fit a flat-side-down hemisphere (dome) to one tree crown's points.
 
-    Center is the per-axis median (resistant to stray outlier points), and
-    the radius is set to the `contain_fraction` quantile of distances from
-    that center, so the sphere contains most -- not necessarily all -- of
-    the cluster. Points further out (noise, multi-path returns) are simply
-    left outside instead of dragging the whole shape out to reach them.
+    A crown is modeled as a dome: a horizontal circular flat base with a
+    half-sphere bulging upward from it. The fit is deliberately robust to
+    stray LiDAR returns (single leaves, thin protruding branches, low
+    hanging shoots) -- it represents the CORE crown mass rather than the
+    convex extent of every point:
+
+      * Center (cx, cy): per-axis median of the horizontal positions --
+        resistant to a few outlying points pulling the crown sideways.
+      * Radius R: the `horiz_quantile` (default 90th percentile) of each
+        point's horizontal distance from the center. The outermost ~10% of
+        points -- stray branch tips -- fall OUTSIDE the dome instead of
+        inflating it. R is clamped to [min_radius, max_radius], where
+        max_radius is a realistic upper bound on crown radius so a noisy or
+        merged cluster can't produce an absurdly large dome.
+      * Base elevation (base_z): the `base_z_quantile` (default 15th
+        percentile) of the points' z. Using a low percentile rather than
+        the minimum ignores a few low hanging points/branches, and because
+        near-ground vegetation was already dropped by the height-above-
+        ground filter upstream, this base sits well above the pedestrian
+        zone -- the dome rarely occupies the lowest ~2 m and never clips
+        below ground.
+
+    The dome's flat side is at z = base_z and it rises to base_z + R, so its
+    height equals its horizontal radius. Returns (cx, cy, base_z, R).
     """
-    center = np.median(points, axis=0)
-    dists = np.linalg.norm(points - center, axis=1)
-    radius = max(float(np.quantile(dists, contain_fraction)), min_radius)
-    return center, radius
+    cx, cy = np.median(points[:, 0]), np.median(points[:, 1])
+    horiz_dist = np.hypot(points[:, 0] - cx, points[:, 1] - cy)
+    radius = float(np.quantile(horiz_dist, horiz_quantile))
+    radius = min(max(radius, min_radius), max_radius)
+    base_z = float(np.quantile(points[:, 2], base_z_quantile))
+    return float(cx), float(cy), base_z, radius
+
+
+def build_hemisphere_mesh(cx, cy, base_z, radius, subdivisions=2):
+    """Watertight flat-side-down hemisphere mesh at (cx, cy, base_z), dome up.
+
+    Built directly as a UV-parametrized dome (top pole -> equator) plus a flat
+    circular base cap, so there's no dependency on shapely/slice_plane. The
+    flat base lies at z = base_z and the dome rises to z = base_z + radius.
+    `subdivisions` controls tessellation density (n_lon = 4 * 2**subdivisions).
+    """
+    n_lon = max(4, 4 * (2 ** int(subdivisions)))     # sectors around the axis
+    n_lat = max(2, n_lon // 2)                        # rings pole -> equator
+
+    verts = [[0.0, 0.0, radius]]                      # 0: top pole
+    for i in range(1, n_lat + 1):                     # rings; i=n_lat is equator
+        lat = (np.pi / 2.0) * (i / n_lat)
+        z = radius * np.cos(lat)
+        rr = radius * np.sin(lat)
+        for j in range(n_lon):
+            phi = 2.0 * np.pi * j / n_lon
+            verts.append([rr * np.cos(phi), rr * np.sin(phi), z])
+    base_center = len(verts)
+    verts.append([0.0, 0.0, 0.0])                     # base center (flat side)
+
+    def ring(i, j):                                   # vertex index in ring i (1..n_lat)
+        return 1 + (i - 1) * n_lon + (j % n_lon)
+
+    faces = []
+    for j in range(n_lon):                            # top cap fan (pole -> ring 1)
+        faces.append([0, ring(1, j), ring(1, j + 1)])
+    for i in range(1, n_lat):                         # dome bands
+        for j in range(n_lon):
+            a, b = ring(i, j), ring(i, j + 1)
+            c, d = ring(i + 1, j), ring(i + 1, j + 1)
+            faces.append([a, c, b])
+            faces.append([b, c, d])
+    for j in range(n_lon):                            # flat base cap (downward)
+        faces.append([base_center, ring(n_lat, j + 1), ring(n_lat, j)])
+
+    dome = trimesh.Trimesh(vertices=np.asarray(verts, dtype=np.float64),
+                           faces=np.asarray(faces, dtype=np.int64),
+                           process=True)
+    dome.apply_translation([cx, cy, base_z])
+    return dome
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description="Vegetation points -> per-tree bounding-sphere STL")
+    p = argparse.ArgumentParser(description="Vegetation points -> per-crown hemisphere (dome) STL")
     p.add_argument("--input", required=True, help="Path to vegetation_points.npy (Nx3 array)")
     p.add_argument("--output", required=True, help="Output STL path")
 
@@ -85,19 +161,26 @@ def parse_args():
     p.add_argument("--min-hull-points", type=int, default=10,
                     help="Skip final tree clusters with fewer than this many points "
                          "(default: 10)")
-    p.add_argument("--sphere-contain-fraction", type=float, default=0.9,
-                    help="Fraction of each tree's points the fitted bounding sphere must "
-                         "contain (radius = this quantile of distances from the cluster's "
-                         "median center). Lower values are more resistant to noisy/outlier "
-                         "LiDAR returns but shrink the sphere further from the full point "
-                         "spread (default: 0.9)")
-    p.add_argument("--sphere-min-radius", type=float, default=0.5,
-                    help="Floor on fitted sphere radius, meters -- avoids degenerate "
-                         "slivers for very tight clusters (default: 0.5)")
-    p.add_argument("--sphere-subdivisions", type=int, default=2,
-                    help="Icosphere subdivision level for each tree mesh -- higher is "
-                         "smoother but more faces (0=20 faces, 1=80, 2=320, 3=1280) "
-                         "(default: 2)")
+    p.add_argument("--crown-horiz-quantile", type=float, default=0.9,
+                    help="Crown dome radius = this quantile of points' horizontal distance "
+                         "from the crown center. The outermost (1 - q) fraction of points -- "
+                         "stray branch tips/leaves -- fall OUTSIDE the dome instead of "
+                         "inflating it. Lower = tighter, more outlier-resistant (default: 0.9)")
+    p.add_argument("--crown-base-z-quantile", type=float, default=0.15,
+                    help="Crown dome flat base sits at this quantile of the crown points' "
+                         "height. A low (but non-zero) percentile ignores a few low hanging "
+                         "points while keeping the base above the pedestrian zone and above "
+                         "ground (default: 0.15)")
+    p.add_argument("--max-crown-radius", type=float, default=10.0,
+                    help="Realistic upper bound on crown dome radius, meters (~20 m diameter). "
+                         "Caps domes from noisy or under-segmented clusters. Also bounds dome "
+                         "HEIGHT, since a hemisphere's height equals its radius (default: 10.0)")
+    p.add_argument("--min-crown-radius", type=float, default=1.0,
+                    help="Floor on crown dome radius, meters -- avoids degenerate slivers for "
+                         "very tight clusters (default: 1.0)")
+    p.add_argument("--crown-subdivisions", type=int, default=2,
+                    help="Icosphere subdivision level for each crown dome -- higher is "
+                         "smoother but more faces (default: 2)")
 
     p.add_argument("--crown-chm-res", type=float, default=0.25,
                     help="Canopy height model resolution for crown segmentation, meters "
@@ -200,20 +283,25 @@ def main():
                 n_trees_skipped += 1
                 continue
             try:
-                center, radius = fit_sphere(
+                cx, cy, base_z, radius = fit_hemisphere(
                     tree_pts,
-                    contain_fraction=args.sphere_contain_fraction,
-                    min_radius=args.sphere_min_radius,
+                    horiz_quantile=args.crown_horiz_quantile,
+                    base_z_quantile=args.crown_base_z_quantile,
+                    min_radius=args.min_crown_radius,
+                    max_radius=args.max_crown_radius,
                 )
-                sphere = trimesh.creation.icosphere(
-                    subdivisions=args.sphere_subdivisions, radius=radius
+                dome = build_hemisphere_mesh(
+                    cx, cy, base_z, radius,
+                    subdivisions=args.crown_subdivisions,
                 )
-                sphere.apply_translation(center)
             except Exception as e:
-                print(f"[veg] WARNING: sphere fit failed for a cluster of {len(tree_pts)} points: {e}")
+                print(f"[veg] WARNING: hemisphere fit failed for a cluster of {len(tree_pts)} points: {e}")
                 n_trees_skipped += 1
                 continue
-            tree_meshes.append(sphere)
+            if dome is None or len(dome.faces) == 0:
+                n_trees_skipped += 1
+                continue
+            tree_meshes.append(dome)
             n_trees_kept += 1
 
     print(f"[veg] Macro-clusters segmented into multiple trees: {n_macro_segmented}")
@@ -221,7 +309,7 @@ def main():
     print(f"[veg] Trees kept: {n_trees_kept}, skipped (too few points): {n_trees_skipped}")
 
     if not tree_meshes:
-        print("[veg] No valid tree spheres produced -- writing empty placeholder STL.")
+        print("[veg] No valid crown domes produced -- writing empty placeholder STL.")
         trimesh.Trimesh().export(str(out_path))
         print(f"[veg_result] n_trees=0 total_faces=0 output={out_path}")
         return

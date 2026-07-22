@@ -12,9 +12,10 @@ LIDAR-scale data.
 Pipeline:
     0. Split classified LAZ into ground+water / building / vegetation
        point sets (by ASPRS classification code).
-    1. Vegetation: grid-cluster into individual trees, represent each as a
-       robust bounding sphere (median-centered, sized to a point quantile --
-       tolerant of noisy/outlier LiDAR returns, no trunk).
+    1. Vegetation: grid-cluster into individual trees, represent each crown
+       as a flat-side-down hemisphere (dome) fit robustly to the core crown
+       mass -- tolerant of noisy/outlier LiDAR returns, base above the
+       pedestrian zone, no trunk.
     2. Buildings: DBSCAN-cluster into individual buildings, extract each
        one's real footprint (concave-aware, NOT a convex hull -- L/U/H
        shaped buildings are common on campuses), extrude to a closed
@@ -151,7 +152,7 @@ def main():
         log_file, "Stage 0: split classified LAZ"
     )
 
-    # ---- Stage 1: vegetation (bounding sphere per tree) ----
+    # ---- Stage 1: vegetation (hemisphere dome per crown) ----
     veg_out = final_dir / "vegetation_final.stl"
     run_logged(
         [sys.executable, str(SCRIPT_DIR / "02_vegetation_to_stl.py"),
@@ -161,7 +162,7 @@ def main():
          "--cell-size", str(args.veg_cell_size),
          "--connect-radius", str(args.veg_connect_radius),
          "--min-hull-points", str(args.veg_min_hull_points)],
-        log_file, "Stage 1: vegetation -> per-tree bounding spheres"
+        log_file, "Stage 1: vegetation -> per-crown hemisphere domes"
     )
 
     # ---- Stage 2: buildings (footprint extrusion) ----
