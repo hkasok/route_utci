@@ -91,9 +91,16 @@ GEOM_DIR="${GEOM_DIR:-out_full/02_final}"
 BUILDINGS_STL="${BUILDINGS_STL:-$GEOM_DIR/building_final.stl}"
 VEGETATION_STL="${VEGETATION_STL:-$GEOM_DIR/vegetation_final.stl}"
 GROUND_STL="${GROUND_STL:-$GEOM_DIR/ground_and_water_final.stl}"
-# Only used when starting at step 1 (the LAZ -> STL build):
-INPUT_LAZ="${INPUT_LAZ:-}"            # path to the input .laz (required for step 1)
+# Only used when starting at step 1 (the LAZ -> STL build). Defaults below
+# come from the old start_LAZ_to_stl.sh launcher (now folded into this script):
+INPUT_LAZ="${INPUT_LAZ:-/media/harshin/data_drive/route based UTCI/fl2021_miami_dade_J1413971/fl2021_miami_dade_J1413971tR0_C0.laz}"
 GEOM_OUTPUT_DIR="${GEOM_OUTPUT_DIR:-./out_full}"
+# Memory cap for the LAZ -> STL build. main.py can balloon on dense LiDAR, so
+# it runs inside a memory-capped systemd scope (when available): if it runs
+# away, only THIS build gets OOM-killed, not the whole desktop session.
+GEOM_MEMORY_MAX="${GEOM_MEMORY_MAX:-60G}"
+# Timeout for the ground planar-decimate pass in main.py (seconds).
+GROUND_PLANAR_TIMEOUT_SEC="${GROUND_PLANAR_TIMEOUT_SEC:-600}"
 
 # ############################################################################
 # #  SECONDARY SETTINGS  --  sensible defaults; change only if you know why. #
@@ -170,11 +177,29 @@ if active 1 && ! skip GEOM; then
     log "STEP 1  Geometry build (LAZ -> STL)"
     if [ -z "$INPUT_LAZ" ]; then
         echo "ERROR: starting at step 1 requires INPUT_LAZ=/path/to/file.laz" >&2
-        echo "       e.g.  INPUT_LAZ=/data/site.laz ./start.sh 1" >&2
+        echo "       Set INPUT_LAZ in the GEOMETRY section of this script, or:" >&2
+        echo "       INPUT_LAZ=/data/site.laz ./start.sh 1" >&2
         exit 1
     fi
     require_file "$INPUT_LAZ" 1
-    "$PY" -u main.py --input "$INPUT_LAZ" --output-dir "$GEOM_OUTPUT_DIR"
+    echo "  Input LAZ  : $INPUT_LAZ"
+    echo "  Output dir : $GEOM_OUTPUT_DIR"
+
+    # Run the LAZ -> STL build (main.py) in the FOREGROUND so the rest of the
+    # pipeline continues after it. Wrap it in a memory-capped systemd scope
+    # when available so a runaway-memory step is OOM-killed on its own instead
+    # of taking down the desktop session (see the DBSCAN OOM incident).
+    GEOM_CMD=("$PY" -u main.py
+        --input "$INPUT_LAZ"
+        --output-dir "$GEOM_OUTPUT_DIR"
+        --ground-planar-timeout-sec "$GROUND_PLANAR_TIMEOUT_SEC")
+    if command -v systemd-run >/dev/null 2>&1; then
+        echo "  Memory cap : $GEOM_MEMORY_MAX (systemd-run --scope --user)"
+        systemd-run --scope --user -p MemoryMax="$GEOM_MEMORY_MAX" -- "${GEOM_CMD[@]}"
+    else
+        echo "  Memory cap : (systemd-run unavailable -- running without a cap)"
+        "${GEOM_CMD[@]}"
+    fi
 elif active 1; then
     log "STEP 1  Geometry build -- SKIP_GEOM=1, skipped"
 fi
