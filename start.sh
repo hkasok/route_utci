@@ -7,8 +7,9 @@
 # ============================================================================
 #  N  STEP                              PRODUCES
 #  1  Geometry build (LAZ -> STL)       building/vegetation/ground_final.stl
-#  2  OSM pedestrian network            pedestrian_network.graphml, polylines
+#  2  OSM network + route selection     graphml, route_polylines, selected_routes
 #  3  MRT ray tracing + SVF (stage 05)  path_xyz.npy, times.csv, svf_*.npy
+#                                        (now ONLY along the selected routes)
 #  4  Facet selection (stage 05a)       facets.npz, LW view matrix
 #  5  Facet energy balance (stage 05b)  facet_T_matrix_K.npy (surface temps)
 #  6  Facet-thermal MRT (stage 05*)     improved tmrt_matrix_C.npy
@@ -119,7 +120,13 @@ VIS_DIR="${VIS_DIR:-$OUT_ROOT/viz}"
 # (default: the IMPROVED facet-thermal results; set to $MRT_DIR for legacy)
 VIS_MRT_DIR="${VIS_MRT_DIR:-$MRT_FACET_DIR}"
 GRAPHML="${GRAPHML:-$OSM_DIR/pedestrian_network.graphml}"
-POLYLINES="${POLYLINES:-$OSM_DIR/path_polylines.pkl}"
+POLYLINES="${POLYLINES:-$OSM_DIR/path_polylines.pkl}"      # FULL network (from OSM)
+# Route selection (04_select_routes.py): the N start->end routes are chosen
+# UP FRONT so MRT is ray-traced along only those routes, not the whole
+# pedestrian network -- the big speedup. These feed stage 05 and 08/09.
+ROUTE_POLYLINES="${ROUTE_POLYLINES:-$OSM_DIR/route_polylines.pkl}"   # -> MRT input
+SELECTED_ROUTES="${SELECTED_ROUTES:-$OSM_DIR/selected_routes.pkl}"   # -> 08/09 input
+ROUTE_SAMPLE_SPACING_M="${ROUTE_SAMPLE_SPACING_M:-1.0}"
 
 # Radiation / sampling parameters -- MUST stay consistent across 05, 05a, 05b
 DT_MIN="${DT_MIN:-10}"
@@ -232,8 +239,27 @@ if active 2 && ! skip OSM; then
         log "STEP 2  Extracting OSM pedestrian network"
         "$PY" extract_osm_pedestrian_network.py --output-dir "$OSM_DIR"
     fi
+
+    # Select the N start->end routes NOW (cheap, graph-only) so the expensive
+    # MRT stages ray-trace along only these routes instead of the entire
+    # pedestrian network. Endpoints, origin shift and CRS mirror stage 08/09.
+    log "STEP 2  Selecting $N_ROUTES start->end route(s) (stage 04)"
+    ENDPOINT_ARG=()
+    [ -n "$START_LATLON" ] && ENDPOINT_ARG+=(--start-latlon $START_LATLON)
+    [ -n "$END_LATLON" ]   && ENDPOINT_ARG+=(--end-latlon $END_LATLON)
+    "$PY" 04_select_routes.py \
+        --graphml "$GRAPHML" \
+        --output-dir "$OSM_DIR" \
+        --n-routes "$N_ROUTES" \
+        --route-sample-spacing-m "$ROUTE_SAMPLE_SPACING_M" \
+        --local-origin-x "$LOCAL_ORIGIN_X" --local-origin-y "$LOCAL_ORIGIN_Y" \
+        --project-crs "$PROJECT_CRS" \
+        "${ENDPOINT_ARG[@]}"
 fi
-if active 3; then require_file "$POLYLINES" 2; fi
+if active 3; then
+    require_file "$ROUTE_POLYLINES" 2
+    require_file "$SELECTED_ROUTES" 2
+fi
 
 # ----------------------------------------------------------------------------
 # STEP 3 -- MRT ray tracing + SVF (stage 05, legacy surround).
@@ -246,7 +272,7 @@ if active 3 && ! skip 05; then
         --buildings-stl "$BUILDINGS_STL" \
         --vegetation-stl "$VEGETATION_STL" \
         --ground-stl "$GROUND_STL" \
-        --polylines-pkl "$POLYLINES" \
+        --polylines-pkl "$ROUTE_POLYLINES" \
         --output-dir "$MRT_DIR" \
         --ds-path "$DS_PATH" --dt-min "$DT_MIN" --date "$DATE" \
         --z-height "$Z_HEIGHT" \
@@ -302,7 +328,7 @@ if active 6 && ! skip 05FACET; then
         --buildings-stl "$BUILDINGS_STL" \
         --vegetation-stl "$VEGETATION_STL" \
         --ground-stl "$GROUND_STL" \
-        --polylines-pkl "$POLYLINES" \
+        --polylines-pkl "$ROUTE_POLYLINES" \
         --output-dir "$MRT_FACET_DIR" \
         --ds-path "$DS_PATH" --dt-min "$DT_MIN" --date "$DATE" \
         --z-height "$Z_HEIGHT" \
@@ -340,30 +366,30 @@ fi
 # ----------------------------------------------------------------------------
 # STEP 8 -- Route thermal stress (08 UTCI exposure, 09 JOS-3 core temp)
 # ----------------------------------------------------------------------------
+if active 8; then require_file "$SELECTED_ROUTES" 2; fi
 if active 8 && ! skip 08; then
     log "STEP 8  Route thermal stress -- UTCI exposure (stage 08)"
-    ENDPOINT_ARG=()
-    [ -n "$START_LATLON" ] && ENDPOINT_ARG+=(--start-latlon $START_LATLON)
-    [ -n "$END_LATLON" ]   && ENDPOINT_ARG+=(--end-latlon $END_LATLON)
+    # Routes were already chosen in step 2 (04_select_routes.py) and are the
+    # exact routes MRT was computed along -- pass them via --routes-pkl so the
+    # endpoints/count are consistent end to end (no re-selection here).
     "$PY" 08_route_thermal_stress.py \
-        --graphml "$GRAPHML" \
+        --routes-pkl "$SELECTED_ROUTES" \
         --mrt-results-dir "$VIS_MRT_DIR" \
         --buildings-stl "$BUILDINGS_STL" \
         --output-dir "$VIS_DIR/route_utci" \
-        --n-routes "$N_ROUTES" \
         --departure-hour "$DEPARTURE_HOUR" \
         --walking-speed-ms "$WALKING_SPEED_MS" \
         --relative-humidity-pct "$RH_PCT" --wind-speed-ms "$WIND_MS" \
         --local-origin-x "$LOCAL_ORIGIN_X" --local-origin-y "$LOCAL_ORIGIN_Y" \
         --project-crs "$PROJECT_CRS" \
-        "${ENDPOINT_ARG[@]}" "${WEATHER_ARG[@]}"
+        "${WEATHER_ARG[@]}"
 fi
 if active 8 && ! skip 09; then
     log "STEP 8  Route thermal stress -- JOS-3 core temperature (stage 09)"
     SUBJECT_ARG=()
     [ -n "$SUBJECT_PROFILE" ] && SUBJECT_ARG=(--subject-profile "$SUBJECT_PROFILE")
     "$PY" 09_route_thermal_stress_jos3.py \
-        --graphml "$GRAPHML" \
+        --routes-pkl "$SELECTED_ROUTES" \
         --mrt-results-dir "$VIS_MRT_DIR" \
         --buildings-stl "$BUILDINGS_STL" \
         --output-dir "$VIS_DIR/route_jos3" \

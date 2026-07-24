@@ -40,13 +40,12 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import networkx as nx
-import osmnx as ox
 import matplotlib.pyplot as plt
 from scipy.spatial import cKDTree
 from pythermalcomfort.models import utci
 
 from weather_provider import add_weather_args, provider_from_args
+from route_selection import select_routes, load_selected_routes
 
 
 # UTCI thermal-stress category boundaries (deg C) for reporting a route's
@@ -180,72 +179,57 @@ def export_routes_for_gis(results, out_dir, origin, project_crs):
 
 
 # ============================================================
-# Route finding
+# Route loading / finding
 # ============================================================
-def find_best_corner_pair(G_simple, pos, corner_a_xy, corner_b_xy, k_needed, search_n=20,
-                           check_top=8):
-    cand_a = sorted(G_simple.nodes(), key=lambda n: (pos[n][0]-corner_a_xy[0])**2 + (pos[n][1]-corner_a_xy[1])**2)[:search_n]
-    cand_b = sorted(G_simple.nodes(), key=lambda n: (pos[n][0]-corner_b_xy[0])**2 + (pos[n][1]-corner_b_xy[1])**2)[:search_n]
-    best = None
-    for a in cand_a[:check_top]:
-        for b in cand_b[:check_top]:
-            if a == b:
-                continue
-            try:
-                conn = nx.edge_connectivity(G_simple, a, b)
-            except nx.NetworkXError:
-                continue
-            score = (conn >= k_needed, conn)
-            if best is None or score > best[0]:
-                best = (score, a, b, conn)
-    if best is None:
-        raise RuntimeError("Could not find any valid corner pair in this graph.")
-    return best[1], best[2], best[3]
+def get_routes(args):
+    """Return (routes, start_xy, end_xy, start_label, end_label, connectivity).
 
+    Prefers the routes selected up front by 04_select_routes.py (so we score
+    exactly the routes MRT was ray-traced along). Falls back to selecting them
+    from the graphml here if no --routes-pkl was given (backward compatible).
+    """
+    if args.routes_pkl:
+        print(f"Loading pre-selected routes from {args.routes_pkl} ...")
+        sel = load_selected_routes(args.routes_pkl)
+        routes = [{"xy": np.asarray(r["xy"], dtype=float),
+                   "length_m": float(r["length_m"])} for r in sel["routes"]]
+        print(f"  Loaded {len(routes)} routes "
+              f"(start node {sel['start_node']}, end node {sel['end_node']}, "
+              f"connectivity {sel['connectivity']})")
+        return (routes, tuple(sel["start_xy"]), tuple(sel["end_xy"]),
+                sel["start_node"], sel["end_node"], sel["connectivity"])
 
-def reconstruct_route_xy(G_multi, node_path, ds=1.0):
-    """Walk the actual edge geometries (not straight node-to-node lines) to
-    get a densely-sampled (x,y) polyline for the route."""
-    all_xy = []
-    for u, v in zip(node_path[:-1], node_path[1:]):
-        edge_data = G_multi.get_edge_data(u, v)
-        if edge_data is None:
-            edge_data = G_multi.get_edge_data(v, u)
-        data = list(edge_data.values())[0]
-        if "geometry" in data:
-            coords = np.array(data["geometry"].coords)
-        else:
-            coords = np.array([[G_multi.nodes[u]["x"], G_multi.nodes[u]["y"]],
-                                [G_multi.nodes[v]["x"], G_multi.nodes[v]["y"]]])
-        # ensure orientation matches u -> v
-        if np.linalg.norm(coords[0] - [G_multi.nodes[u]["x"], G_multi.nodes[u]["y"]]) > \
-           np.linalg.norm(coords[-1] - [G_multi.nodes[u]["x"], G_multi.nodes[u]["y"]]):
-            coords = coords[::-1]
-        all_xy.append(coords)
-    full = np.vstack(all_xy)
-    # densify to ~ds spacing
-    seg_lens = np.linalg.norm(np.diff(full, axis=0), axis=1)
-    cumlen = np.concatenate(([0], np.cumsum(seg_lens)))
-    total = cumlen[-1]
-    svals = np.arange(0, total, ds)
-    dense = np.empty((len(svals), 2))
-    j = 0
-    for i, s in enumerate(svals):
-        while j < len(seg_lens) - 1 and s > cumlen[j + 1]:
-            j += 1
-        frac = 0 if seg_lens[j] == 0 else (s - cumlen[j]) / seg_lens[j]
-        dense[i] = full[j] + frac * (full[j + 1] - full[j])
-    return dense, total
+    print("No --routes-pkl given; selecting routes from the graphml...")
+    if not args.graphml:
+        raise SystemExit("ERROR: provide either --routes-pkl or --graphml.")
+    import osmnx as ox
+    G_multi = ox.load_graphml(args.graphml)
+    sel = select_routes(
+        G_multi, n_routes=args.n_routes, ds=args.route_sample_spacing_m,
+        project_crs=args.project_crs,
+        origin=(args.local_origin_x, args.local_origin_y),
+        start_latlon=args.start_latlon, end_latlon=args.end_latlon,
+        start_xy=args.start_xy, end_xy=args.end_xy,
+    )
+    routes = [{"xy": r["xy"], "length_m": r["length_m"]} for r in sel["routes"]]
+    pos = sel["pos"]
+    return (routes, pos[sel["start_node"]], pos[sel["end_node"]],
+            sel["start_node"], sel["end_node"], sel["connectivity"])
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description="5-route thermal stress comparison")
-    p.add_argument("--graphml", required=True, help="pedestrian_network.graphml")
+    p = argparse.ArgumentParser(description="Route thermal-stress comparison (UTCI)")
+    p.add_argument("--routes-pkl", default=None,
+                    help="selected_routes.pkl from 04_select_routes.py. When given, the "
+                         "exact routes MRT was computed along are scored (preferred). If "
+                         "omitted, routes are selected here from --graphml (backward compat).")
+    p.add_argument("--graphml", default=None,
+                    help="pedestrian_network.graphml (only needed if --routes-pkl is omitted)")
     p.add_argument("--mrt-results-dir", required=True, help="Output dir from 05_mrt_network_raytrace.py")
     p.add_argument("--output-dir", required=True)
     p.add_argument("--buildings-stl", default=None)
 
-    p.add_argument("--n-routes", type=int, default=5)
+    p.add_argument("--n-routes", type=int, default=3)
 
     # --- Explicit start / end control (optional) ---
     # By default the two opposite BBOX corners drive endpoint selection.
@@ -304,78 +288,10 @@ def main():
     weather = provider_from_args(args)
     report_forcing(weather, args, out_dir)
 
-    print("Loading routable network...")
-    G_multi = ox.load_graphml(args.graphml)
-    G_simple = nx.Graph(G_multi)  # collapse to simple undirected for connectivity analysis
-    pos = {n: (float(d["x"]), float(d["y"])) for n, d in G_multi.nodes(data=True)}
-    print(f"  {G_simple.number_of_nodes()} nodes, {G_simple.number_of_edges()} edges")
-
-    xs = [p[0] for p in pos.values()]
-    ys = [p[1] for p in pos.values()]
-    xmin, xmax, ymin, ymax = min(xs), max(xs), min(ys), max(ys)
-
-    # Resolve explicit endpoints (lat/lon or local xy) to LOCAL-frame points.
+    # Origin shift (local frame -> projected CRS) for exporting routes to GIS.
     origin = np.array([args.local_origin_x, args.local_origin_y])
 
-    def latlon_to_local(lat, lon):
-        from pyproj import Transformer
-        tf = Transformer.from_crs("EPSG:4326", args.project_crs, always_xy=True)
-        X, Y = tf.transform(lon, lat)          # note: always_xy -> (lon,lat)
-        return np.array([X, Y]) - origin
-
-    def nearest_node(pt_local):
-        node_ids = list(pos.keys())
-        P = np.array([pos[n] for n in node_ids])
-        d = np.hypot(P[:, 0] - pt_local[0], P[:, 1] - pt_local[1])
-        return node_ids[int(np.argmin(d))]
-
-    start_pt = end_pt = None
-    if args.start_latlon is not None:
-        start_pt = latlon_to_local(*args.start_latlon)
-    elif args.start_xy is not None:
-        start_pt = np.array(args.start_xy, dtype=float)
-    if args.end_latlon is not None:
-        end_pt = latlon_to_local(*args.end_latlon)
-    elif args.end_xy is not None:
-        end_pt = np.array(args.end_xy, dtype=float)
-
-    if start_pt is not None and end_pt is not None:
-        start_node = nearest_node(start_pt)
-        end_node = nearest_node(end_pt)
-        connectivity = nx.edge_connectivity(G_simple, start_node, end_node)
-        print(f"\nUsing EXPLICIT endpoints:")
-        print(f"  Start: node {start_node} at {pos[start_node]} "
-              f"(requested local {tuple(np.round(start_pt, 1))})")
-        print(f"  End:   node {end_node} at {pos[end_node]} "
-              f"(requested local {tuple(np.round(end_pt, 1))})")
-        print(f"  Edge connectivity between them: {connectivity}")
-        if connectivity < args.n_routes:
-            print(f"  WARNING: only {connectivity} edge-disjoint routes exist "
-                  f"between these endpoints (< requested {args.n_routes}); "
-                  f"will return {connectivity}.")
-    else:
-        if start_pt is not None or end_pt is not None:
-            print("  NOTE: provide BOTH start and end to pin endpoints; "
-                  "falling back to automatic corner selection.")
-        print(f"\nSearching for a corner pair supporting {args.n_routes} "
-              f"edge-disjoint routes...")
-        start_node, end_node, connectivity = find_best_corner_pair(
-            G_simple, pos, (xmin, ymin), (xmax, ymax), args.n_routes
-        )
-        print(f"  Start: node {start_node} at {pos[start_node]}")
-        print(f"  End:   node {end_node} at {pos[end_node]}")
-        print(f"  Edge connectivity: {connectivity} "
-              f"({'>= requested' if connectivity >= args.n_routes else 'LESS than requested'} {args.n_routes})")
-
-    node_paths = list(nx.edge_disjoint_paths(G_simple, start_node, end_node))[:args.n_routes]
-    print(f"  Found {len(node_paths)} routes")
-
-    print("\nReconstructing route geometries...")
-    routes = []
-    for i, np_path in enumerate(node_paths):
-        xy, length = reconstruct_route_xy(G_multi, np_path, ds=args.route_sample_spacing_m)
-        routes.append({"xy": xy, "length_m": length})
-        print(f"  Route {i+1}: {length:.0f} m, {len(xy)} sample points")
+    routes, start_xy, end_xy, start_node, end_node, connectivity = get_routes(args)
 
     print("\nLoading MRT results for nearest-point lookup...")
     mrt_dir = Path(args.mrt_results_dir)
@@ -506,8 +422,8 @@ def main():
                 label=f"Route {r['route_id']}: mean UTCI {r['mean_utci_c']:.1f}\u00b0C, "
                       f"peak {r['max_utci_c']:.1f}\u00b0C "
                       f"({r['length_m']:.0f} m, {r['walk_duration_min']:.0f} min)")
-    ax.scatter(*pos[start_node], marker="o", s=150, color="black", zorder=5, label="Start")
-    ax.scatter(*pos[end_node], marker="s", s=150, color="black", zorder=5, label="End")
+    ax.scatter(*start_xy, marker="o", s=150, color="black", zorder=5, label="Start")
+    ax.scatter(*end_xy, marker="s", s=150, color="black", zorder=5, label="End")
     ax.set_aspect("equal")
     ax.legend(loc="upper left", fontsize=9, framealpha=0.9)
     ax.set_title(f"{len(results)} edge-disjoint routes, departure at "

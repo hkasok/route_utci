@@ -105,7 +105,7 @@ UTCI_CATEGORY_COLORS = [
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description="Compute and visualize UTCI along the pedestrian network")
+    p = argparse.ArgumentParser(description="Compute and visualize UTCI along the selected routes")
     p.add_argument("--results-dir", required=True,
                     help="Output directory from 05_mrt_network_raytrace.py")
     p.add_argument("--output-dir", required=True)
@@ -192,7 +192,7 @@ def make_static_overview(path_xy, utci_matrix, times, out_path, n_panels, point_
     for ax_i in range(len(panel_indices), len(axes)):
         axes[ax_i].axis("off")
 
-    fig.suptitle("UTCI along pedestrian network -- 24 hour progression\n"
+    fig.suptitle("UTCI along selected routes -- 24 hour progression\n"
                   "(Miami summer representative Ta/RH/wind, spatially-resolved shade)",
                   fontsize=13)
     cbar = fig.colorbar(sc, ax=axes.tolist(), fraction=0.025, pad=0.03, ticks=bounds)
@@ -293,7 +293,7 @@ def make_interactive_animation(path_xy, utci_matrix, times, out_path, n_sub,
     fig = go.Figure(data=base_traces + [point_trace], frames=frames)
     fig.update_layout(
         width=1000, height=800,
-        title="UTCI along pedestrian network (24h, Miami summer conditions)",
+        title="UTCI along selected routes (24h, Miami summer conditions)",
         xaxis=dict(scaleanchor="y", title="X [m]"),
         yaxis=dict(title="Y [m]"),
         updatemenus=[dict(

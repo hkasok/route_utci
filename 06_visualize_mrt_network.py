@@ -98,7 +98,7 @@ def make_static_overview(path_xy, tmrt_matrix, times, out_path, n_panels, vmin, 
     for ax_i in range(len(panel_indices), len(axes)):
         axes[ax_i].axis("off")
 
-    fig.suptitle("Mean Radiant Temperature along pedestrian network -- 24 hour progression",
+    fig.suptitle("Mean Radiant Temperature along selected routes -- 24 hour progression",
                   fontsize=14)
     cbar = fig.colorbar(sc, ax=axes.tolist(), fraction=0.02, pad=0.02)
     cbar.set_label("Tmrt [°C]")
@@ -151,7 +151,7 @@ def make_interactive_animation(path_xy, tmrt_matrix, times, out_path, n_sub, vmi
     fig = go.Figure(data=base_traces + [point_trace], frames=frames)
     fig.update_layout(
         width=1000, height=800,
-        title="Mean Radiant Temperature along pedestrian network (24h)",
+        title="Mean Radiant Temperature along selected routes (24h)",
         xaxis=dict(scaleanchor="y", title="X [m]"),
         yaxis=dict(title="Y [m]"),
         updatemenus=[dict(
