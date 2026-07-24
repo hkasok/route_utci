@@ -7,10 +7,11 @@ This is the real-geometry, real-network successor to the original
 synthetic single-path demo script. Two things had to change to make that
 safe at real scale (verified by direct benchmarking, not assumed):
 
-  1. GROUND HEIGHT: path points are now placed at (ground_z + 1.5m) via
+  1. GROUND HEIGHT: path points are placed at (ground_z + z_height, default
+     1.1 m -- the ISO 7726 / UTCI standing-adult reference height) via
      ray-casting straight down onto your actual ground mesh, rather than
-     assuming a flat z=1.5m plane -- your real terrain isn't perfectly
-     flat like the synthetic test's.
+     assuming a flat plane -- your real terrain isn't perfectly flat like
+     the synthetic test's.
 
   2. OUTPUT STORAGE: the original script stored one Python dict per
      point per timestep, then built a pandas DataFrame from the list --
@@ -35,7 +36,7 @@ Run:
         --ground-stl out_full/02_final/ground_and_water_final.stl \
         --polylines-pkl osm_paths/path_polylines.pkl \
         --output-dir mrt_network_output/ \
-        --ds-path 0.25 --z-height 1.5 --date 2025-07-06
+        --ds-path 0.25 --z-height 1.1 --date 2025-07-06
 """
 
 import argparse
@@ -67,8 +68,10 @@ def parse_args():
     p.add_argument("--ds-path", type=float, default=0.25,
                     help="Path sampling spacing, meters (default: 0.25). Larger = fewer "
                          "points = faster; 0.25 was benchmarked safe up to ~600K points.")
-    p.add_argument("--z-height", type=float, default=1.5,
-                    help="Pedestrian eye/body height above local ground, meters (default: 1.5)")
+    p.add_argument("--z-height", type=float, default=1.1,
+                    help="Pedestrian body height above local ground at which MRT is sampled, "
+                         "meters. 1.1 m = ISO 7726 / UTCI standing-adult center-of-gravity "
+                         "reference height (default: 1.1)")
 
     p.add_argument("--latitude", type=float, default=25.7560)
     p.add_argument("--longitude", type=float, default=-80.3770)
@@ -457,8 +460,8 @@ def estimate_mrt_from_radiation(dni, dhi, ghi, elevation_deg, tau_direct, svf_ef
     #
     # The pedestrian's own tau_direct / svf_effective are used as a proxy for
     # the ground patch directly beneath them. For the direct beam this is very
-    # nearly exact (the same buildings/canopy block both, 1.5 m apart). For the
-    # sky-diffuse part the ground's true SVF is slightly lower than at 1.5 m,
+    # nearly exact (the same buildings/canopy block both, ~1.1 m apart). For the
+    # sky-diffuse part the ground's true SVF is slightly lower than at 1.1 m,
     # so this mildly over-estimates -- an acceptable approximation given it
     # costs zero extra ray tracing, and vastly better than a domain constant.
     #

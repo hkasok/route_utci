@@ -126,6 +126,12 @@ DT_MIN="${DT_MIN:-10}"
 DS_PATH="${DS_PATH:-0.25}"
 K_LAD_DIRECT="${K_LAD_DIRECT:-0.45}"
 K_LAD_DIFFUSE="${K_LAD_DIFFUSE:-0.30}"
+# Height above local ground at which MRT is sampled (pedestrian body height),
+# meters. Passed to BOTH MRT passes (steps 3 and 6) so it stays consistent;
+# it is baked into path_xyz.npy, which every downstream stage (05a/05b/08/09)
+# reads, so this single value propagates through the whole pipeline.
+# 1.1 m = ISO 7726 / UTCI standing-adult center-of-gravity convention.
+Z_HEIGHT="${Z_HEIGHT:-1.1}"
 
 # Facet pipeline (05a / 05b)
 POINT_STRIDE="${POINT_STRIDE:-8}"
@@ -162,6 +168,7 @@ cat <<EOF
   Date (solar)     : $DATE
   Departure hour   : $DEPARTURE_HOUR:00
   Walking speed    : $WALKING_SPEED_MS m/s
+  MRT sample height: $Z_HEIGHT m above ground
   Location         : lat $LAT, lon $LON ($TZ)
   Weather          : $WEATHER_NOTE
   Geometry (STL)   : $GEOM_DIR
@@ -242,6 +249,7 @@ if active 3 && ! skip 05; then
         --polylines-pkl "$POLYLINES" \
         --output-dir "$MRT_DIR" \
         --ds-path "$DS_PATH" --dt-min "$DT_MIN" --date "$DATE" \
+        --z-height "$Z_HEIGHT" \
         --latitude "$LAT" --longitude "$LON" --timezone "$TZ" \
         --cloud-cover-fraction "$CLOUD" \
         --k-lad-direct "$K_LAD_DIRECT" --k-lad-diffuse "$K_LAD_DIFFUSE"
@@ -297,6 +305,7 @@ if active 6 && ! skip 05FACET; then
         --polylines-pkl "$POLYLINES" \
         --output-dir "$MRT_FACET_DIR" \
         --ds-path "$DS_PATH" --dt-min "$DT_MIN" --date "$DATE" \
+        --z-height "$Z_HEIGHT" \
         --latitude "$LAT" --longitude "$LON" --timezone "$TZ" \
         --cloud-cover-fraction "$CLOUD" \
         --k-lad-direct "$K_LAD_DIRECT" --k-lad-diffuse "$K_LAD_DIFFUSE" \
