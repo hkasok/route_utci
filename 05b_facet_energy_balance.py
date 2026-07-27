@@ -100,6 +100,13 @@ def parse_args():
     p.add_argument("--cloud-cover-fraction", type=float, default=0.0,
                    help="MUST match the value used in 05 (times.csv stores "
                         "cloud-adjusted DNI/DHI but L_sky needs the fraction)")
+    p.add_argument("--clear-sky-emissivity", choices=["prata", "constant"], default="prata",
+                   help="Clear-sky longwave emissivity model; MUST match 05 so the "
+                        "surfaces heated here and the pedestrian in 05 see the same sky. "
+                        "'prata' (default) is humidity-dependent; 'constant' = old 0.78.")
+    p.add_argument("--fallback-rh-pct", type=float, default=70.0,
+                   help="RH used for sky longwave only if times.csv lacks an rh_pct "
+                        "column (older 05 output). Default 70%%.")
     p.add_argument("--k-lad-direct", type=float, default=0.45,
                    help="Vegetation extinction for the direct beam "
                         "(match 05)")
@@ -276,6 +283,15 @@ def main():
     azim = times_df["azimuth_deg"].values
     air_C = times_df["air_temp_C"].values
     air_K = air_C + 273.15
+    # RH per timestep drives the humidity-dependent clear-sky longwave. 05
+    # writes it into times.csv; fall back with a warning for older files.
+    if "rh_pct" in times_df.columns:
+        rh_pct = times_df["rh_pct"].values
+    else:
+        rh_pct = np.full(nt, args.fallback_rh_pct)
+        print(f"  WARNING: times.csv has no rh_pct column; using "
+              f"--fallback-rh-pct {args.fallback_rh_pct}% for sky longwave. "
+              f"Re-run 05 to write RH for an exact match.")
     # Time step from times.csv. IMPORTANT: computed via total_seconds(),
     # which is correct for ANY datetime64 resolution. (An earlier version
     # used .astype("int64")/1e9, which silently assumes nanosecond epoch
@@ -325,7 +341,8 @@ def main():
     sun_vecs = np.array([sun_vector_enu(a, e) for a, e in zip(azim, elev)])
     cos_theta = np.clip(normals @ sun_vecs.T, 0.0, None).T   # (nt, nf)
     sin_el = np.sin(np.deg2rad(np.clip(elev, 0.0, None)))
-    L_sky_t = sky_longwave_down(air_C, args.cloud_cover_fraction)
+    L_sky_t = sky_longwave_down(air_C, rh_pct, args.cloud_cover_fraction,
+                                clear_sky_model=args.clear_sky_emissivity)
 
     T_deep = (args.deep_soil_temp_c + 273.15 if args.deep_soil_temp_c
               is not None else float(air_K.mean()))

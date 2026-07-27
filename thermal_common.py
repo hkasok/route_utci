@@ -346,10 +346,48 @@ def sun_vector_enu(azimuth_deg, elevation_deg):
     return v / n if n > 0 else np.zeros(3)
 
 
-def sky_longwave_down(air_temp_C, cloud_fraction):
-    """Same clear/cloudy sky emissivity model already used in 05, factored
-    out so 05 and 05b are guaranteed consistent."""
+def saturation_vapor_pressure_hPa(air_temp_C):
+    """Saturation vapour pressure over water (Tetens), hPa."""
+    T = np.asarray(air_temp_C, dtype=float)
+    return 6.1078 * 10.0 ** (7.5 * T / (237.3 + T))
+
+
+def clear_sky_emissivity(air_temp_C, rh_pct, model="prata"):
+    """Clear-sky (cloudless) atmospheric emissivity.
+
+    model="prata"  -- Prata (1996), humidity dependent. In humid climates
+        this is ~0.85-0.90, well above the old constant 0.78, so it raises
+        downwelling longwave substantially (~50 W/m2 in Miami summer). This
+        is the physically-correct driver and the one that had been missing.
+
+            e0 = (RH/100) * e_sat(Ta)           screen vapour pressure, hPa
+            w  = 46.5 * (e0 / Ta_K)             precipitable water proxy, cm
+            eps_clear = 1 - (1 + w) * exp(-sqrt(1.2 + 3.0*w))
+
+    model="constant" -- the previous fixed 0.78 (kept for backward-compatible
+        comparison runs).
+    """
+    if model == "constant":
+        return np.full_like(np.asarray(air_temp_C, dtype=float), 0.78)
+    if model != "prata":
+        raise ValueError(f"unknown clear-sky emissivity model: {model!r}")
+    air_K = np.asarray(air_temp_C, dtype=float) + 273.15
+    e0 = np.clip(np.asarray(rh_pct, dtype=float), 0.0, 100.0) / 100.0 \
+        * saturation_vapor_pressure_hPa(air_temp_C)
+    w = 46.5 * (e0 / air_K)                       # precipitable water, cm
+    return 1.0 - (1.0 + w) * np.exp(-np.sqrt(1.2 + 3.0 * w))
+
+
+def sky_longwave_down(air_temp_C, rh_pct, cloud_fraction, clear_sky_model="prata"):
+    """Downwelling longwave from the sky, W/m^2, shared by 05 and 05b so the
+    surfaces (05b) and the pedestrian (05) are heated by an identical sky.
+
+    Clear-sky emissivity is humidity dependent (Prata 1996) by default; the
+    cloud fraction blends it toward an overcast near-blackbody sky. Passing
+    clear_sky_model="constant" reproduces the previous fixed-0.78 behaviour.
+    """
     air_K = np.asarray(air_temp_C, dtype=float) + 273.15
     cloud = np.clip(cloud_fraction, 0.0, 1.0)
-    eps_sky = 0.78 * (1.0 - cloud) + 0.98 * cloud
+    eps_clear = clear_sky_emissivity(air_temp_C, rh_pct, model=clear_sky_model)
+    eps_sky = eps_clear * (1.0 - cloud) + 0.98 * cloud
     return eps_sky * SIGMA * air_K ** 4

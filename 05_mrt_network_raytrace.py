@@ -49,7 +49,7 @@ import pandas as pd
 import pvlib
 import trimesh
 
-from thermal_common import resolve_ground_albedo
+from thermal_common import resolve_ground_albedo, sky_longwave_down
 from weather_provider import add_weather_args, provider_from_args
 
 
@@ -129,6 +129,13 @@ def parse_args():
                          "quantify the difference on your own data -- it overstates Tmrt in "
                          "shade by roughly 9 C and should not be used for results.")
     p.add_argument("--surrounding-emissivity", type=float, default=0.95)
+    p.add_argument("--clear-sky-emissivity", choices=["prata", "constant"], default="prata",
+                    help="Clear-sky longwave emissivity model. 'prata' (default) is "
+                         "humidity-dependent (Prata 1996) and much higher in humid climates "
+                         "(~0.89 in Miami summer vs the old constant 0.78), raising "
+                         "downwelling longwave onto both surfaces and the pedestrian. "
+                         "'constant' reproduces the previous fixed 0.78. MUST match the value "
+                         "passed to 05b so surfaces and pedestrian see the same sky.")
     p.add_argument("--facet-thermal-dir", default=None,
                     help="Directory holding BOTH the 05a outputs "
                          "(lw_view_matrix.npz, lw_point_weights.npz, "
@@ -424,14 +431,17 @@ def projected_area_factor_standing(elevation_deg):
 
 
 def estimate_mrt_from_radiation(dni, dhi, ghi, elevation_deg, tau_direct, svf_effective,
-                                 air_temp_C, cloud_fraction, args,
+                                 air_temp_C, rh_pct, cloud_fraction, args,
                                  L_surround_override=None):
     sin_el = np.sin(np.deg2rad(np.maximum(elevation_deg, 0.0)))
     air_K = air_temp_C + 273.15
-    cloud = np.clip(cloud_fraction, 0.0, 1.0)
 
-    eps_sky = 0.78 * (1.0 - cloud) + 0.98 * cloud
-    L_sky = eps_sky * SIGMA * air_K ** 4
+    # Downwelling sky longwave -- humidity-dependent clear-sky emissivity
+    # (Prata) by default, shared with 05b so surfaces and pedestrian see one
+    # identical sky. This replaced a constant 0.78 that badly understated
+    # longwave in humid climates.
+    L_sky = sky_longwave_down(air_temp_C, rh_pct, cloud_fraction,
+                              clear_sky_model=args.clear_sky_emissivity)
 
     surface_offset = args.surface_temp_offset_day_c * max(sin_el, 0.0)
     surface_K = air_K + surface_offset
@@ -740,7 +750,7 @@ def main():
 
         tmrt_C, R_abs, K_sw, L_lw = estimate_mrt_from_radiation(
             dni[it], dhi[it], ghi[it], el, tau_direct, svf_effective,
-            air_temp_C_time[it], args.cloud_cover_fraction, args,
+            air_temp_C_time[it], rh_pct_time[it], args.cloud_cover_fraction, args,
             L_surround_override=L_surround_override,
         )
         tmrt_matrix[it, :] = tmrt_C

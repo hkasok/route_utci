@@ -133,6 +133,11 @@ DT_MIN="${DT_MIN:-10}"
 DS_PATH="${DS_PATH:-0.25}"
 K_LAD_DIRECT="${K_LAD_DIRECT:-0.45}"
 K_LAD_DIFFUSE="${K_LAD_DIFFUSE:-0.30}"
+# Clear-sky longwave emissivity model, shared by the MRT passes (05) and the
+# surface energy balance (05b) so both see one identical sky. 'prata' is
+# humidity-dependent (~0.89 in humid Miami vs the old constant 0.78) and
+# raises downwelling longwave; 'constant' restores the old 0.78 behaviour.
+CLEAR_SKY_MODEL="${CLEAR_SKY_MODEL:-prata}"
 # Height above local ground at which MRT is sampled (pedestrian body height),
 # meters. Passed to BOTH MRT passes (steps 3 and 6) so it stays consistent;
 # it is baked into path_xyz.npy, which every downstream stage (05a/05b/08/09)
@@ -278,7 +283,8 @@ if active 3 && ! skip 05; then
         --z-height "$Z_HEIGHT" \
         --latitude "$LAT" --longitude "$LON" --timezone "$TZ" \
         --cloud-cover-fraction "$CLOUD" \
-        --k-lad-direct "$K_LAD_DIRECT" --k-lad-diffuse "$K_LAD_DIFFUSE"
+        --k-lad-direct "$K_LAD_DIRECT" --k-lad-diffuse "$K_LAD_DIFFUSE" \
+        --clear-sky-emissivity "$CLEAR_SKY_MODEL"
 fi
 if active 4; then
     require_file "$MRT_DIR/path_xyz.npy" 3
@@ -315,7 +321,8 @@ if active 5 && ! skip 05B; then
         --output-dir "$THERMAL_DIR" \
         --spinup-days "$SPINUP_DAYS" --wind-speed "$WIND_SPEED" \
         --cloud-cover-fraction "$CLOUD" \
-        --k-lad-direct "$K_LAD_DIRECT" --k-lad-diffuse "$K_LAD_DIFFUSE"
+        --k-lad-direct "$K_LAD_DIRECT" --k-lad-diffuse "$K_LAD_DIFFUSE" \
+        --clear-sky-emissivity "$CLEAR_SKY_MODEL"
 fi
 if active 6; then require_file "$THERMAL_DIR/facet_T_matrix_K.npy" 5; fi
 
@@ -335,6 +342,7 @@ if active 6 && ! skip 05FACET; then
         --latitude "$LAT" --longitude "$LON" --timezone "$TZ" \
         --cloud-cover-fraction "$CLOUD" \
         --k-lad-direct "$K_LAD_DIRECT" --k-lad-diffuse "$K_LAD_DIFFUSE" \
+        --clear-sky-emissivity "$CLEAR_SKY_MODEL" \
         --facet-thermal-dir "$THERMAL_DIR"
 fi
 if active 7; then
