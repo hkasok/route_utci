@@ -7,7 +7,9 @@ This REPLACES volumetric CHT for the purpose of route MRT: each facet gets
     absorbed shortwave (full-geometry sun shading + vegetation attenuation)
   + absorbed longwave  (sky + surrounding surfaces)
   - emitted longwave   (eps * sigma * Ts^4)
-  - convection         (h_c * (Ts - Tair),  h_c = 5.7 + 3.8*U  [Jurges])
+  - convection         (h_c * (Ts - Tair);  h_c is the convective-only part
+                         of McAdams 5.7+3.8*U, i.e. with the radiative film
+                         removed since longwave is modelled explicitly)
   = conduction into a 1D multilayer substrate (implicit Euler, exact
     tridiagonal solve, vectorized across all facets of a class)
 
@@ -82,6 +84,28 @@ def parse_args():
 
     p.add_argument("--wind-speed", type=float, default=1.5,
                    help="Near-surface wind speed for convection, m/s")
+    p.add_argument("--convection-model", choices=["convective", "combined"],
+                   default="convective",
+                   help="Surface heat-transfer coefficient. The classic McAdams "
+                        "h = 5.7 + 3.8*U is a COMBINED convective+radiative film "
+                        "coefficient. Because this model already treats longwave "
+                        "radiation explicitly (absorbs L_in, emits eps*sigma*Ts^4), "
+                        "using the combined value as pure convection double-counts "
+                        "the radiative loss and makes surfaces too cool. 'convective' "
+                        "(default) subtracts the radiative part (--radiative-film-wm2k) "
+                        "so only convection is applied here; 'combined' reproduces the "
+                        "old (double-counting) behaviour.")
+    p.add_argument("--h-conv-a", type=float, default=5.7,
+                   help="Intercept of the McAdams film coefficient a + b*U (default 5.7)")
+    p.add_argument("--h-conv-b", type=float, default=3.8,
+                   help="Wind slope of the McAdams film coefficient a + b*U (default 3.8)")
+    p.add_argument("--radiative-film-wm2k", type=float, default=6.0,
+                   help="Radiative part of the combined film coefficient to remove under "
+                        "--convection-model=convective, W/m2K (~4*eps*sigma*T^3 at ~305 K; "
+                        "default 6.0)")
+    p.add_argument("--h-conv-floor", type=float, default=2.0,
+                   help="Lower bound on the convective coefficient after removing the "
+                        "radiative part, W/m2K (natural-convection floor; default 2.0)")
     p.add_argument("--interior-temp-c", type=float, default=24.0,
                    help="Building interior air temperature, deg C")
     p.add_argument("--h-interior", type=float, default=8.0,
@@ -347,9 +371,16 @@ def main():
     T_deep = (args.deep_soil_temp_c + 273.15 if args.deep_soil_temp_c
               is not None else float(air_K.mean()))
     T_int = args.interior_temp_c + 273.15
-    h_conv = 5.7 + 3.8 * args.wind_speed   # Jurges correlation
+    h_film = args.h_conv_a + args.h_conv_b * args.wind_speed   # McAdams combined
+    if args.convection_model == "convective":
+        # Longwave is modelled explicitly, so remove the radiative part of the
+        # combined film coefficient to avoid double-counting surface radiation.
+        h_conv = max(h_film - args.radiative_film_wm2k, args.h_conv_floor)
+    else:
+        h_conv = h_film                     # legacy combined (double-counts radiation)
 
-    print(f"\nEnergy balance: h_conv = {h_conv:.1f} W/m2K, "
+    print(f"\nEnergy balance: h_conv = {h_conv:.1f} W/m2K "
+          f"({args.convection_model}; film {h_film:.1f}), "
           f"T_deep = {T_deep - 273.15:.1f} C, T_int = {T_int - 273.15:.1f} C")
 
     solvers, members = {}, {}

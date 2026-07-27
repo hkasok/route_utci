@@ -106,6 +106,14 @@ def parse_args():
     p.add_argument("--f-projected-direct", type=float, default=0.25,
                     help="Constant direct-beam projected-area factor used only when "
                          "--projected-area-model=sphere (default: 0.25, a globe)")
+    p.add_argument("--sky-view-body", choices=["standing", "planar"], default="standing",
+                    help="Body model for the pedestrian sky-view factor used in the diffuse-"
+                         "shortwave and sky/surround longwave blend. 'standing' (default) "
+                         "weights the near-horizon sky like a standing cylinder, so in a "
+                         "street canyon the person sees less sky and more hot surround "
+                         "(higher Tmrt, consistent with the 05a cylinder longwave view and "
+                         "SOLWEIG). 'planar' uses the horizontal-receiver SVF (old behaviour). "
+                         "The ground-reflection term always uses the planar SVF.")
     p.add_argument("--f-sky-diffuse", type=float, default=0.50)
     p.add_argument("--f-ground-reflected", type=float, default=0.50)
     p.add_argument("--ground-albedo", type=float, default=None,
@@ -236,20 +244,36 @@ def ground_height_lookup(xy_points, ground_intersector, batch_size=50000, z_prob
 
 
 def make_sky_directions(n_azimuth, n_elevation):
-    directions, weights = [], []
+    """Upper-hemisphere sky directions plus TWO normalized weightings:
+
+      planar   -- for a horizontal upward receiver (the ground): the standard
+                  sky-view factor, response proportional to sin(elevation).
+      cylinder -- for a STANDING person: response proportional to
+                  cos(elevation), so the sky view is dominated by the near-
+                  horizon directions (where buildings block), not the zenith.
+
+    Both share the solid-angle Jacobian cos(elevation). Because they weight the
+    SAME traced sky transmission, computing both costs one extra dot product.
+    Using the cylinder weighting for the pedestrian gives a lower sky fraction
+    in street canyons -> more weight on the hot surround -> higher Tmrt, which
+    is the SOLWEIG-consistent standing-person behaviour.
+    """
+    directions, w_planar, w_cyl = [], [], []
     for ie in range(n_elevation):
         elevation = (ie + 0.5) * (0.5 * np.pi) / n_elevation
+        solid = np.cos(elevation)                       # dOmega ~ cos(el)
         for ia in range(n_azimuth):
             azimuth = 2.0 * np.pi * (ia + 0.5) / n_azimuth
             x = np.cos(elevation) * np.sin(azimuth)
             y = np.cos(elevation) * np.cos(azimuth)
             z = np.sin(elevation)
             directions.append([x, y, z])
-            weights.append(np.sin(elevation) * np.cos(elevation))
+            w_planar.append(solid * np.sin(elevation))  # horizontal receiver
+            w_cyl.append(solid * np.cos(elevation))     # standing cylinder
     directions = np.asarray(directions, dtype=float)
-    weights = np.asarray(weights, dtype=float)
-    weights = weights / np.sum(weights)
-    return directions, weights
+    w_planar = np.asarray(w_planar, dtype=float)
+    w_cyl = np.asarray(w_cyl, dtype=float)
+    return directions, w_planar / w_planar.sum(), w_cyl / w_cyl.sum()
 
 
 def vegetation_transmission_from_intersections(vegetation_intersector, origins, directions,
@@ -322,12 +346,16 @@ def vegetation_transmission_from_intersections(vegetation_intersector, origins, 
     return tau, L_veg
 
 
-def compute_effective_svf_batched(path_xyz, sky_directions, sky_weights,
+def compute_effective_svf_batched(path_xyz, sky_directions, w_planar, w_cyl,
                                    building_intersector, vegetation_intersector,
                                    k_lad_diffuse, batch_size):
+    """Returns (svf_building_only, svf_planar, svf_standing). The planar and
+    standing sky-view factors are two weightings of the SAME traced sky
+    transmission -- see make_sky_directions()."""
     n = len(path_xyz)
     ndirs = len(sky_directions)
-    svf_effective = np.zeros(n)
+    svf_planar = np.zeros(n)
+    svf_standing = np.zeros(n)
     svf_building_only = np.zeros(n)
 
     n_batches = int(np.ceil(n / batch_size))
@@ -348,8 +376,10 @@ def compute_effective_svf_batched(path_xyz, sky_directions, sky_weights,
         sky_transmission[building_hits] = 0.0
         building_open = (~building_hits).astype(float)
 
-        svf_effective[start:end] = sky_transmission.reshape(m, ndirs) @ sky_weights
-        svf_building_only[start:end] = building_open.reshape(m, ndirs) @ sky_weights
+        T = sky_transmission.reshape(m, ndirs)
+        svf_planar[start:end] = T @ w_planar
+        svf_standing[start:end] = T @ w_cyl
+        svf_building_only[start:end] = building_open.reshape(m, ndirs) @ w_planar
 
         if (bi + 1) % max(1, n_batches // 20) == 0 or bi == n_batches - 1:
             elapsed = time.time() - t_start
@@ -358,7 +388,7 @@ def compute_effective_svf_batched(path_xyz, sky_directions, sky_weights,
             print(f"  SVF batch {bi + 1}/{n_batches} ({end}/{n} points) "
                   f"-- {elapsed:.0f}s elapsed, ~{eta:.0f}s remaining")
 
-    return svf_building_only, svf_effective
+    return svf_building_only, svf_planar, svf_standing
 
 
 def direct_solar_transmission_batched(path_xyz, sun_vec, building_intersector,
@@ -430,9 +460,16 @@ def projected_area_factor_standing(elevation_deg):
     return 0.308 * np.cos(np.deg2rad(b * (0.998 - b * b / 50000.0)))
 
 
-def estimate_mrt_from_radiation(dni, dhi, ghi, elevation_deg, tau_direct, svf_effective,
+def estimate_mrt_from_radiation(dni, dhi, ghi, elevation_deg, tau_direct,
+                                 svf_person, svf_ground,
                                  air_temp_C, rh_pct, cloud_fraction, args,
                                  L_surround_override=None):
+    # svf_person: sky-view factor for the PEDESTRIAN (standing-person or planar
+    #   per --sky-view-body) -- used for the diffuse-shortwave interception and
+    #   the sky/surround longwave blend.
+    # svf_ground: PLANAR sky-view factor of the ground patch below the person --
+    #   used only to estimate how much shortwave reaches the ground for the
+    #   reflected term (the ground is a horizontal receiver regardless of body).
     sin_el = np.sin(np.deg2rad(np.maximum(elevation_deg, 0.0)))
     air_K = air_temp_C + 273.15
 
@@ -476,7 +513,7 @@ def estimate_mrt_from_radiation(dni, dhi, ghi, elevation_deg, tau_direct, svf_ef
     else:
         f_dir = args.f_projected_direct
     K_direct_abs = args.person_sw_absorptivity * f_dir * tau_direct * dni
-    K_diffuse_abs = args.person_sw_absorptivity * args.f_sky_diffuse * svf_effective * dhi
+    K_diffuse_abs = args.person_sw_absorptivity * args.f_sky_diffuse * svf_person * dhi
 
     # ------------------------------------------------------------------
     # REFLECTED SHORTWAVE
@@ -515,13 +552,14 @@ def estimate_mrt_from_radiation(dni, dhi, ghi, elevation_deg, tau_direct, svf_ef
         # legacy/comparison mode -- reproduces the old (incorrect) behavior
         k_global_local = np.full_like(np.asarray(tau_direct, dtype=float), ghi)
     else:
-        k_global_local = tau_direct * dni * sin_el + svf_effective * dhi
+        # ground is a horizontal receiver -> planar sky-view factor
+        k_global_local = tau_direct * dni * sin_el + svf_ground * dhi
 
     K_reflected_abs = (args.person_sw_absorptivity * args.f_ground_reflected
                        * args.ground_albedo * k_global_local)
 
     K_shortwave_abs = K_direct_abs + K_diffuse_abs + K_reflected_abs
-    L_effective = svf_effective * L_sky + (1.0 - svf_effective) * L_surround
+    L_effective = svf_person * L_sky + (1.0 - svf_person) * L_surround
     L_longwave_abs = args.person_emissivity * L_effective
 
     R_abs = L_longwave_abs + K_shortwave_abs
@@ -685,16 +723,26 @@ def main():
 
     print("\n" + "=" * 70)
     print("Computing static effective sky-view factor...")
-    sky_directions, sky_weights = make_sky_directions(args.sky_n_azimuth, args.sky_n_elevation)
+    sky_directions, sky_w_planar, sky_w_cyl = make_sky_directions(
+        args.sky_n_azimuth, args.sky_n_elevation)
     print(f"  Sky directions: {len(sky_directions)}")
 
-    svf_building_only, svf_effective = compute_effective_svf_batched(
-        path_xyz, sky_directions, sky_weights, building_intersector, vegetation_intersector,
+    svf_building_only, svf_planar, svf_standing = compute_effective_svf_batched(
+        path_xyz, sky_directions, sky_w_planar, sky_w_cyl,
+        building_intersector, vegetation_intersector,
         args.k_lad_diffuse, args.svf_batch_size,
     )
+    # The pedestrian's sky fraction depends on body model; the ground below is
+    # always a horizontal (planar) receiver.
+    svf_person = svf_standing if args.sky_view_body == "standing" else svf_planar
+    svf_ground = svf_planar
     np.save(out_dir / "svf_building_only.npy", svf_building_only)
-    np.save(out_dir / "svf_effective.npy", svf_effective)
-    print(f"  Effective SVF range: {svf_effective.min():.3f} to {svf_effective.max():.3f}")
+    np.save(out_dir / "svf_planar.npy", svf_planar)
+    np.save(out_dir / "svf_standing.npy", svf_standing)
+    np.save(out_dir / "svf_effective.npy", svf_person)   # back-compat name
+    print(f"  Sky-view factor ({args.sky_view_body}) range: "
+          f"{svf_person.min():.3f} to {svf_person.max():.3f} "
+          f"(planar {svf_planar.mean():.3f} / standing {svf_standing.mean():.3f} mean)")
 
     print("\n" + "=" * 70)
     print("Solar position and clear-sky radiation...")
@@ -749,7 +797,7 @@ def main():
             L_surround_override = facet_lw.surround_at(it, air_temp_C_time[it], el)
 
         tmrt_C, R_abs, K_sw, L_lw = estimate_mrt_from_radiation(
-            dni[it], dhi[it], ghi[it], el, tau_direct, svf_effective,
+            dni[it], dhi[it], ghi[it], el, tau_direct, svf_person, svf_ground,
             air_temp_C_time[it], rh_pct_time[it], args.cloud_cover_fraction, args,
             L_surround_override=L_surround_override,
         )
@@ -799,7 +847,7 @@ def main():
                 records.append({
                     "time": t.isoformat(), "point_index": int(ip),
                     "x": path_xyz[ip, 0], "y": path_xyz[ip, 1], "z": path_xyz[ip, 2],
-                    "svf_effective": svf_effective[ip],
+                    "svf_effective": svf_person[ip],
                     "direct_transmission": direct_transmission_matrix[it, ip],
                     "tmrt_C": tmrt_matrix[it, ip],
                 })
