@@ -137,6 +137,14 @@ def parse_args():
                          "quantify the difference on your own data -- it overstates Tmrt in "
                          "shade by roughly 9 C and should not be used for results.")
     p.add_argument("--surrounding-emissivity", type=float, default=0.95)
+    p.add_argument("--lw-sky-fraction", choices=["fullsphere", "hemisphere"],
+                    default="fullsphere",
+                    help="How the pedestrian longwave splits sky vs surround when facet "
+                         "temperatures are used. 'fullsphere' (default) uses 05a's "
+                         "cylinder full-sphere sky fraction, so the hot ground BELOW an open "
+                         "point is counted (fixes sunlit Tmrt being capped several C low). "
+                         "'hemisphere' uses the upper-hemisphere SVF (legacy; discards the "
+                         "ground for open points). No effect without --facet-thermal-dir.")
     p.add_argument("--clear-sky-emissivity", choices=["prata", "constant"], default="prata",
                     help="Clear-sky longwave emissivity model. 'prata' (default) is "
                          "humidity-dependent (Prata 1996) and much higher in humid climates "
@@ -463,7 +471,11 @@ def projected_area_factor_standing(elevation_deg):
 def estimate_mrt_from_radiation(dni, dhi, ghi, elevation_deg, tau_direct,
                                  svf_person, svf_ground,
                                  air_temp_C, rh_pct, cloud_fraction, args,
-                                 L_surround_override=None):
+                                 L_surround_override=None, lw_sky_frac=None):
+    # lw_sky_frac: FULL-SPHERE sky fraction for the LONGWAVE blend (from 05a's
+    #   cylinder view, ground-inclusive). When None the blend falls back to the
+    #   upper-hemisphere svf_person, which UNDER-counts the hot ground below an
+    #   open point and caps sunlit Tmrt several C low -- see the longwave block.
     # svf_person: sky-view factor for the PEDESTRIAN (standing-person or planar
     #   per --sky-view-body) -- used for the diffuse-shortwave interception and
     #   the sky/surround longwave blend.
@@ -559,7 +571,11 @@ def estimate_mrt_from_radiation(dni, dhi, ghi, elevation_deg, tau_direct,
                        * args.ground_albedo * k_global_local)
 
     K_shortwave_abs = K_direct_abs + K_diffuse_abs + K_reflected_abs
-    L_effective = svf_person * L_sky + (1.0 - svf_person) * L_surround
+    # Longwave sky/surround blend. Use the FULL-SPHERE sky fraction when given
+    # (facet-thermal path) so the ground below an open point is counted; the
+    # upper-hemisphere svf_person is a fallback that discards it (legacy).
+    sky_frac_lw = lw_sky_frac if lw_sky_frac is not None else svf_person
+    L_effective = sky_frac_lw * L_sky + (1.0 - sky_frac_lw) * L_surround
     L_longwave_abs = args.person_emissivity * L_effective
 
     R_abs = L_longwave_abs + K_shortwave_abs
@@ -607,9 +623,16 @@ class FacetLongwave:
             raise ValueError("facet count mismatch between 05a view matrix "
                              "and 05b temperatures")
         self.w_surf = 1.0 - self.w_sky
+        # Full-sphere sky fraction per FULL-resolution point (cylinder-weighted,
+        # from 05a). This is the physically-correct sky/surround split for the
+        # longwave blend: unlike the upper-hemisphere SVF it counts the lower
+        # hemisphere as ground (surround), so the hot ground below the person is
+        # not discarded for open points.
+        self.sky_frac = self.w_sky[self.point_map].astype(float)
         print(f"  Facet thermal LW active: {self.W.shape[1]:,} facets, "
               f"{self.W.shape[0]:,} traced points, mean surround weight "
-              f"{self.w_surf.mean():.3f}")
+              f"{self.w_surf.mean():.3f} (full-sphere sky frac "
+              f"{self.sky_frac.mean():.3f})")
 
     def surround_at(self, it, air_temp_C, elevation_deg):
         a = self.args
@@ -793,13 +816,16 @@ def main():
             )
 
         L_surround_override = None
+        lw_sky_frac = None
         if facet_lw is not None:
             L_surround_override = facet_lw.surround_at(it, air_temp_C_time[it], el)
+            if args.lw_sky_fraction == "fullsphere":
+                lw_sky_frac = facet_lw.sky_frac
 
         tmrt_C, R_abs, K_sw, L_lw = estimate_mrt_from_radiation(
             dni[it], dhi[it], ghi[it], el, tau_direct, svf_person, svf_ground,
             air_temp_C_time[it], rh_pct_time[it], args.cloud_cover_fraction, args,
-            L_surround_override=L_surround_override,
+            L_surround_override=L_surround_override, lw_sky_frac=lw_sky_frac,
         )
         tmrt_matrix[it, :] = tmrt_C
         direct_transmission_matrix[it, :] = tau_direct
