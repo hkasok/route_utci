@@ -111,6 +111,14 @@ def parse_args():
     p.add_argument("--h-interior", type=float, default=8.0,
                    help="Interior convective coefficient W/m2K "
                         "(0 = adiabatic interior; used by tests)")
+    p.add_argument("--wall-insulation-r", type=float, default=None,
+                   help="Override wall interior insulation resistance, m2K/W (in series "
+                        "with --h-interior at the back face). Higher = exterior wall more "
+                        "decoupled from the conditioned interior, so shaded walls stay near "
+                        "ambient instead of being pulled below it. Default from "
+                        "thermal_common (1.5). Set 0 for the old bare-wall-to-AC behaviour.")
+    p.add_argument("--roof-insulation-r", type=float, default=None,
+                   help="Override roof interior insulation resistance, m2K/W (default 2.5).")
     p.add_argument("--deep-soil-temp-c", type=float, default=None,
                    help="Deep soil temperature; default = daily mean air T")
     p.add_argument("--env-emissivity", type=float, default=0.95,
@@ -222,8 +230,12 @@ class ClassSolver:
         self.bottom_bc = mat["bottom_bc"]
         if self.bottom_bc == "fixed":
             self.g_bot = self.k / (0.5 * self.dz[-1])
-        else:  # interior convective (h may be 0 = adiabatic)
-            self.g_bot = h_bottom
+        else:  # interior: air film h_bottom in SERIES with any insulation R
+            R_ins = float(mat.get("insulation_R_m2K_W", 0.0))
+            if h_bottom > 0:
+                self.g_bot = 1.0 / (1.0 / h_bottom + R_ins)
+            else:
+                self.g_bot = 0.0            # adiabatic interior (tests)
         self.T_bottom_ref = T_bottom_ref
         self.T = np.full((n_facets, self.nl), T_init, dtype=float)
         self.cap = self.C * self.dz / dt                        # (nl,)
@@ -265,6 +277,10 @@ def main():
     facets_dir = Path(args.facets_dir)
 
     materials = load_materials(args.material_json)
+    if args.wall_insulation_r is not None:
+        materials["wall"]["insulation_R_m2K_W"] = args.wall_insulation_r
+    if args.roof_insulation_r is not None:
+        materials["roof"]["insulation_R_m2K_W"] = args.roof_insulation_r
 
     # The surround reflecting shortwave back onto a facet at street level is
     # predominantly ground, so default it to the ground albedo rather than an
@@ -279,8 +295,10 @@ def main():
     print("Surface radiative properties (single source: thermal_common.py)")
     for name in ("ground", "wall", "roof"):
         m = materials[name]
+        ins = (f"   insulation_R {m['insulation_R_m2K_W']:.2f} m2K/W"
+               if m.get("bottom_bc") == "interior" else "")
         print(f"  {name:<7s} albedo {m['albedo']:.3f}   "
-              f"emissivity {m['emissivity']:.3f}")
+              f"emissivity {m['emissivity']:.3f}{ins}")
     print(f"  environment albedo {args.environment_albedo:.3f} "
           f"({env_alb_src})")
 
