@@ -141,6 +141,39 @@ def stats(a, b):
                 r=float(r))
 
 
+def dist_row(vals, **extra):
+    """Distribution summary (min / p10 / p50 / p90 / max / mean) of an array."""
+    v = np.asarray(vals, dtype=float)
+    v = v[np.isfinite(v)]
+    row = dict(extra)
+    if len(v):
+        row.update(n=int(len(v)), min=float(v.min()),
+                   p10=float(np.percentile(v, 10)), p50=float(np.percentile(v, 50)),
+                   p90=float(np.percentile(v, 90)), max=float(v.max()),
+                   mean=float(v.mean()))
+    else:
+        row.update(n=0, min=np.nan, p10=np.nan, p50=np.nan, p90=np.nan,
+                   max=np.nan, mean=np.nan)
+    return row
+
+
+def gap_by_level(ours, solweig, edges=(0, 30, 35, 40, 45, 50, 55, 100)):
+    """Mean SOLWEIG-minus-ours gap binned by OUR Tmrt, to reveal whether the
+    disagreement is in cool/shaded points or hot/sunlit points."""
+    o = np.asarray(ours, float); s = np.asarray(solweig, float)
+    m = np.isfinite(o) & np.isfinite(s)
+    o, s = o[m], s[m]; d = s - o
+    rows = []
+    for lo, hi in zip(edges[:-1], edges[1:]):
+        sel = (o >= lo) & (o < hi)
+        if sel.sum():
+            rows.append(dict(our_tmrt_bin=f"{lo}-{hi}", n=int(sel.sum()),
+                             ours_mean=float(o[sel].mean()),
+                             solweig_mean=float(s[sel].mean()),
+                             mean_gap=float(d[sel].mean())))
+    return pd.DataFrame(rows)
+
+
 def main():
     ap = argparse.ArgumentParser(description="Compare per-route MRT/UTCI: "
                                              "our pipeline vs SOLWEIG")
@@ -158,6 +191,10 @@ def main():
                     help="Directory for plots and CSV outputs "
                          "(default: compare_out)")
     ap.add_argument("--grid-spacing-m", type=float, default=2.0)
+    ap.add_argument("--air-temp-c", type=float, default=None,
+                    help="If given, flag points whose Tmrt is below air temperature "
+                         "(physically implausible outdoors in daytime) in the distribution "
+                         "report -- useful for spotting the cool-wall / deep-shade artifact.")
     args = ap.parse_args()
 
     ours = load_side(args.ours, "ours")
@@ -247,12 +284,85 @@ def main():
             print(f"  Route {int(r.route_id)}: bias {r.bias:+.2f} C, "
                   f"RMSE {r.rmse:.2f}, r {r.r:.3f}")
 
+    # ------------------------------------------------------------------
+    # RICHER DIAGNOSTICS (added). These are NEW outputs; the existing
+    # comparison_stats.csv / comparison_points.csv above are unchanged.
+    # ------------------------------------------------------------------
+    pts = pd.DataFrame(point_rows)
+
+    # 1) Tmrt DISTRIBUTION per route + overall, for ours and SOLWEIG. This is
+    #    what exposes a floor/spread difference that a single mean/bias hides
+    #    (e.g. SOLWEIG holding a high shade floor while ours drops much lower).
+    dist_rows = []
+    for rid in routes:
+        p = pts[pts.route_id == rid]
+        dist_rows.append(dist_row(p.tmrt_ours, route_id=rid, model="ours"))
+        dist_rows.append(dist_row(p.tmrt_solweig, route_id=rid, model="solweig"))
+    dist_rows.append(dist_row(pts.tmrt_ours, route_id="ALL", model="ours"))
+    dist_rows.append(dist_row(pts.tmrt_solweig, route_id="ALL", model="solweig"))
+    ddf = pd.DataFrame(dist_rows)[["route_id", "model", "n", "min", "p10",
+                                   "p50", "p90", "max", "mean"]]
+
+    # 2) Where does the gap live? Mean gap binned by OUR Tmrt level.
+    lvl = gap_by_level(pts.tmrt_ours.values, pts.tmrt_solweig.values)
+
+    print("\n" + "=" * 70)
+    print("Tmrt DISTRIBUTION (min / p10 / p50 / p90 / max) -- reveals the floor:")
+    for _, r in ddf.iterrows():
+        print(f"  route {str(r.route_id):>3} {r.model:<7}: "
+              f"min {r['min']:5.1f}  p10 {r.p10:5.1f}  p50 {r.p50:5.1f}  "
+              f"p90 {r.p90:5.1f}  max {r['max']:5.1f}")
+    print("\nGap (SOLWEIG-ours) by OUR Tmrt level -- is the gap in cool or hot points?")
+    for _, r in lvl.iterrows():
+        print(f"  our Tmrt {r.our_tmrt_bin:>6}: n={int(r.n):>4}  "
+              f"ours {r.ours_mean:5.1f} -> SOLWEIG {r.solweig_mean:5.1f}  "
+              f"gap {r.mean_gap:+5.1f}")
+    if args.air_temp_c is not None:
+        below = pts.tmrt_ours < args.air_temp_c
+        print(f"\nPhysical-plausibility check (air temp {args.air_temp_c:.1f} C):")
+        print(f"  ours: {int(below.sum())}/{len(pts)} points "
+              f"({100*below.mean():.1f}%) have Tmrt BELOW air temp -- "
+              f"implausible outdoors in daytime (cool-wall / deep-shade artifact).")
+        belows = pts.tmrt_solweig < args.air_temp_c
+        print(f"  SOLWEIG: {int(belows.sum())}/{len(pts)} points "
+              f"({100*belows.mean():.1f}%).")
+
     if out_dir:
         fig.savefig(out_dir / "mrt_utci_comparison.png", dpi=150)
         sdf.to_csv(out_dir / "comparison_stats.csv", index=False)
-        pd.DataFrame(point_rows).to_csv(out_dir / "comparison_points.csv", index=False)
+        pts.to_csv(out_dir / "comparison_points.csv", index=False)
+        # NEW files (do not overwrite the two above):
+        ddf.to_csv(out_dir / "comparison_distribution.csv", index=False)
+        lvl.to_csv(out_dir / "comparison_gap_by_level.csv", index=False)
+
+        # Scatter (ours vs SOLWEIG) with 1:1 line + diff histogram: shows the
+        # systematic offset, the spread, and how much is a shift vs scatter.
+        o = pts.tmrt_ours.values; s = pts.tmrt_solweig.values
+        fig2, ax2 = plt.subplots(1, 2, figsize=(13, 5.5))
+        for rid in routes:
+            p = pts[pts.route_id == rid]
+            ax2[0].scatter(p.tmrt_ours, p.tmrt_solweig, s=6, alpha=0.4,
+                           label=f"Route {rid}")
+        lo = float(np.nanmin([o.min(), s.min()])); hi = float(np.nanmax([o.max(), s.max()]))
+        ax2[0].plot([lo, hi], [lo, hi], "k--", lw=1, label="1:1")
+        ax2[0].set_xlabel("ours Tmrt [C]"); ax2[0].set_ylabel("SOLWEIG Tmrt [C]")
+        ax2[0].set_title("Point Tmrt: ours vs SOLWEIG"); ax2[0].legend(fontsize=8)
+        ax2[0].set_aspect("equal"); ax2[0].grid(alpha=0.3)
+        d = s - o; d = d[np.isfinite(d)]
+        ax2[1].hist(d, bins=40, color="#8888cc", edgecolor="white")
+        ax2[1].axvline(0, color="k", lw=1); ax2[1].axvline(float(d.mean()), color="r", lw=1.5,
+                     label=f"mean {d.mean():+.1f}")
+        ax2[1].set_xlabel("SOLWEIG - ours Tmrt [C]"); ax2[1].set_ylabel("count")
+        ax2[1].set_title("Tmrt difference distribution"); ax2[1].legend(fontsize=8)
+        ax2[1].grid(alpha=0.3)
+        fig2.tight_layout()
+        fig2.savefig(out_dir / "comparison_scatter_diff.png", dpi=150)
+        plt.close(fig2)
+
         print(f"\nSaved to {out_dir}/: mrt_utci_comparison.png, "
-              f"comparison_stats.csv, comparison_points.csv")
+              f"comparison_stats.csv, comparison_points.csv, "
+              f"comparison_distribution.csv, comparison_gap_by_level.csv, "
+              f"comparison_scatter_diff.png")
         plt.close(fig)
     else:
         plt.show()
