@@ -77,10 +77,15 @@ END_LATLON="${END_LATLON:-}"
 N_ROUTES="${N_ROUTES:-3}"             # number of edge-disjoint routes to compare
 
 # ---- WEATHER: real time series (preferred) or parametric fallback ----------
-# If a weather CSV exists it is used for stages 08/09 (columns: hour|time,
-# air_temp_C, rh_pct, wind_ms; missing columns fall back to the constants
-# below). Point WEATHER_CSV at weather_miami_july06.csv to match the July 6
-# solar run exactly.
+# The weather CSV now drives the WHOLE pipeline (columns: hour|time,
+# air_temp_C, rh_pct, wind_ms): the MRT stages (05/05*) read air temperature
+# and RH from it -- RH feeds the humidity-dependent (Prata) sky longwave, and
+# air temperature drives Tmrt -- so 05b (which inherits both via times.csv)
+# and the route stages 08/09 all use one identical, real forcing. Previously
+# only 08/09 used the CSV while the MRT ran on parametric weather, which made
+# the MRT longwave inconsistent with the route stress and with any external
+# (e.g. SOLWEIG) comparison. Point WEATHER_CSV at weather_miami_july06.csv to
+# match the July 6 solar run exactly.
 WEATHER_CSV="${WEATHER_CSV:-$PWD/weather.csv}"
 RH_PCT="${RH_PCT:-70}"                # constant RH if no CSV / no rh column
 WIND_MS="${WIND_MS:-3.1}"             # constant wind if no CSV / no wind col
@@ -284,7 +289,8 @@ if active 3 && ! skip 05; then
         --latitude "$LAT" --longitude "$LON" --timezone "$TZ" \
         --cloud-cover-fraction "$CLOUD" \
         --k-lad-direct "$K_LAD_DIRECT" --k-lad-diffuse "$K_LAD_DIFFUSE" \
-        --clear-sky-emissivity "$CLEAR_SKY_MODEL"
+        --clear-sky-emissivity "$CLEAR_SKY_MODEL" \
+        "${WEATHER_ARG[@]}"
 fi
 if active 4; then
     require_file "$MRT_DIR/path_xyz.npy" 3
@@ -343,7 +349,8 @@ if active 6 && ! skip 05FACET; then
         --cloud-cover-fraction "$CLOUD" \
         --k-lad-direct "$K_LAD_DIRECT" --k-lad-diffuse "$K_LAD_DIFFUSE" \
         --clear-sky-emissivity "$CLEAR_SKY_MODEL" \
-        --facet-thermal-dir "$THERMAL_DIR"
+        --facet-thermal-dir "$THERMAL_DIR" \
+        "${WEATHER_ARG[@]}"
 fi
 if active 7; then
     require_file "$VIS_MRT_DIR/tmrt_matrix_C.npy" 6
