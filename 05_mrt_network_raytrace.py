@@ -97,7 +97,15 @@ def parse_args():
     # MRT model constants -- same as the original synthetic script
     p.add_argument("--person-emissivity", type=float, default=0.97)
     p.add_argument("--person-sw-absorptivity", type=float, default=0.70)
-    p.add_argument("--f-projected-direct", type=float, default=0.25)
+    p.add_argument("--projected-area-model", choices=["standing", "sphere"], default="standing",
+                    help="Body model for the DIRECT-beam projected-area factor. 'standing' "
+                         "(default) uses the SOLWEIG/RayMan/VDI-3787 altitude-dependent f_p(h) "
+                         "for a standing person; 'sphere' uses the constant --f-projected-direct "
+                         "(0.25) of an isotropic globe. Diffuse/reflected/longwave factors are "
+                         "the same for both. See projected_area_factor_standing().")
+    p.add_argument("--f-projected-direct", type=float, default=0.25,
+                    help="Constant direct-beam projected-area factor used only when "
+                         "--projected-area-model=sphere (default: 0.25, a globe)")
     p.add_argument("--f-sky-diffuse", type=float, default=0.50)
     p.add_argument("--f-ground-reflected", type=float, default=0.50)
     p.add_argument("--ground-albedo", type=float, default=None,
@@ -398,6 +406,23 @@ def apply_cloud_adjustment(dni_clear, dhi_clear, elevation_deg, cloud_fraction):
     return np.where(night, 0.0, dni), np.where(night, 0.0, dhi), np.where(night, 0.0, ghi)
 
 
+def projected_area_factor_standing(elevation_deg):
+    """Fanger (1972) projected-area factor f_p for a rotationally-symmetric
+    STANDING person, as a function of solar altitude (degrees).
+
+        f_p(h) = 0.308 * cos( radians( h * (0.998 - h^2 / 50000) ) )
+
+    This is the standing-person projection SOLWEIG/RayMan/VDI-3787 use for the
+    direct beam, replacing the sphere's constant 0.25. It runs ~0.31 at the
+    horizon (low sun rakes the full standing body) down to ~0.08 at the zenith
+    (overhead sun hits only the small top area). Because of that, at high sun
+    the standing person absorbs LESS direct beam than a sphere would -- see the
+    note in estimate_mrt_from_radiation().
+    """
+    b = np.maximum(np.asarray(elevation_deg, dtype=float), 0.0)
+    return 0.308 * np.cos(np.deg2rad(b * (0.998 - b * b / 50000.0)))
+
+
 def estimate_mrt_from_radiation(dni, dhi, ghi, elevation_deg, tau_direct, svf_effective,
                                  air_temp_C, cloud_fraction, args,
                                  L_surround_override=None):
@@ -432,7 +457,15 @@ def estimate_mrt_from_radiation(dni, dhi, ghi, elevation_deg, tau_direct, svf_ef
     else:
         L_surround = args.surrounding_emissivity * SIGMA * surface_K ** 4
 
-    K_direct_abs = args.person_sw_absorptivity * args.f_projected_direct * tau_direct * dni
+    # DIRECT-BEAM PROJECTED-AREA FACTOR -- the one term that distinguishes a
+    # SPHERE body (constant 0.25) from a SOLWEIG-style STANDING person
+    # (altitude-dependent f_p). Diffuse/reflected/longwave angular factors are
+    # ~0.5/0.5/isotropic for both postures (VDI 3787), so only the beam changes.
+    if args.projected_area_model == "standing":
+        f_dir = projected_area_factor_standing(elevation_deg)
+    else:
+        f_dir = args.f_projected_direct
+    K_direct_abs = args.person_sw_absorptivity * f_dir * tau_direct * dni
     K_diffuse_abs = args.person_sw_absorptivity * args.f_sky_diffuse * svf_effective * dhi
 
     # ------------------------------------------------------------------
