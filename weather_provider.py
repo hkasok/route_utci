@@ -36,6 +36,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from physical_checks import check_air_temp_c, check_rh_pct, check_wind_ms
+
 
 def _decimal_hours_from_time(series):
     t = pd.to_datetime(series)
@@ -50,6 +52,15 @@ class WeatherProvider:
                  air_temp_mean_c=29.0, air_temp_amp_c=4.0, air_temp_peak_hour=15.0,
                  rh_pct=70.0, wind_ms=3.1, strict=False):
         # parametric fallbacks (also fill any column missing from the CSV)
+        # Validate the parametric constants too -- they are used verbatim
+        # whenever the CSV is absent or lacks a column, so a bad --relative-
+        # humidity-pct (e.g. 0.7 meaning 70%) must fail just as loudly.
+        check_air_temp_c([air_temp_mean_c - abs(air_temp_amp_c),
+                          air_temp_mean_c + abs(air_temp_amp_c)],
+                         "parametric air temperature (mean +/- amplitude)")
+        check_rh_pct(rh_pct, "parametric --relative-humidity-pct")
+        check_wind_ms(wind_ms, "parametric --wind-speed-ms")
+
         self.mean_c = air_temp_mean_c
         self.amp_c = air_temp_amp_c
         self.peak_hour = air_temp_peak_hour
@@ -103,6 +114,12 @@ class WeatherProvider:
             self._ta = col("air_temp_c", "air_temp", "tdb_c", "tdb", "ta_c", "ta")
             self._rh = col("rh_pct", "rh", "relative_humidity_pct", "relative_humidity")
             self._wind = col("wind_ms", "wind", "v_ms", "wind_speed_ms", "v")
+            # Validate UNITS and physical range at the source, so a bad CSV
+            # fails here once instead of silently corrupting every stage
+            # (RH as a 0-1 fraction is the classic one -- see physical_checks).
+            ctx = f"weather CSV {csv_path}"
+            checkers = {"air_temp_C": check_air_temp_c, "rh_pct": check_rh_pct,
+                        "wind_ms": check_wind_ms}
             for name, arr in (("air_temp_C", self._ta), ("rh_pct", self._rh),
                               ("wind_ms", self._wind)):
                 if arr is not None:
@@ -110,6 +127,7 @@ class WeatherProvider:
                         raise ValueError(
                             f"weather CSV column '{name}' contains missing or "
                             f"non-numeric values")
+                    checkers[name](arr, f"{ctx} column '{name}'")
                     self.columns_from_csv.append(name)
 
             missing = [c for c in REQUIRED_VARS if c not in self.columns_from_csv]

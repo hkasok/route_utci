@@ -380,8 +380,14 @@ def clear_sky_emissivity(air_temp_C, rh_pct, model="prata"):
         return np.full_like(np.asarray(air_temp_C, dtype=float), 0.78)
     if model != "prata":
         raise ValueError(f"unknown clear-sky emissivity model: {model!r}")
+    # UNIT GUARD: rh_pct must be PERCENT. Passing a 0-1 fraction here yields a
+    # desert-dry sky (eps ~0.67 instead of ~0.89 at 32 C/70%) -- about 55 W/m2
+    # of missing longwave and several degrees of Tmrt, with no other symptom.
+    from physical_checks import check_air_temp_c, check_rh_pct
+    check_air_temp_c(air_temp_C, "clear_sky_emissivity (Prata) air temperature")
+    check_rh_pct(rh_pct, "clear_sky_emissivity (Prata) relative humidity")
     air_K = np.asarray(air_temp_C, dtype=float) + 273.15
-    e0 = np.clip(np.asarray(rh_pct, dtype=float), 0.0, 100.0) / 100.0 \
+    e0 = np.asarray(rh_pct, dtype=float) / 100.0 \
         * saturation_vapor_pressure_hPa(air_temp_C)
     w = 46.5 * (e0 / air_K)                       # precipitable water, cm
     return 1.0 - (1.0 + w) * np.exp(-np.sqrt(1.2 + 3.0 * w))

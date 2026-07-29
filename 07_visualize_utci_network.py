@@ -51,6 +51,7 @@ import matplotlib.colors as mcolors
 from pythermalcomfort.models import utci
 
 from weather_provider import add_weather_args, provider_from_args
+from physical_checks import check_utci_inputs
 
 
 # ============================================================
@@ -349,6 +350,8 @@ def main():
         v = np.full(n_points, max(float(v_h), 0.5))
         rh = np.full(n_points, float(rh_h))
         ta_arr = np.full(n_points, float(ta))
+        if it == 0:   # units/range guard once (values are uniform per step)
+            check_utci_inputs(ta_arr, tr, v, rh, f"stage 07 UTCI at {t}")
         result = utci(tdb=ta_arr, tr=tr, v=v, rh=rh, limit_inputs=False)
         utci_matrix[it] = result.utci
 

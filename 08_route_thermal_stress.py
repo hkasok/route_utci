@@ -46,6 +46,7 @@ from pythermalcomfort.models import utci
 
 from weather_provider import add_weather_args, provider_from_args
 from route_selection import select_routes, load_selected_routes
+from physical_checks import check_utci_inputs
 
 
 # UTCI thermal-stress category boundaries (deg C) for reporting a route's
@@ -339,6 +340,10 @@ def main():
 
         # UTCI along the route -- SAME pythermalcomfort call as stage 07,
         # vectorized over all route points at once.
+        # Units/range guard: catches an RH fraction-vs-percent slip, kelvin
+        # air/Tmrt, or km/h wind before they become plausible-looking UTCI.
+        check_utci_inputs(ta_trace, tmrt_trace, wind_trace, rh_trace,
+                          f"stage 08 UTCI, route {i + 1}")
         utci_trace = utci(tdb=ta_trace, tr=tmrt_trace,
                           v=wind_trace, rh=rh_trace,
                           limit_inputs=False).utci

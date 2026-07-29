@@ -50,6 +50,7 @@ from pythermalcomfort.models import JOS3
 from weather_provider import add_weather_args, provider_from_args
 from subject_profiles import PROFILES, get_profile, apply_profile_to_model
 from route_selection import select_routes, load_selected_routes
+from physical_checks import check_jos3_inputs
 
 
 CORE_TEMP_SETPOINT_C = 37.0  # used only for reporting "rise from baseline"
@@ -245,8 +246,14 @@ def main():
         h0 = args.departure_hour % 24.0
         tmrt0 = np.interp(h0, time_hours, tmrt_matrix[:, nearest_idx[0]], period=24.0)
         ta0 = weather.air_temp_c(h0)
+        rh0, v0 = weather.rh_pct(h0), weather.wind_ms(h0)
+        # JOS-3's .rh is RELATIVE HUMIDITY IN PERCENT (library default 50), the
+        # same convention as UTCI -- guard the units before they enter the
+        # thermoregulation model, where a fraction would read as ~0.7% (arid).
+        check_jos3_inputs(ta0, tmrt0, v0, rh0,
+                          f"stage 09 JOS-3 equilibration, route {i + 1}")
         model.tdb, model.tr = ta0, tmrt0
-        model.rh, model.v = weather.rh_pct(h0), weather.wind_ms(h0)
+        model.rh, model.v = rh0, v0
         if args.equilibration_min > 0:
             model.simulate(times=int(args.equilibration_min), dtime=60, output=False)
         start_core_c = weighted_core_c(model)
@@ -262,8 +269,12 @@ def main():
             ta_now = weather.air_temp_c(h)
             dt_s = (arrival_hour[j] - arrival_hour[j - 1]) * 3600.0 if j > 0 else 0.0
 
+            rh_now, v_now = weather.rh_pct(h), weather.wind_ms(h)
+            if j == 0:   # guard once per route (uniform drivers, hot loop)
+                check_jos3_inputs(ta_now, tmrt_now, v_now, rh_now,
+                                  f"stage 09 JOS-3 walk, route {i + 1}")
             model.tdb, model.tr = ta_now, tmrt_now
-            model.rh, model.v = weather.rh_pct(h), weather.wind_ms(h)
+            model.rh, model.v = rh_now, v_now
             if dt_s > 0:
                 model.simulate(times=1, dtime=dt_s, output=False)
 
