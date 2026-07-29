@@ -375,7 +375,8 @@ if active 7 && ! skip 07; then
         --results-dir "$VIS_MRT_DIR" \
         --buildings-stl "$BUILDINGS_STL" \
         --output-dir "$VIS_DIR/utci" \
-        --relative-humidity-pct "$RH_PCT" --wind-speed-ms "$WIND_MS"
+        --relative-humidity-pct "$RH_PCT" --wind-speed-ms "$WIND_MS" \
+        "${WEATHER_ARG[@]}"
 fi
 
 # ----------------------------------------------------------------------------

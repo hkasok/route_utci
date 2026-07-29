@@ -1,23 +1,25 @@
 """
 07_visualize_utci_network.py -- compute and visualize UTCI along the
-pedestrian network, combining your already-computed spatially-resolved
-Tmrt with representative (spatially-uniform) Miami summer air
-temperature, relative humidity, and wind speed.
+selected routes, combining the already-computed spatially-resolved Tmrt
+with (spatially-uniform) air temperature, relative humidity and wind.
 
 UTCI itself is computed with `pythermalcomfort` (validated open-source
 implementation of the Bröde et al. 2012 operational UTCI polynomial) --
 not hand-transcribed, to avoid transcription errors in what is a very
 long 6th-order 4-variable regression.
 
-DEFAULT MIAMI SUMMER ASSUMPTIONS (all overridable via CLI args), sourced
-from NWS/NOAA climate normals for Miami International Airport:
-    Air temperature : diurnal sinusoid, mean 29 C, +/-4 C amplitude
-                       (July/August daily lows ~25 C, highs ~33 C)
-    Relative humidity: constant 70% (representative summer average;
-                       real diurnal range is wider, ~63-86%, but held
-                       constant here per your "constant value" request)
-    Wind speed       : constant 3.1 m/s (~7 mph, the Miami summer
-                       average -- summer is Miami's calmest wind season)
+WEATHER comes from the SHARED provider (weather_provider.py), i.e. the
+SAME --weather-csv used by the MRT stage (05) and the route-stress stages
+(08/09), interpolated to each timestep. This stage previously had its own
+private parametric-only assumptions, so the UTCI MAP could be computed
+from different air temperature / RH / wind than the UTCI ROUTE numbers,
+making the two non-comparable. Without a CSV it falls back to the shared
+parametric defaults (air-temp cosine mean 29 C +/-4 C peaking 15:00, RH
+70%, wind 3.1 m/s) and prints a warning.
+
+NOTE ON WIND: UTCI expects wind at the 10 m reference height, so the CSV's
+wind_ms must be a 10 m value (the same requirement stage 08 documents).
+Values below 0.5 m/s are floored, as the polynomial is unreliable there.
 
 These three are held SPATIALLY UNIFORM across the whole network -- see
 the earlier discussion: Tmrt dominates UTCI's spatial variability by a
@@ -47,6 +49,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 from pythermalcomfort.models import utci
+
+from weather_provider import add_weather_args, provider_from_args
 
 
 # ============================================================
@@ -114,27 +118,18 @@ def parse_args():
                     help="Use the classic full cold-to-hot 10-category UTCI "
                          "scale instead of the Miami warm-only split scale")
 
-    p.add_argument("--air-temp-mean-c", type=float, default=29.0,
-                    help="Diurnal mean air temp, deg C (default: 29.0, Miami summer)")
-    p.add_argument("--air-temp-amp-c", type=float, default=4.0,
-                    help="Diurnal amplitude, deg C (default: 4.0 -> ~25-33 C range)")
-    p.add_argument("--air-temp-peak-hour", type=float, default=15.0,
-                    help="Hour of daily max air temp (default: 15.0)")
-    p.add_argument("--relative-humidity-pct", type=float, default=70.0,
-                    help="Constant RH, percent (default: 70.0, Miami summer average)")
-    p.add_argument("--wind-speed-ms", type=float, default=3.1,
-                    help="Constant wind speed, m/s (default: 3.1, ~7mph Miami summer "
-                         "average). UTCI's reference/valid range treats <0.5 m/s as "
-                         "unreliable -- this default is well above that floor.")
+    # Weather now comes from the SHARED provider (same flags, plus
+    # --weather-csv / --require-weather-csv) so this map is driven by exactly
+    # the same air temperature, RH and wind as the MRT stage (05) and the route
+    # stages (08/09). Previously this stage had private parametric-only
+    # arguments, so the UTCI MAP could be computed from different weather than
+    # the UTCI ROUTE numbers -- the two were not comparable.
+    add_weather_args(p)
 
     p.add_argument("--n-static-panels", type=int, default=6)
     p.add_argument("--n-animated-points", type=int, default=20000)
     p.add_argument("--point-size", type=float, default=2.0)
     return p.parse_args()
-
-
-def air_temperature_c(hour_of_day, mean_c, amp_c, peak_hour):
-    return mean_c + amp_c * np.cos(2.0 * np.pi * (hour_of_day - peak_hour) / 24.0)
 
 
 def select_scale(full_scale):
@@ -293,7 +288,7 @@ def make_interactive_animation(path_xy, utci_matrix, times, out_path, n_sub,
     fig = go.Figure(data=base_traces + [point_trace], frames=frames)
     fig.update_layout(
         width=1000, height=800,
-        title="UTCI along selected routes (24h, Miami summer conditions)",
+        title="UTCI along selected routes (24h)",
         xaxis=dict(scaleanchor="y", title="X [m]"),
         yaxis=dict(title="Y [m]"),
         updatemenus=[dict(
@@ -330,22 +325,30 @@ def main():
     nt, n_points = tmrt_matrix.shape
     print(f"  {n_points:,} points, {nt} time steps")
 
-    print("\nMiami summer assumptions (spatially uniform):")
-    print(f"  Air temp : {args.air_temp_mean_c} +/- {args.air_temp_amp_c} C, "
-          f"peak at {args.air_temp_peak_hour}:00")
-    print(f"  RH       : {args.relative_humidity_pct}% (constant)")
-    print(f"  Wind     : {args.wind_speed_ms} m/s (constant)")
+    # Weather from the SHARED provider -- identical source to 05/08/09.
+    weather = provider_from_args(args)
+    prov = weather.provenance()
+    print(f"\nWeather (spatially uniform, same source as MRT + route stages):")
+    print(f"  {weather.describe()}")
+    for var, label in (("air_temp_C", "air temperature"),
+                       ("rh_pct", "relative humidity"),
+                       ("wind_ms", "wind speed")):
+        print(f"    {label:<20s} <- {prov['source_' + var]}")
+    if not prov["all_from_csv"]:
+        print("  ! WARNING: at least one UTCI driver is PARAMETRIC, not measured.")
+        print("  ! This map will not be comparable to the stage-08 route numbers")
+        print("  ! unless they are forced identically. Pass --weather-csv ...")
 
     print("\nComputing UTCI for every point and time step...")
     utci_matrix = np.zeros_like(tmrt_matrix)
     for it, t in enumerate(times):
         hour = t.hour + t.minute / 60.0
-        ta = air_temperature_c(hour, args.air_temp_mean_c, args.air_temp_amp_c,
-                                args.air_temp_peak_hour)
+        ta, rh_h, v_h = weather.forcing_at(hour)
         tr = tmrt_matrix[it]
-        v = np.full(n_points, max(args.wind_speed_ms, 0.5))
-        rh = np.full(n_points, args.relative_humidity_pct)
-        ta_arr = np.full(n_points, ta)
+        # UTCI's polynomial is unreliable below 0.5 m/s -- keep the existing floor.
+        v = np.full(n_points, max(float(v_h), 0.5))
+        rh = np.full(n_points, float(rh_h))
+        ta_arr = np.full(n_points, float(ta))
         result = utci(tdb=ta_arr, tr=tr, v=v, rh=rh, limit_inputs=False)
         utci_matrix[it] = result.utci
 
