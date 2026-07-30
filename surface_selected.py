@@ -56,16 +56,20 @@ silently overwrite a previous route's split (it is "all" for --all-routes).
 Coordinates are preserved exactly (no transform), so the two halves overlay
 the original STL and each other.
 
-Run (route 2 by default; other ray settings mirror 05a):
-    python3 surface_selected.py \
-        --buildings-stl out_full/02_final/building_final.stl \
-        --vegetation-stl out_full/02_final/vegetation_final.stl \
-        --ground-stl out_full/02_final/ground_and_water_final.stl \
-        --mrt-dir run_output/mrt_facet_out
+Run (no arguments needed after a normal pipeline run -- all inputs default to
+the pipeline's standard locations, viewpoints default to route 2):
+    python3 surface_selected.py
 
     # a different route, or all of them
-        --route-id 1
-        --all-routes
+    python3 surface_selected.py --route-id 1
+    python3 surface_selected.py --all-routes
+
+    # non-standard locations
+    python3 surface_selected.py \
+        --buildings-stl path/to/building_final.stl \
+        --vegetation-stl path/to/vegetation_final.stl \
+        --ground-stl path/to/ground_and_water_final.stl \
+        --mrt-dir path/to/mrt_out
 
 Optional cross-check against a real 05a run (only meaningful with
 --all-routes, since 05a traces every route):
@@ -102,12 +106,18 @@ def parse_args():
     p = argparse.ArgumentParser(
         description="Split each input STL into route-visible (selected for "
                     "longwave computation) and unselected surfaces")
-    p.add_argument("--buildings-stl", required=True)
-    p.add_argument("--vegetation-stl", required=True)
-    p.add_argument("--ground-stl", required=True)
-    p.add_argument("--mrt-dir", required=True,
+    # Defaults are the pipeline's standard locations (same as start.sh), so a
+    # bare `python3 surface_selected.py` works after a normal run.
+    p.add_argument("--buildings-stl", default="out_full/02_final/building_final.stl",
+                   help="(default: out_full/02_final/building_final.stl)")
+    p.add_argument("--vegetation-stl", default="out_full/02_final/vegetation_final.stl",
+                   help="(default: out_full/02_final/vegetation_final.stl)")
+    p.add_argument("--ground-stl", default="out_full/02_final/ground_and_water_final.stl",
+                   help="(default: out_full/02_final/ground_and_water_final.stl)")
+    p.add_argument("--mrt-dir", default="run_output/mrt_facet_out",
                    help="Output dir of 05_mrt_network_raytrace.py (needs "
-                        "path_xyz.npy -- the route points to look from)")
+                        "path_xyz.npy + path_segment_id.npy -- the route points "
+                        "to look from). Default: run_output/mrt_facet_out")
     p.add_argument("--output-dir", default="surface_selected",
                    help="Output folder (default: ./surface_selected)")
 
