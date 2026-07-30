@@ -14,6 +14,17 @@ within --max-distance. So "selected" = visible from the route AND inside the
 longwave range cap. Anything invisible from the route, or beyond the distance
 cull, is unselected and never gets a surface temperature in 05b.
 
+ONE ROUTE AT A TIME (default route 2)
+-------------------------------------
+Rays are cast from ONE route only -- --route-id, default 2 -- so "selected" is
+what THAT route sees and everything else (including surfaces the other routes
+see) lands in the unselected half. Route membership comes from
+path_segment_id.npy written by stage 05: it holds the polyline index of each
+route point, and route_polylines.pkl stores one polyline per route in route
+order, so route_id = segment_id + 1.
+Pass --all-routes to use every route at once (which is what the real 05a run
+does, and the only mode where --facets-npz can match exactly).
+
 This script reuses the SAME functions as 05a (make_sphere_directions,
 nearest_hit_multi, get_intersector) and the SAME default parameters, so the
 split is faithful rather than an approximation. Because only the ray
@@ -34,23 +45,31 @@ The report labels which rule was applied to each mesh.
 
 OUTPUTS (in --output-dir, default ./surface_selected)
 ----------------------------------------------------
-  <stem>_selected.stl     triangles selected for longwave computation
-  <stem>_unselected.stl   the remaining triangles
-  selection_split_report.txt   face/area counts and percentages per mesh
-  selected_faces_<stem>.npy    the selected face indices (for scripting)
+  <stem>_route<N>_selected.stl     triangles selected for longwave computation
+  <stem>_route<N>_unselected.stl   the remaining triangles
+  selection_split_report.txt       face/area counts and percentages per mesh
+  selected_faces_<stem>_route<N>.npy  the selected face indices (for scripting)
+
+The route tag is in the filenames so running a different --route-id cannot
+silently overwrite a previous route's split (it is "all" for --all-routes).
 
 Coordinates are preserved exactly (no transform), so the two halves overlay
 the original STL and each other.
 
-Run (defaults mirror the pipeline's 05a settings):
+Run (route 2 by default; other ray settings mirror 05a):
     python3 surface_selected.py \
         --buildings-stl out_full/02_final/building_final.stl \
         --vegetation-stl out_full/02_final/vegetation_final.stl \
         --ground-stl out_full/02_final/ground_and_water_final.stl \
         --mrt-dir run_output/mrt_facet_out
 
-Optional cross-check against a real 05a run (proves this reproduces it):
-        --facets-npz run_output/thermal_out/facets.npz
+    # a different route, or all of them
+        --route-id 1
+        --all-routes
+
+Optional cross-check against a real 05a run (only meaningful with
+--all-routes, since 05a traces every route):
+        --all-routes --facets-npz run_output/thermal_out/facets.npz
 """
 
 import argparse
@@ -91,6 +110,16 @@ def parse_args():
                         "path_xyz.npy -- the route points to look from)")
     p.add_argument("--output-dir", default="surface_selected",
                    help="Output folder (default: ./surface_selected)")
+
+    p.add_argument("--route-id", type=int, default=2,
+                   help="Cast rays from THIS route only, so 'selected' is what "
+                        "this one route sees and everything else (including what "
+                        "the other routes see) is unselected. 1-based, matching "
+                        "the route ids reported by stages 08/09 (default: 2)")
+    p.add_argument("--all-routes", action="store_true",
+                   help="Use every route instead of a single one -- this is what "
+                        "the real 05a run does, and the only mode in which "
+                        "--facets-npz can match exactly.")
 
     # Defaults deliberately identical to 05a so the split matches the workflow.
     p.add_argument("--point-stride", type=int, default=8,
@@ -201,13 +230,55 @@ def main():
             f"(./start.sh 3) so the route points exist, or point --mrt-dir at "
             f"an existing MRT output directory.")
     path_xyz = np.load(pxyz)
+    n_all_pts = len(path_xyz)
+
+    # ------------------------------------------------------------------
+    # Restrict the viewpoints to ONE route unless --all-routes.
+    # path_segment_id.npy holds the polyline index per route point, and
+    # route_polylines.pkl stores one polyline per route in route order, so
+    # route_id = segment_id + 1.
+    # ------------------------------------------------------------------
+    if args.all_routes:
+        route_tag = "all"
+        route_desc = "ALL routes"
+        print(f"\n  Viewpoints: ALL routes ({n_all_pts:,} points)")
+    else:
+        seg_path = mrt_dir / "path_segment_id.npy"
+        if not seg_path.is_file():
+            raise SystemExit(
+                f"ERROR: {seg_path} not found, so route membership is unknown. "
+                f"Re-run stage 05 (./start.sh 3) to write it, or pass "
+                f"--all-routes to use every route point.")
+        seg = np.load(seg_path)
+        if len(seg) != n_all_pts:
+            raise SystemExit(
+                f"ERROR: path_segment_id.npy has {len(seg):,} entries but "
+                f"path_xyz.npy has {n_all_pts:,}. They are from different runs "
+                f"-- re-run stage 05 so both match.")
+        route_ids = seg + 1                      # 1-based, as stages 08/09 report
+        available = np.unique(route_ids)
+        counts = {int(r): int((route_ids == r).sum()) for r in available}
+        print(f"\n  Route points per route: "
+              + ", ".join(f"route {r}: {c:,}" for r, c in counts.items()))
+        if args.route_id not in counts:
+            raise SystemExit(
+                f"ERROR: --route-id {args.route_id} not present. This MRT run "
+                f"contains route(s) {sorted(counts)}. Pick one of those, or use "
+                f"--all-routes.")
+        keep = route_ids == args.route_id
+        path_xyz = path_xyz[keep]
+        route_tag = f"route{args.route_id}"
+        route_desc = f"route {args.route_id} ONLY"
+        print(f"  Viewpoints: {route_desc} -- {len(path_xyz):,} of "
+              f"{n_all_pts:,} route points")
+
     coarse_idx = np.arange(0, len(path_xyz), max(1, args.point_stride))
     coarse_xyz = path_xyz[coarse_idx]
-    print(f"\n  Route points: {len(path_xyz):,} full -> {len(coarse_xyz):,} "
-          f"traced (stride {args.point_stride})")
+    print(f"  Traced: {len(coarse_xyz):,} points (stride {args.point_stride})")
     print(f"  Longwave range cap: {args.max_distance:g} m")
 
-    print("\nRay-casting the route's full-sphere view (same test as 05a)...")
+    print(f"\nRay-casting the full-sphere view from {route_desc} "
+          f"(same test as 05a)...")
     selected = selected_faces_by_mesh(meshes, coarse_xyz, args)
 
     # ------------------------------------------------------------------
@@ -215,6 +286,11 @@ def main():
     # ------------------------------------------------------------------
     crosscheck_lines = []
     if args.facets_npz:
+        if not args.all_routes:
+            print(f"\n  NOTE: --facets-npz compares against a 05a run that traced "
+                  f"ALL routes, but this split used {route_desc}. Fewer selected "
+                  f"faces here is EXPECTED, not an error. Use --all-routes for a "
+                  f"like-for-like check.")
         fz = np.load(args.facets_npz)
         for mid in (MESH_BUILDINGS, MESH_GROUND):
             ref = np.unique(fz["face_id"][fz["mesh_id"] == mid]).astype(np.int64)
@@ -229,7 +305,7 @@ def main():
                 f"{len(got):,} -> {status}")
         print("\nCross-check vs 05a facets.npz:")
         print("\n".join(crosscheck_lines))
-        if any("DIFFERS" in l for l in crosscheck_lines):
+        if any("DIFFERS" in l for l in crosscheck_lines) and args.all_routes:
             print("  NOTE: a difference means the ray parameters here do not "
                   "match that 05a run (check --point-stride / --n-lw-* / "
                   "--max-distance against its config.json).")
@@ -245,20 +321,20 @@ def main():
         sel = selected[mid]
         unsel = np.setdiff1d(np.arange(n_all, dtype=np.int64), sel)
 
-        sel_path = out_dir / f"{stem}_selected.stl"
+        sel_path = out_dir / f"{stem}_{route_tag}_selected.stl"
         n_sel, a_sel = write_half(mesh, sel, sel_path)
-        print(f"  {sel_path.name:<44} {n_sel:>9,} faces")
+        print(f"  {sel_path.name:<52} {n_sel:>9,} faces")
 
         n_unsel, a_unsel = 0, 0.0
         if not args.no_unselected:
-            unsel_path = out_dir / f"{stem}_unselected.stl"
+            unsel_path = out_dir / f"{stem}_{route_tag}_unselected.stl"
             n_unsel, a_unsel = write_half(mesh, unsel, unsel_path)
-            print(f"  {unsel_path.name:<44} {n_unsel:>9,} faces")
+            print(f"  {unsel_path.name:<52} {n_unsel:>9,} faces")
         else:
             n_unsel = len(unsel)
             a_unsel = float(mesh.area_faces[unsel].sum()) if len(unsel) else 0.0
 
-        np.save(out_dir / f"selected_faces_{stem}.npy", sel)
+        np.save(out_dir / f"selected_faces_{stem}_{route_tag}.npy", sel)
         a_all = float(mesh.area_faces.sum())
         rows.append(dict(mesh=MESH_LABEL[mid], stem=stem, n_all=n_all,
                          n_sel=n_sel, n_unsel=n_unsel, a_all=a_all,
@@ -272,12 +348,19 @@ def main():
     # ------------------------------------------------------------------
     lines = ["Route-visible surface split (standalone diagnostic)",
              "",
-             f"  route points     : {len(path_xyz):,} full -> "
-             f"{len(coarse_xyz):,} traced (stride {args.point_stride})",
+             f"  VIEWPOINTS       : {route_desc}",
+             f"  route points     : {len(path_xyz):,} used (of {n_all_pts:,} "
+             f"in this MRT run) -> {len(coarse_xyz):,} traced "
+             f"(stride {args.point_stride})",
              f"  LW range cap     : {args.max_distance:g} m",
              f"  ray directions   : {args.n_lw_azimuth} az x "
              f"{args.n_lw_elevation} el (full sphere)",
              ""]
+    if not args.all_routes:
+        lines += [f"  NOTE: 'selected' is what route {args.route_id} sees. Surfaces "
+                  f"visible only from the",
+                  f"        other routes are in the UNSELECTED half by design.",
+                  ""]
     for r in rows:
         pf = 100.0 * r["n_sel"] / max(1, r["n_all"])
         pa = 100.0 * r["a_sel"] / max(1e-12, r["a_all"])
@@ -291,14 +374,15 @@ def main():
             ""]
     if crosscheck_lines:
         lines += ["  Cross-check vs 05a facets.npz:"] + crosscheck_lines + [""]
-    lines += ["  Files: <stem>_selected.stl / <stem>_unselected.stl",
-              "         selected_faces_<stem>.npy (face indices)",
+    lines += [f"  Files: <stem>_{route_tag}_selected.stl / "
+              f"<stem>_{route_tag}_unselected.stl",
+              f"         selected_faces_<stem>_{route_tag}.npy (face indices)",
               "  Coordinates are unchanged, so both halves overlay the original.",
               ""]
     report = "\n".join(lines)
     (out_dir / "selection_split_report.txt").write_text(report)
     print("\n" + report)
-    print(f"[surface_selected] output_dir={out_dir} "
+    print(f"[surface_selected] output_dir={out_dir} viewpoints={route_tag} "
           + " ".join(f"{r['mesh']}_selected={r['n_sel']}" for r in rows))
 
 
