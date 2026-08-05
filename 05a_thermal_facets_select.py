@@ -57,6 +57,7 @@ Run:
 """
 
 import argparse
+import hashlib
 import json
 import time
 from pathlib import Path
@@ -68,6 +69,8 @@ import trimesh
 from thermal_common import (CLASS_GROUND, CLASS_ROOF, CLASS_WALL,
                             get_intersector, make_sphere_directions,
                             nearest_hit_multi)
+from osm_ground_materials import (GROUND_FACE_MATERIAL_MAP,
+                                  GROUND_MATERIAL_CATALOG)
 
 MESH_BUILDINGS = 0
 MESH_GROUND = 1
@@ -84,6 +87,10 @@ def parse_args():
                    help="Output dir of 05_mrt_network_raytrace.py "
                         "(needs path_xyz.npy)")
     p.add_argument("--output-dir", required=True)
+    p.add_argument("--ground-material-dir", default=None,
+                   help="Optional output of prepare_osm_ground_materials.py. "
+                        "This assigns materials to ground face IDs only and "
+                        "does not affect route geometry or connectivity.")
 
     p.add_argument("--point-stride", type=int, default=8,
                    help="Use every Nth route point for the LW view raytrace "
@@ -240,8 +247,48 @@ def main():
                        np.where(normals[:, 2] > args.roof_normal_z,
                                 CLASS_ROOF, CLASS_WALL)).astype(np.int8)
 
+    material_name = np.where(classes == CLASS_GROUND, "ground",
+                             np.where(classes == CLASS_ROOF, "roof", "wall"))
+    material_source = np.full(n_facets, "legacy_surface_class", dtype="U32")
+    if args.ground_material_dir:
+        material_dir = Path(args.ground_material_dir)
+        map_path = material_dir / GROUND_FACE_MATERIAL_MAP
+        catalog_path = material_dir / GROUND_MATERIAL_CATALOG
+        if not map_path.is_file() or not catalog_path.is_file():
+            raise FileNotFoundError(
+                "--ground-material-dir must contain ground_face_materials.npz "
+                "and ground_material_catalog.json")
+        with open(catalog_path, encoding="utf-8") as stream:
+            catalog = json.load(stream)
+        ground_material_id = np.load(map_path)["material_id"]
+        if len(ground_material_id) != len(meshes[MESH_GROUND].faces):
+            raise ValueError(
+                f"ground material map has {len(ground_material_id)} faces but "
+                f"the current ground mesh has {len(meshes[MESH_GROUND].faces)}; "
+                "regenerate the material map for this exact terrain mesh")
+        expected_hash = catalog.get("ground_mesh_signature", {}).get(
+            "sha256_vertices_faces")
+        if expected_hash:
+            ground_mesh = meshes[MESH_GROUND]
+            payload = np.asarray(ground_mesh.faces, dtype=np.int64).tobytes()
+            payload += np.asarray(ground_mesh.vertices, dtype=np.float64).tobytes()
+            actual_hash = hashlib.sha256(payload).hexdigest()
+            if actual_hash != expected_hash:
+                raise ValueError(
+                    "ground material map mesh signature does not match the "
+                    "current terrain mesh; regenerate the map")
+        catalog_names = np.asarray(catalog["material_names"], dtype="U64")
+        if np.any((ground_material_id < 0) | (ground_material_id >= len(catalog_names))):
+            raise ValueError("ground material map contains an invalid material ID")
+        ground_sel = mesh_id == MESH_GROUND
+        material_name = material_name.astype("U64")
+        material_name[ground_sel] = catalog_names[
+            ground_material_id[face_id[ground_sel]]]
+        material_source[ground_sel] = "osm_ground_material_map"
+
     np.savez(out_dir / "facets.npz", mesh_id=mesh_id, face_id=face_id,
-             centroid=centroids, normal=normals, area=areas, cls=classes)
+             centroid=centroids, normal=normals, area=areas, cls=classes,
+             material_name=material_name, material_source=material_source)
     sp.save_npz(out_dir / "lw_view_matrix.npz", W)
     np.savez(out_dir / "lw_point_weights.npz", w_sky=w_sky, w_veg=w_veg,
              w_default=w_default)
@@ -256,6 +303,7 @@ def main():
         f"Route-visible facet selection\n"
         f"  traced points        : {n_coarse:,} (of {n_full:,} route points)\n"
         f"  thermal facets kept  : {n_facets:,}\n"
+        f"  route-impact cap     : {args.max_distance:.1f} m\n"
         f"    building faces     : {(mesh_id == MESH_BUILDINGS).sum():,} "
         f"of {n_bldg_faces:,} in mesh "
         f"({100 * (mesh_id == MESH_BUILDINGS).sum() / max(1, n_bldg_faces):.1f}%)\n"
@@ -265,6 +313,8 @@ def main():
         f"    walls/roofs/ground : {(classes == CLASS_WALL).sum():,} / "
         f"{(classes == CLASS_ROOF).sum():,} / "
         f"{(classes == CLASS_GROUND).sum():,}\n"
+        f"  facet materials      : "
+        f"{dict(zip(*np.unique(material_name, return_counts=True)))}\n"
         f"  mean weights         : sky {w_sky.mean():.3f}, veg {w_veg.mean():.3f}, "
         f"surfaces {np.asarray(W.sum(axis=1)).mean():.3f}, "
         f"default {w_default.mean():.3f}\n"

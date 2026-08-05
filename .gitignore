@@ -5,3 +5,9 @@
 !.gitignore
 !*.py
 !*.sh
+!osm_ground_materials.json
+!OSM_GROUND_MATERIALS.md
+!radiant_flux_contribution_results.json
+!RADIANT_FLUX_CONTRIBUTIONS.md
+*.md
+*.md

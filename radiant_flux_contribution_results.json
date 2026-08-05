@@ -1,0 +1,61 @@
+{
+  "enabled": true,
+  "record_primary_mechanisms": true,
+  "record_material_resolved_sources": true,
+  "plot_mode": "primary",
+  "sort_direction": "descending",
+  "sorting_variable": "each_contribution_independently",
+  "plot_style": "independently_ranked_lines",
+  "separate_figure_per_route": true,
+  "combined_multi_panel_figure": true,
+  "shared_y_axis": true,
+  "separate_color_mode": "ranked_emphasis",
+  "combined_color_mode": "fixed_physical_categories",
+  "largest_contribution_color": "#d62728",
+  "surface_longwave_classification_plot": {
+    "enabled": true,
+    "sort_direction": "descending",
+    "separate_figure_per_route": true,
+    "combined_multi_panel_figure": true,
+    "shared_y_axis": true,
+    "minimum_mean_absorbed_flux_Wm2": 1e-08
+  },
+  "fixed_category_colors": {
+    "sw_direct_absorbed_Wm2": "#e31a1c",
+    "sw_diffuse_sky_absorbed_Wm2": "#fdbf6f",
+    "sw_reflected_total_absorbed_Wm2": "#9467bd",
+    "lw_sky_absorbed_Wm2": "#6baed6",
+    "lw_surface_total_absorbed_Wm2": "#756bb1",
+    "lw_asphalt_road_absorbed_Wm2": "#4d4d4d",
+    "lw_asphalt_path_absorbed_Wm2": "#a65628",
+    "lw_concrete_sidewalk_absorbed_Wm2": "#e69f00",
+    "lw_paving_stones_absorbed_Wm2": "#cc79a7",
+    "lw_generic_ground_absorbed_Wm2": "#009e73",
+    "lw_grass_absorbed_Wm2": "#7cae00",
+    "lw_building_wall_absorbed_Wm2": "#0072b2",
+    "lw_roof_absorbed_Wm2": "#6a3d9a",
+    "lw_tree_canopy_absorbed_Wm2": "#33a02c",
+    "lw_tree_trunk_absorbed_Wm2": "#8c510a",
+    "lw_water_absorbed_Wm2": "#00bfc4",
+    "lw_other_surface_absorbed_Wm2": "#999999",
+    "Other": "#969696"
+  },
+  "material_resolved": {
+    "maximum_categories": 16,
+    "minimum_mean_fraction_percent": 0.0,
+    "minimum_mean_absorbed_flux_Wm2": 1e-08,
+    "group_remaining_as_other": true
+  },
+  "validation": {
+    "absolute_tolerance_Wm2": 0.0001,
+    "relative_tolerance": 0.000001,
+    "mrt_absolute_tolerance_C": 0.0002
+  },
+  "export": {
+    "receptor_csv": true,
+    "route_summary_csv": true,
+    "pdf": true,
+    "png": true,
+    "dpi": 300
+  }
+}

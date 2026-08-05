@@ -40,6 +40,7 @@ Run:
 """
 
 import argparse
+import json
 import pickle
 import time
 from pathlib import Path
@@ -49,7 +50,14 @@ import pandas as pd
 import pvlib
 import trimesh
 
-from thermal_common import resolve_ground_albedo, sky_longwave_down
+from thermal_common import (MATERIALS_MANIFEST, RADIOSITY_ENVIRONMENT,
+                            RADIOSITY_MATRIX, resolve_ground_albedo,
+                            sky_longwave_down)
+from radiant_flux_contributions import (
+    CONTRIBUTION_ARCHIVE, CONTRIBUTION_METADATA, LW_SOURCE_COLUMNS,
+    PRIMARY_COLUMNS, SW_SOURCE_COLUMNS, TOTAL_COLUMNS, canonical_lw_source,
+    canonical_sw_source, load_contribution_config,
+    validate_contribution_arrays, write_contribution_metadata)
 from weather_provider import add_weather_args, provider_from_args
 
 
@@ -61,6 +69,12 @@ def parse_args():
     p.add_argument("--polylines-pkl", required=True,
                     help="Output of extract_osm_pedestrian_network.py")
     p.add_argument("--output-dir", required=True)
+    p.add_argument(
+        "--radiant-flux-config", default=None,
+        help=("Optional radiant_flux_contribution_results.json. When omitted, "
+              "contribution recording is disabled and legacy memory/output "
+              "behavior is preserved."),
+    )
 
     p.add_argument("--highway-filter", nargs="*", default=None,
                     help="Only keep polylines with these highway tags (e.g. footway path "
@@ -171,6 +185,16 @@ def parse_args():
     # --air-temp-mean-c, --air-temp-amp-c, --air-temp-peak-hour,
     # --relative-humidity-pct and --wind-speed-ms.
     add_weather_args(p)
+    p.add_argument(
+        "--radiation-csv",
+        default=None,
+        help=(
+            "Optional measured/reference irradiance forcing with an 'hour' or "
+            "'time' column and DNI_Wm2, DHI_Wm2, GHI_Wm2 columns. Values are "
+            "periodically interpolated to model timesteps. When omitted, the "
+            "existing pvlib clear-sky plus cloud-adjustment model is unchanged."
+        ),
+    )
     p.add_argument("--surface-temp-offset-day-c", type=float, default=8.0)
     p.add_argument("--cloud-cover-fraction", type=float, default=0.0)
 
@@ -451,6 +475,58 @@ def apply_cloud_adjustment(dni_clear, dhi_clear, elevation_deg, cloud_fraction):
     return np.where(night, 0.0, dni), np.where(night, 0.0, dhi), np.where(night, 0.0, ghi)
 
 
+def load_radiation_csv(csv_path, model_times):
+    """Load DNI/DHI/GHI forcing and interpolate periodically by decimal hour."""
+    path = Path(csv_path)
+    if not path.is_file():
+        raise FileNotFoundError(f"radiation CSV not found: {path}")
+    frame = pd.read_csv(path)
+    lower = {column.lower(): column for column in frame.columns}
+    if "hour" in lower:
+        source_hours = frame[lower["hour"]].to_numpy(dtype=float)
+    elif "time" in lower:
+        parsed = pd.to_datetime(frame[lower["time"]], errors="raise")
+        source_hours = (
+            parsed.dt.hour
+            + parsed.dt.minute / 60.0
+            + parsed.dt.second / 3600.0
+        ).to_numpy(dtype=float)
+    else:
+        raise ValueError("radiation CSV requires an 'hour' or 'time' column")
+
+    def required_column(*aliases):
+        for alias in aliases:
+            if alias in lower:
+                return frame[lower[alias]].to_numpy(dtype=float)
+        raise ValueError(
+            f"radiation CSV {path} is missing required column; accepted names: "
+            f"{', '.join(aliases)}"
+        )
+
+    dni_source = required_column("dni_wm2", "dni", "kdir")
+    dhi_source = required_column("dhi_wm2", "dhi", "kdiff")
+    ghi_source = required_column("ghi_wm2", "ghi", "kdn")
+    if len(source_hours) < 2:
+        raise ValueError("radiation CSV needs at least two rows to interpolate")
+    arrays = (source_hours, dni_source, dhi_source, ghi_source)
+    if not all(np.isfinite(array).all() for array in arrays):
+        raise ValueError(f"radiation CSV {path} contains non-finite values")
+    if np.any(dni_source < 0) or np.any(dhi_source < 0) or np.any(ghi_source < 0):
+        raise ValueError(f"radiation CSV {path} contains negative irradiance")
+    order = np.argsort(source_hours)
+    source_hours = source_hours[order]
+    target_hours = np.asarray(
+        model_times.hour
+        + model_times.minute / 60.0
+        + model_times.second / 3600.0,
+        dtype=float,
+    )
+    interpolate = lambda values: np.interp(
+        target_hours, source_hours, values[order], period=24.0
+    )
+    return interpolate(dni_source), interpolate(dhi_source), interpolate(ghi_source)
+
+
 def projected_area_factor_standing(elevation_deg):
     """Fanger (1972) projected-area factor f_p for a rotationally-symmetric
     STANDING person, as a function of solar altitude (degrees).
@@ -471,7 +547,11 @@ def projected_area_factor_standing(elevation_deg):
 def estimate_mrt_from_radiation(dni, dhi, ghi, elevation_deg, tau_direct,
                                  svf_person, svf_ground,
                                  air_temp_C, rh_pct, cloud_fraction, args,
-                                 L_surround_override=None, lw_sky_frac=None):
+                                 L_surround_override=None, lw_sky_frac=None,
+                                 local_ground_albedo=None,
+                                 reflected_source_fractions=None,
+                                 L_surround_components=None,
+                                 return_contributions=False):
     # lw_sky_frac: FULL-SPHERE sky fraction for the LONGWAVE blend (from 05a's
     #   cylinder view, ground-inclusive). When None the blend falls back to the
     #   upper-hemisphere svf_person, which UNDER-counts the hot ground below an
@@ -567,36 +647,83 @@ def estimate_mrt_from_radiation(dni, dhi, ghi, elevation_deg, tau_direct,
         # ground is a horizontal receiver -> planar sky-view factor
         k_global_local = tau_direct * dni * sin_el + svf_ground * dhi
 
+    reflecting_albedo = (args.ground_albedo if local_ground_albedo is None
+                         else np.asarray(local_ground_albedo, dtype=float))
+    if (not np.isfinite(reflecting_albedo).all()
+            or np.any((reflecting_albedo < 0) | (reflecting_albedo > 1))):
+        raise ValueError("local ground albedo must be finite and in [0,1]")
     K_reflected_abs = (args.person_sw_absorptivity * args.f_ground_reflected
-                       * args.ground_albedo * k_global_local)
+                       * reflecting_albedo * k_global_local)
 
     K_shortwave_abs = K_direct_abs + K_diffuse_abs + K_reflected_abs
     # Longwave sky/surround blend. Use the FULL-SPHERE sky fraction when given
     # (facet-thermal path) so the ground below an open point is counted; the
     # upper-hemisphere svf_person is a fallback that discards it (legacy).
     sky_frac_lw = lw_sky_frac if lw_sky_frac is not None else svf_person
-    L_effective = sky_frac_lw * L_sky + (1.0 - sky_frac_lw) * L_surround
-    L_longwave_abs = args.person_emissivity * L_effective
+    L_sky_abs = args.person_emissivity * sky_frac_lw * L_sky
+    L_surface_abs = args.person_emissivity * (1.0 - sky_frac_lw) * L_surround
+    L_longwave_abs = L_sky_abs + L_surface_abs
 
     R_abs = L_longwave_abs + K_shortwave_abs
     tmrt_K = (R_abs / (args.person_emissivity * SIGMA)) ** 0.25
-    return tmrt_K - 273.15, R_abs, K_shortwave_abs, L_longwave_abs
+    if not return_contributions:
+        return tmrt_K - 273.15, R_abs, K_shortwave_abs, L_longwave_abs
+
+    template = np.asarray(K_reflected_abs, dtype=float)
+    contributions = {
+        "sw_direct_absorbed_Wm2": np.asarray(K_direct_abs, dtype=float),
+        "sw_diffuse_sky_absorbed_Wm2": np.asarray(K_diffuse_abs, dtype=float),
+        "sw_reflected_total_absorbed_Wm2": template,
+        "lw_sky_absorbed_Wm2": np.asarray(L_sky_abs, dtype=float),
+        "lw_surface_total_absorbed_Wm2": np.asarray(L_surface_abs, dtype=float),
+        "sw_total_absorbed_Wm2": np.asarray(K_shortwave_abs, dtype=float),
+        "lw_total_absorbed_Wm2": np.asarray(L_longwave_abs, dtype=float),
+        "total_absorbed_radiant_flux_Wm2": np.asarray(R_abs, dtype=float),
+    }
+
+    # The current reflected-SW model is a local ground-reflection model. Its
+    # material attribution therefore uses the same route-visible ground-facet
+    # albedo weights that produced ``local_ground_albedo``. No unsupported
+    # wall/roof reflection is invented.
+    sw_fractions = reflected_source_fractions or {
+        "sw_reflected_generic_ground_absorbed_Wm2": np.ones_like(template)
+    }
+    for key in SW_SOURCE_COLUMNS:
+        fraction = np.asarray(sw_fractions.get(key, np.zeros_like(template)), dtype=float)
+        contributions[key] = template * fraction
+
+    if L_surround_components:
+        for key in LW_SOURCE_COLUMNS:
+            incident = np.asarray(
+                L_surround_components.get(key, np.zeros_like(template)), dtype=float)
+            contributions[key] = (
+                args.person_emissivity * (1.0 - sky_frac_lw) * incident)
+    else:
+        # The legacy single-surround model has no hit-source identity. Retain
+        # exact conservation and label that unresolved energy explicitly.
+        for key in LW_SOURCE_COLUMNS:
+            contributions[key] = np.zeros_like(template)
+        contributions["lw_other_surface_absorbed_Wm2"] = np.asarray(
+            L_surface_abs, dtype=float)
+    return tmrt_K - 273.15, R_abs, K_shortwave_abs, L_longwave_abs, contributions
 
 
 class FacetLongwave:
     """Assembles the per-point longwave surround from ray-traced facet
-    surface temperatures (outputs of 05a + 05b).
+    radiosities and surface temperatures (outputs of 05a + 05b).
 
     Per timestep it computes, at each traced (coarse) route point:
 
-        L_surround = [ sum_f W_pf * eps_f * sigma * T_f(t)^4        (facets)
-                       + w_veg * eps_veg * sigma * T_air(t)^4       (canopy)
-                       + w_def * eps_s  * sigma * T_legacy(t)^4 ]   (culled)
+        L_surround = [ sum_f W_pf * J_f(t)                          (facets)
+                       + w_veg * J_veg(t)                            (canopy)
+                       + w_def * J_environment(t) ]                 (culled)
                      / (1 - w_sky)
 
-    then maps coarse -> full resolution via point_map. Weights partition
-    unity by construction (asserted in 05a), so with uniform facet
-    temperatures this collapses exactly to the legacy constant."""
+    where grey-surface radiosity from 05b is
+    ``J = eps*sigma*T^4 + (1-eps)*G``. Only stage-05a first-hit facets visible
+    from the route within its distance cap are included. Older thermal folders
+    without an authoritative grey-radiosity manifest use the emitted-only
+    legacy calculation for backward compatibility."""
 
     def __init__(self, thermal_dir, n_points, n_times, args):
         import scipy.sparse as sp
@@ -609,6 +736,76 @@ class FacetLongwave:
         self.point_map = np.load(d / "point_map.npy")
         self.facet_T = np.load(d / "facet_T_matrix_K.npy")
         self.facet_eps = np.load(d / "facet_eps.npy")
+        self.local_ground_albedo = None
+        self.reflected_source_fractions = None
+        facet_albedo_path = d / "facet_albedo.npy"
+        facets_path = d / "facets.npz"
+        self.facet_material_name = np.full(self.W.shape[1], "other_surface", dtype="U32")
+        facet_class = None
+        if facets_path.is_file():
+            facet_meta = np.load(facets_path)
+            facet_class = facet_meta["cls"]
+            if "material_name" in facet_meta.files:
+                self.facet_material_name = facet_meta["material_name"].astype(str)
+            else:
+                self.facet_material_name = np.where(
+                    facet_class == 0, "ground",
+                    np.where(facet_class == 2, "roof", "wall"))
+        if facet_albedo_path.is_file() and facet_class is not None:
+            facet_albedo = np.load(facet_albedo_path).astype(float)
+            if facet_albedo.shape != (self.W.shape[1],):
+                raise ValueError("facet albedo count does not match view matrix")
+            ground_mask = facet_class == 0
+            if ground_mask.any():
+                ground_weight = np.asarray(
+                    self.W[:, ground_mask].sum(axis=1)).ravel()
+                weighted_albedo = np.asarray(
+                    self.W[:, ground_mask] @ facet_albedo[ground_mask]).ravel()
+                coarse_albedo = np.where(
+                    ground_weight > 1e-12,
+                    weighted_albedo / np.maximum(ground_weight, 1e-12),
+                    getattr(args, "ground_albedo", 0.18))
+                self.local_ground_albedo = coarse_albedo[self.point_map]
+                source_weighted_albedo = {}
+                for material in sorted(set(self.facet_material_name[ground_mask])):
+                    source = canonical_sw_source(material)
+                    material_mask = ground_mask & (self.facet_material_name == material)
+                    numerator = np.asarray(
+                        self.W[:, material_mask] @ facet_albedo[material_mask]).ravel()
+                    source_weighted_albedo[source] = (
+                        source_weighted_albedo.get(source, 0.0) + numerator)
+                fractions = {}
+                nonzero = weighted_albedo > 1e-12
+                for source, numerator in source_weighted_albedo.items():
+                    fraction = np.zeros_like(weighted_albedo)
+                    fraction[nonzero] = numerator[nonzero] / weighted_albedo[nonzero]
+                    fractions[source] = fraction[self.point_map]
+                # A point with no route-visible classified ground uses the
+                # same scalar fallback albedo as the existing model. Attribute
+                # that unresolved reflection to generic ground for closure.
+                generic = "sw_reflected_generic_ground_absorbed_Wm2"
+                fractions.setdefault(generic, np.zeros(n_points, dtype=float))
+                fractions[generic][~nonzero[self.point_map]] = 1.0
+                self.reflected_source_fractions = fractions
+        self.facet_J = None
+        self.environment_J = None
+        radiosity_model = "legacy"
+        manifest_path = d / MATERIALS_MANIFEST
+        if manifest_path.is_file():
+            with open(manifest_path) as f:
+                manifest = json.load(f)
+            radiosity_model = manifest.get(
+                "_longwave_radiosity", {}).get("model", "legacy")
+        if radiosity_model == "grey":
+            radiosity_path = d / RADIOSITY_MATRIX
+            environment_path = d / RADIOSITY_ENVIRONMENT
+            if not radiosity_path.is_file() or not environment_path.is_file():
+                raise FileNotFoundError(
+                    "05b manifest declares grey radiosity but its radiosity "
+                    "outputs are missing; rerun 05b for this thermal folder")
+            self.facet_J = np.load(radiosity_path)
+            self.environment_J = np.load(environment_path)
+        self.radiosity_model = radiosity_model
         self.args = args
         # ---- consistency checks: refuse to run on mismatched inputs ----
         if len(self.point_map) != n_points:
@@ -622,6 +819,14 @@ class FacetLongwave:
         if self.facet_T.shape[1] != self.W.shape[1]:
             raise ValueError("facet count mismatch between 05a view matrix "
                              "and 05b temperatures")
+        if self.facet_J is not None:
+            if self.facet_J.shape != self.facet_T.shape:
+                raise ValueError("grey-radiosity matrix must match facet temperatures")
+            if self.environment_J.shape != (n_times,):
+                raise ValueError("radiosity environment must have one value per time step")
+            if (not np.isfinite(self.facet_J).all()
+                    or not np.isfinite(self.environment_J).all()):
+                raise ValueError("grey-radiosity outputs contain non-finite values")
         self.w_surf = 1.0 - self.w_sky
         # Full-sphere sky fraction per FULL-resolution point (cylinder-weighted,
         # from 05a). This is the physically-correct sky/surround split for the
@@ -632,25 +837,85 @@ class FacetLongwave:
         print(f"  Facet thermal LW active: {self.W.shape[1]:,} facets, "
               f"{self.W.shape[0]:,} traced points, mean surround weight "
               f"{self.w_surf.mean():.3f} (full-sphere sky frac "
-              f"{self.sky_frac.mean():.3f})")
+              f"{self.sky_frac.mean():.3f}); radiosity={self.radiosity_model}")
+        if self.local_ground_albedo is not None:
+            print(f"  Local route-visible ground albedo: "
+                  f"{self.local_ground_albedo.min():.3f}.."
+                  f"{self.local_ground_albedo.max():.3f}")
 
-    def surround_at(self, it, air_temp_C, elevation_deg):
+    def surround_at(self, it, air_temp_C, elevation_deg,
+                    sky_longwave_Wm2=None, return_components=False):
         a = self.args
         air_K = air_temp_C + 273.15
         sin_el = np.sin(np.deg2rad(max(elevation_deg, 0.0)))
         legacy_K = air_K + a.surface_temp_offset_day_c * max(sin_el, 0.0)
-        E_facet = self.facet_eps * SIGMA * self.facet_T[it].astype(float) ** 4
-        num = (self.W @ E_facet
-               + self.w_veg * a.vegetation_emissivity * SIGMA * air_K ** 4
-               + self.w_def * a.surrounding_emissivity * SIGMA * legacy_K ** 4)
-        legacy_L = a.surrounding_emissivity * SIGMA * legacy_K ** 4
+        if self.facet_J is not None:
+            if sky_longwave_Wm2 is None or not np.isfinite(sky_longwave_Wm2):
+                raise ValueError("grey radiosity requires finite sky longwave")
+            J_facet = self.facet_J[it].astype(float)
+            J_environment = float(self.environment_J[it])
+            # Leaves have high emissivity and see both sky and the local route
+            # enclosure. Their 2% reflected part is retained for consistency.
+            G_vegetation = 0.5 * (sky_longwave_Wm2 + J_environment)
+            J_vegetation = (
+                a.vegetation_emissivity * SIGMA * air_K ** 4
+                + (1.0 - a.vegetation_emissivity) * G_vegetation)
+            facet_radiosity = J_facet
+            num = (self.W @ facet_radiosity
+                   + self.w_veg * J_vegetation
+                   + self.w_def * J_environment)
+            legacy_L = J_environment
+        else:
+            facet_radiosity = self.facet_eps * SIGMA * self.facet_T[it].astype(float) ** 4
+            J_vegetation = a.vegetation_emissivity * SIGMA * air_K ** 4
+            J_environment = a.surrounding_emissivity * SIGMA * legacy_K ** 4
+            num = (self.W @ facet_radiosity
+                   + self.w_veg * a.vegetation_emissivity * SIGMA * air_K ** 4
+                   + self.w_def * a.surrounding_emissivity * SIGMA * legacy_K ** 4)
+            legacy_L = a.surrounding_emissivity * SIGMA * legacy_K ** 4
         L_coarse = np.where(self.w_surf > 1e-6,
                             num / np.maximum(self.w_surf, 1e-6), legacy_L)
-        return L_coarse[self.point_map]
+        full = L_coarse[self.point_map]
+        if not return_components:
+            return full
+
+        source_numerators = {}
+        for material in sorted(set(self.facet_material_name)):
+            source = canonical_lw_source(material)
+            mask = self.facet_material_name == material
+            numerator = np.asarray(self.W[:, mask] @ facet_radiosity[mask]).ravel()
+            source_numerators[source] = source_numerators.get(source, 0.0) + numerator
+        source_numerators["lw_tree_canopy_absorbed_Wm2"] = (
+            source_numerators.get("lw_tree_canopy_absorbed_Wm2", 0.0)
+            + self.w_veg * J_vegetation)
+        source_numerators["lw_other_surface_absorbed_Wm2"] = (
+            source_numerators.get("lw_other_surface_absorbed_Wm2", 0.0)
+            + self.w_def * J_environment)
+        components = {}
+        visible = self.w_surf > 1e-6
+        for source, numerator in source_numerators.items():
+            normalized = np.zeros_like(self.w_surf, dtype=float)
+            normalized[visible] = np.asarray(numerator)[visible] / self.w_surf[visible]
+            components[source] = normalized[self.point_map]
+        # Only relevant to non-fullsphere legacy configurations: if the 05a
+        # view contains no resolved surface but stage 05 still assigns a
+        # surround fraction, retain the legacy surround in Other.
+        missing = ~visible[self.point_map]
+        if missing.any():
+            components.setdefault("lw_other_surface_absorbed_Wm2",
+                                  np.zeros(len(self.point_map), dtype=float))
+            components["lw_other_surface_absorbed_Wm2"][missing] = full[missing]
+        return full, components
 
 
 def main():
     args = parse_args()
+    contribution_config = load_contribution_config(args.radiant_flux_config)
+    record_contributions = bool(contribution_config["enabled"])
+    if record_contributions:
+        print("Absorbed radiant-flux contribution recording: enabled")
+    else:
+        print("Absorbed radiant-flux contribution recording: disabled")
 
     # ------------------------------------------------------------------
     # GROUND ALBEDO CONSISTENCY
@@ -768,7 +1033,7 @@ def main():
           f"(planar {svf_planar.mean():.3f} / standing {svf_standing.mean():.3f} mean)")
 
     print("\n" + "=" * 70)
-    print("Solar position and clear-sky radiation...")
+    print("Solar position and irradiance forcing...")
     times = pd.date_range(
         start=f"{args.date} 00:00", end=f"{args.date} 23:50",
         freq=f"{args.dt_min}min", tz=args.timezone,
@@ -776,12 +1041,22 @@ def main():
     location = pvlib.location.Location(latitude=args.latitude, longitude=args.longitude,
                                         tz=args.timezone)
     solar = pvlib.solarposition.get_solarposition(times, args.latitude, args.longitude)
-    clearsky = location.get_clearsky(times, model="ineichen")
     elev = solar["apparent_elevation"].values
     azim = solar["azimuth"].values
-    dni, dhi, ghi = apply_cloud_adjustment(
-        clearsky["dni"].values, clearsky["dhi"].values, elev, args.cloud_cover_fraction
-    )
+    if args.radiation_csv:
+        dni, dhi, ghi = load_radiation_csv(args.radiation_csv, times)
+        radiation_source = str(Path(args.radiation_csv).resolve())
+        print(f"  Irradiance forcing: measured/reference CSV {radiation_source}")
+    else:
+        clearsky = location.get_clearsky(times, model="ineichen")
+        dni, dhi, ghi = apply_cloud_adjustment(
+            clearsky["dni"].values,
+            clearsky["dhi"].values,
+            elev,
+            args.cloud_cover_fraction,
+        )
+        radiation_source = "pvlib_ineichen_clear_sky_plus_cloud_adjustment"
+        print(f"  Irradiance forcing: {radiation_source}")
     # ------------------------------------------------------------------
     # Air temperature from the shared provider, evaluated at the decimal
     # hour of each model timestep. Tmrt uses air temperature only (sky
@@ -803,6 +1078,16 @@ def main():
         facet_lw = FacetLongwave(args.facet_thermal_dir, n_points, nt, args)
     tmrt_matrix = np.zeros((nt, n_points), dtype=np.float32)
     direct_transmission_matrix = np.zeros((nt, n_points), dtype=np.float32)
+    contribution_matrices = None
+    if record_contributions:
+        stored_keys = PRIMARY_COLUMNS + TOTAL_COLUMNS
+        if contribution_config["record_material_resolved_sources"]:
+            stored_keys = stored_keys + SW_SOURCE_COLUMNS + LW_SOURCE_COLUMNS
+        contribution_matrices = {
+            key: np.zeros((nt, n_points), dtype=np.float32)
+            for key in stored_keys
+        }
+        validation_cfg = contribution_config["validation"]
 
     t_loop_start = time.time()
     for it, (t, el, az) in enumerate(zip(times, elev, azim)):
@@ -816,17 +1101,52 @@ def main():
             )
 
         L_surround_override = None
+        L_surround_components = None
         lw_sky_frac = None
+        local_ground_albedo = None
+        reflected_source_fractions = None
         if facet_lw is not None:
-            L_surround_override = facet_lw.surround_at(it, air_temp_C_time[it], el)
+            sky_lw_current = float(sky_longwave_down(
+                air_temp_C_time[it], rh_pct_time[it],
+                args.cloud_cover_fraction,
+                clear_sky_model=args.clear_sky_emissivity))
+            surround_result = facet_lw.surround_at(
+                it, air_temp_C_time[it], el,
+                sky_longwave_Wm2=sky_lw_current,
+                return_components=record_contributions)
+            if record_contributions:
+                L_surround_override, L_surround_components = surround_result
+            else:
+                L_surround_override = surround_result
             if args.lw_sky_fraction == "fullsphere":
                 lw_sky_frac = facet_lw.sky_frac
+            local_ground_albedo = facet_lw.local_ground_albedo
+            reflected_source_fractions = facet_lw.reflected_source_fractions
 
-        tmrt_C, R_abs, K_sw, L_lw = estimate_mrt_from_radiation(
+        radiation_result = estimate_mrt_from_radiation(
             dni[it], dhi[it], ghi[it], el, tau_direct, svf_person, svf_ground,
             air_temp_C_time[it], rh_pct_time[it], args.cloud_cover_fraction, args,
             L_surround_override=L_surround_override, lw_sky_frac=lw_sky_frac,
+            local_ground_albedo=local_ground_albedo,
+            reflected_source_fractions=reflected_source_fractions,
+            L_surround_components=L_surround_components,
+            return_contributions=record_contributions,
         )
+        if record_contributions:
+            tmrt_C, R_abs, K_sw, L_lw, contributions = radiation_result
+            validate_contribution_arrays(
+                contributions,
+                absolute_tolerance=float(validation_cfg["absolute_tolerance_Wm2"]),
+                relative_tolerance=float(validation_cfg["relative_tolerance"]),
+                expected_mrt_c=tmrt_C,
+                person_emissivity=args.person_emissivity,
+                sigma=SIGMA,
+                mrt_tolerance_c=float(validation_cfg["mrt_absolute_tolerance_C"]),
+            )
+            for key, matrix in contribution_matrices.items():
+                matrix[it, :] = contributions[key]
+        else:
+            tmrt_C, R_abs, K_sw, L_lw = radiation_result
         tmrt_matrix[it, :] = tmrt_C
         direct_transmission_matrix[it, :] = tau_direct
 
@@ -836,11 +1156,50 @@ def main():
 
     np.save(out_dir / "tmrt_matrix_C.npy", tmrt_matrix)
     np.save(out_dir / "direct_transmission_matrix.npy", direct_transmission_matrix)
+    if record_contributions:
+        closure = validate_contribution_arrays(
+            contribution_matrices,
+            absolute_tolerance=float(validation_cfg["absolute_tolerance_Wm2"]),
+            relative_tolerance=float(validation_cfg["relative_tolerance"]),
+            expected_mrt_c=tmrt_matrix,
+            person_emissivity=args.person_emissivity,
+            sigma=SIGMA,
+            mrt_tolerance_c=float(validation_cfg["mrt_absolute_tolerance_C"]),
+        )
+        np.savez_compressed(out_dir / CONTRIBUTION_ARCHIVE, **contribution_matrices)
+        write_contribution_metadata(out_dir / CONTRIBUTION_METADATA, {
+            "schema_version": 1,
+            "units": "absorbed W m^-2",
+            "n_times": nt,
+            "n_points": n_points,
+            "person_shortwave_absorptivity": args.person_sw_absorptivity,
+            "person_longwave_emissivity": args.person_emissivity,
+            "projected_area_model": args.projected_area_model,
+            "sky_view_body": args.sky_view_body,
+            "primary_columns": PRIMARY_COLUMNS,
+            "reflected_shortwave_source_columns": (
+                SW_SOURCE_COLUMNS if contribution_config["record_material_resolved_sources"] else []),
+            "surface_longwave_source_columns": (
+                LW_SOURCE_COLUMNS if contribution_config["record_material_resolved_sources"] else []),
+            "total_columns": TOTAL_COLUMNS,
+            "shortwave_source_attribution": (
+                "route-visible ground-facet albedo weights from the current local-ground reflection model"),
+            "longwave_source_attribution": (
+                "stage-05a first-hit facet material, canopy weight, or unresolved enclosure weight"),
+            "mrt_equation": "Tmrt_K=(total_absorbed_flux/(person_emissivity*sigma))**0.25",
+            "closure": closure,
+            "configuration": contribution_config,
+        })
+        print(f"  Saved absorbed-flux archive: {out_dir / CONTRIBUTION_ARCHIVE}")
+    if facet_lw is not None and facet_lw.local_ground_albedo is not None:
+        np.save(out_dir / "local_ground_albedo.npy",
+                facet_lw.local_ground_albedo.astype(np.float32))
     times_df = pd.DataFrame({
         "time": times, "azimuth_deg": azim, "elevation_deg": elev,
         "DNI_Wm2": dni, "DHI_Wm2": dhi, "GHI_Wm2": ghi, "air_temp_C": air_temp_C_time,
         # Carried through so downstream stages inherit identical forcing.
         "rh_pct": rh_pct_time, "wind_ms": wind_ms_time,
+        "radiation_source": radiation_source,
     })
     times_df.to_csv(out_dir / "times.csv", index=False)
 
@@ -885,6 +1244,9 @@ def main():
     print("  svf_effective.npy                -- (n_points,) static sky view factor")
     print("  tmrt_matrix_C.npy                -- (n_times, n_points) MRT, deg C")
     print("  direct_transmission_matrix.npy   -- (n_times, n_points) direct sun factor")
+    if record_contributions:
+        print(f"  {CONTRIBUTION_ARCHIVE:35s} -- absorbed flux components, W m^-2")
+        print(f"  {CONTRIBUTION_METADATA:35s} -- units, conventions, and closure report")
     print("  times.csv                        -- solar position + radiation per time step")
     print("  summary_by_time.csv              -- lightweight per-timestep stats (always small)")
     if args.save_subsample_csv > 0:

@@ -28,15 +28,23 @@ Design decisions that matter for correctness
   surface temperature (standard Newton linearization); with 10-minute
   steps the linearization error is negligible (checked in tests: the
   no-conduction steady state matches an exact Newton fixed point).
-* Facet-to-facet longwave coupling uses the previous step's area-weighted
-  mean surface temperature as the environment temperature (lagged, cheap,
-  unconditionally stable; a 1-2 K effect on facet T, far less on Tmrt).
+* Longwave exchange uses an energy-conserving grey-surface mean-field
+  enclosure over only the route-visible facets selected by 05a.  Each
+  facet's sky fraction closes the enclosure to the sky; the remaining view
+  exchanges repeated reflected longwave with the area/view-weighted visible
+  surface field.  This deliberately avoids solving irrelevant full-domain
+  facet-to-facet view factors.
 
 Outputs (in --output-dir)
 -------------------------
   facet_T_matrix_K.npy   (n_times x n_facets) surface temperature, K
   f_sky_facet.npy        per-facet sky fraction (cosine-weighted)
   facet_eps.npy          per-facet emissivity used
+  facet_radiosity_matrix_Wm2.npy
+                         energy-conserving grey-surface radiosity for every
+                         route-visible facet and time step
+  radiosity_environment_Wm2.npy
+                         enclosure-mean radiosity used for reflected LW
   tau_dir_facet.npy      (n_times x n_facets) direct-sun transmission
   facet_summary_by_time.csv, spinup_report.txt
 
@@ -59,11 +67,14 @@ import trimesh
 
 from thermal_common import (CLASS_GROUND, CLASS_NAMES, CLASS_ROOF, CLASS_WALL,
                             DEFAULT_MATERIALS, MATERIALS_MANIFEST, SIGMA,
+                            RADIOSITY_ENVIRONMENT, RADIOSITY_MATRIX,
                             get_intersector, load_materials,
                             make_hemisphere_directions_about_normal,
+                            solve_route_visible_grey_radiosity,
                             sky_longwave_down, solve_tridiagonal_batched,
                             sun_vector_enu,
                             vegetation_transmission_from_intersections)
+from osm_ground_materials import GROUND_MATERIAL_CATALOG
 
 # Per-class material / model defaults now live in thermal_common.py so that
 # 05 (pedestrian-side reflected shortwave) and 05b (facet absorption) cannot
@@ -81,6 +92,10 @@ def parse_args():
     p.add_argument("--mrt-dir", required=True,
                    help="Output dir of 05 (needs times.csv)")
     p.add_argument("--output-dir", required=True)
+    p.add_argument("--ground-material-dir", default=None,
+                   help="Optional OSM ground-material output directory. Its "
+                        "catalog supplies the same per-material properties "
+                        "used to classify ground faces in 05a.")
 
     p.add_argument("--wind-speed", type=float, default=1.5,
                    help="Near-surface wind speed for convection, m/s")
@@ -123,7 +138,17 @@ def parse_args():
                    help="Deep soil temperature; default = daily mean air T")
     p.add_argument("--env-emissivity", type=float, default=0.95,
                    help="Emissivity of surrounding surfaces as seen BY a "
-                        "facet (for its incoming LW)")
+                        "facet under --longwave-radiosity-model=legacy. The "
+                        "grey-radiosity model uses each selected facet's "
+                        "resolved material emissivity instead.")
+    p.add_argument("--longwave-radiosity-model",
+                   choices=["grey", "legacy"], default="grey",
+                   help="Longwave exchange among the route-visible facets. "
+                        "'grey' (default) solves emitted plus reflected "
+                        "incident LW with repeated-reflection enclosure "
+                        "closure. 'legacy' reproduces the earlier emitted-only "
+                        "pedestrian radiosity and mean-temperature surface "
+                        "irradiation for comparison only.")
     p.add_argument("--environment-albedo", type=float, default=None,
                    help="Albedo of surroundings reflecting SW onto facets. "
                         "Default: the resolved ground albedo, since at "
@@ -277,6 +302,17 @@ def main():
     facets_dir = Path(args.facets_dir)
 
     materials = load_materials(args.material_json)
+    if args.ground_material_dir:
+        catalog_path = Path(args.ground_material_dir) / GROUND_MATERIAL_CATALOG
+        if not catalog_path.is_file():
+            raise FileNotFoundError(
+                f"ground material catalog not found: {catalog_path}")
+        with open(catalog_path, encoding="utf-8") as stream:
+            ground_catalog = json.load(stream)
+        for name, values in ground_catalog["materials"].items():
+            if name not in materials:
+                raise ValueError(f"unknown ground material in catalog: {name}")
+            materials[name].update(values)
     if args.wall_insulation_r is not None:
         materials["wall"]["insulation_R_m2K_W"] = args.wall_insulation_r
     if args.roof_insulation_r is not None:
@@ -286,14 +322,19 @@ def main():
     # predominantly ground, so default it to the ground albedo rather than an
     # unrelated hard-coded constant.
     if args.environment_albedo is None:
-        args.environment_albedo = materials["ground"]["albedo"]
-        env_alb_src = "inherited from ground albedo"
+        default_ground_name = ("generic_ground" if args.ground_material_dir
+                               else "ground")
+        args.environment_albedo = materials[default_ground_name]["albedo"]
+        env_alb_src = f"inherited from {default_ground_name} albedo"
     else:
         env_alb_src = "explicit --environment-albedo"
 
     print("=" * 70)
     print("Surface radiative properties (single source: thermal_common.py)")
-    for name in ("ground", "wall", "roof"):
+    display_names = ["ground", "wall", "roof"]
+    if args.ground_material_dir:
+        display_names = list(ground_catalog["material_names"]) + ["wall", "roof"]
+    for name in display_names:
         m = materials[name]
         ins = (f"   insulation_R {m['insulation_R_m2K_W']:.2f} m2K/W"
                if m.get("bottom_bc") == "interior" else "")
@@ -304,10 +345,32 @@ def main():
 
     # Write the manifest that 05 reads back, so the pedestrian-side reflected
     # shortwave uses the SAME ground albedo that actually heated the ground.
-    manifest = {name: {"albedo": float(m["albedo"]),
-                       "emissivity": float(m["emissivity"])}
-                for name, m in materials.items()}
+    manifest = {
+        name: {
+            key: (float(value) if isinstance(value, (int, float, np.number))
+                  else value)
+            for key, value in m.items()
+        }
+        for name, m in materials.items()
+    }
     manifest["_environment_albedo"] = float(args.environment_albedo)
+    selection_config_path = facets_dir / "config.json"
+    selection_config = {}
+    if selection_config_path.is_file():
+        with open(selection_config_path) as f:
+            raw_selection_config = json.load(f)
+        selection_config = {
+            key: raw_selection_config.get(key)
+            for key in (
+                "max_distance", "point_stride", "n_lw_azimuth",
+                "n_lw_elevation", "body_model",
+            )
+        }
+    manifest["_longwave_radiosity"] = {
+        "model": args.longwave_radiosity_model,
+        "scope": "stage-05a first-hit route-visible facets within max_distance",
+        "selection": selection_config,
+    }
     with open(out_dir / MATERIALS_MANIFEST, "w") as f:
         json.dump(manifest, f, indent=2)
     print(f"  Wrote {out_dir / MATERIALS_MANIFEST}")
@@ -317,6 +380,14 @@ def main():
     fz = np.load(facets_dir / "facets.npz")
     centroids, normals = fz["centroid"], fz["normal"]
     classes = fz["cls"]; nf = len(centroids)
+    if "material_name" in fz.files:
+        facet_material_name = fz["material_name"].astype(str)
+    else:
+        facet_material_name = np.array(
+            [CLASS_TO_NAME[int(value)] for value in classes], dtype="U32")
+    unknown_materials = sorted(set(facet_material_name) - set(materials))
+    if unknown_materials:
+        raise ValueError(f"facets reference unknown materials: {unknown_materials}")
     times_df = pd.read_csv(Path(args.mrt_dir) / "times.csv")
     nt = len(times_df)
     dni = times_df["DNI_Wm2"].values
@@ -400,29 +471,32 @@ def main():
     print(f"\nEnergy balance: h_conv = {h_conv:.1f} W/m2K "
           f"({args.convection_model}; film {h_film:.1f}), "
           f"T_deep = {T_deep - 273.15:.1f} C, T_int = {T_int - 273.15:.1f} C")
+    print(f"  Longwave exchange: {args.longwave_radiosity_model} "
+          f"({'emission + reflected incident LW' if args.longwave_radiosity_model == 'grey' else 'legacy emitted-only comparison'})")
 
     solvers, members = {}, {}
-    for cc, name in CLASS_TO_NAME.items():
-        members[cc] = np.where(classes == cc)[0]
-        if len(members[cc]):
+    active_materials = list(dict.fromkeys(facet_material_name.tolist()))
+    for name in active_materials:
+        members[name] = np.where(facet_material_name == name)[0]
+        if len(members[name]):
             bot_ref = T_deep if materials[name]["bottom_bc"] == "fixed" else T_int
-            solvers[cc] = ClassSolver(materials[name], len(members[cc]), dt,
-                                      T_init=float(air_K.mean()),
-                                      T_bottom_ref=bot_ref,
-                                      h_bottom=args.h_interior)
-            print(f"  {name:6s}: {len(members[cc]):,} facets, "
+            solvers[name] = ClassSolver(materials[name], len(members[name]), dt,
+                                        T_init=float(air_K.mean()),
+                                        T_bottom_ref=bot_ref,
+                                        h_bottom=args.h_interior)
+            print(f"  {name:25s}: {len(members[name]):,} facets, "
                   f"{materials[name]['n_layers']} layers, "
                   f"depth {materials[name]['depth']} m")
 
     eps_facet = np.zeros(nf)
     alb_facet = np.zeros(nf)
-    for cc, name in CLASS_TO_NAME.items():
-        eps_facet[members[cc]] = materials[name]["emissivity"]
-        alb_facet[members[cc]] = materials[name]["albedo"]
+    for name in active_materials:
+        eps_facet[members[name]] = materials[name]["emissivity"]
+        alb_facet[members[name]] = materials[name]["albedo"]
 
     area = fz["area"]
     T_surf = np.full(nf, float(air_K.mean()))
-    T_env = float(air_K.mean())        # lagged mean environment temperature
+    T_env = float(air_K.mean())        # legacy-only lagged mean temperature
     facet_T = np.zeros((nt, nf), dtype=np.float32)
     n_cycles = args.spinup_days + 1
     cycle_end_snapshots = []
@@ -431,17 +505,26 @@ def main():
           f"({args.spinup_days} spin-up + 1 saved)...")
     for cyc in range(n_cycles):
         for it in range(nt):
-            L_in = (f_sky * L_sky_t[it]
-                    + (1.0 - f_sky) * args.env_emissivity * SIGMA * T_env ** 4)
+            if args.longwave_radiosity_model == "grey":
+                # Route-local grey enclosure: only the facets selected by 05a
+                # participate. The analytic solve includes repeated reflection
+                # and returns the incident LW absorbed by each grey surface.
+                _, L_in, _ = solve_route_visible_grey_radiosity(
+                    T_surf, eps_facet, f_sky, L_sky_t[it], area)
+            else:
+                L_in = (f_sky * L_sky_t[it]
+                        + (1.0 - f_sky) * args.env_emissivity
+                        * SIGMA * T_env ** 4)
             K_local = tau_dir[it] * dni[it] * sin_el[it] + f_sky * dhi[it]
             SW_in = (tau_dir[it] * dni[it] * cos_theta[it]
                      + f_sky * dhi[it]
                      + (1.0 - f_sky) * args.environment_albedo * K_local)
-            for cc, sol in solvers.items():
-                mem = members[cc]
+            for name, sol in solvers.items():
+                mem = members[name]
                 Q_ext = (1.0 - sol.albedo) * SW_in[mem] + sol.eps * L_in[mem]
                 T_surf[mem] = sol.step(Q_ext, h_conv, air_K[it])
-            T_env = float(np.average(T_surf, weights=area))
+            if args.longwave_radiosity_model == "legacy":
+                T_env = float(np.average(T_surf, weights=area))
             if cyc == n_cycles - 1:
                 facet_T[it] = T_surf
         cycle_end_snapshots.append(T_surf.copy())
@@ -457,14 +540,46 @@ def main():
     np.save(out_dir / "facet_T_matrix_K.npy", facet_T)
     np.save(out_dir / "f_sky_facet.npy", f_sky)
     np.save(out_dir / "facet_eps.npy", eps_facet)
+    np.save(out_dir / "facet_albedo.npy", alb_facet)
+    np.save(out_dir / "facet_material_name.npy", facet_material_name)
     np.save(out_dir / "tau_dir_facet.npy", tau_dir)
+
+    radiosity_report = [
+        f"Longwave radiosity model: {args.longwave_radiosity_model}",
+        "Scope: stage-05a first-hit route-visible facets within its configured max distance",
+    ]
+    if args.longwave_radiosity_model == "grey":
+        facet_J, facet_G, environment_J = solve_route_visible_grey_radiosity(
+            facet_T.astype(float), eps_facet, f_sky, L_sky_t, area)
+        closure = (
+            eps_facet[None, :] * SIGMA * facet_T.astype(float) ** 4
+            + (1.0 - eps_facet)[None, :] * facet_G
+        )
+        closure_error = float(np.max(np.abs(facet_J - closure)))
+        if closure_error > 1e-8:
+            raise RuntimeError(
+                f"Grey-radiosity energy closure failed: {closure_error:.3e} W/m2")
+        np.save(out_dir / RADIOSITY_MATRIX, facet_J.astype(np.float32))
+        np.save(out_dir / RADIOSITY_ENVIRONMENT,
+                np.asarray(environment_J, dtype=np.float32))
+        radiosity_report.extend([
+            "Equation: J = eps*sigma*T^4 + (1-eps)*G",
+            "Closure: G = f_sky*L_sky + (1-f_sky)*J_environment",
+            f"Maximum radiosity identity residual: {closure_error:.3e} W/m2",
+            f"Environment radiosity range: {environment_J.min():.2f}..{environment_J.max():.2f} W/m2",
+        ])
+    else:
+        radiosity_report.append(
+            "Legacy comparison mode: no grey-radiosity matrix is authoritative; final MRT uses emitted-only fallback.")
+    (out_dir / "radiosity_report.txt").write_text(
+        "\n".join(radiosity_report) + "\n", encoding="utf-8")
 
     rows = []
     for it in range(nt):
         row = {"time": times_df["time"].iloc[it], "air_temp_C": air_C[it]}
-        for cc, name in CLASS_TO_NAME.items():
-            if len(members[cc]):
-                Tc = facet_T[it, members[cc]] - 273.15
+        for name in active_materials:
+            if len(members[name]):
+                Tc = facet_T[it, members[name]] - 273.15
                 row[f"{name}_mean_C"] = float(Tc.mean())
                 row[f"{name}_max_C"] = float(Tc.max())
         rows.append(row)

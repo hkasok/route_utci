@@ -116,6 +116,15 @@ PY="${PY:-python3}"
 # Output directories
 OUT_ROOT="${OUT_ROOT:-run_output}"
 OSM_DIR="${OSM_DIR:-$OUT_ROOT/osm_paths}"
+OSM_EDGE_FEATURES="${OSM_EDGE_FEATURES:-$OSM_DIR/pedestrian_edges.geojson}"
+OSM_COMPLETE_CACHE="${OSM_COMPLETE_CACHE:-data/osm/fiu_mmc_complete_osm.gpkg}"
+OSM_COMPLETE_INPUT="${OSM_COMPLETE_INPUT:-}"
+OSM_GROUND_FEATURES="${OSM_GROUND_FEATURES:-$OSM_COMPLETE_CACHE}"
+OSM_GROUND_MATERIALS_ENABLED="${OSM_GROUND_MATERIALS_ENABLED:-1}"
+OSM_GROUND_CONFIG="${OSM_GROUND_CONFIG:-$PWD/osm_ground_materials.json}"
+OSM_GROUND_MATERIAL_DIR="${OSM_GROUND_MATERIAL_DIR:-$OUT_ROOT/osm_ground_materials}"
+OSM_GROUND_OVERRIDES="${OSM_GROUND_OVERRIDES:-}"
+RADIANT_FLUX_CONFIG="${RADIANT_FLUX_CONFIG:-$PWD/radiant_flux_contribution_results.json}"
 MRT_DIR="${MRT_DIR:-$OUT_ROOT/mrt_out}"                   # legacy-surround MRT
 THERMAL_DIR="${THERMAL_DIR:-$OUT_ROOT/thermal_out}"       # 05a + 05b outputs
 MRT_FACET_DIR="${MRT_FACET_DIR:-$OUT_ROOT/mrt_facet_out}" # facet-thermal MRT
@@ -124,6 +133,12 @@ VIS_DIR="${VIS_DIR:-$OUT_ROOT/viz}"
 # Which MRT results the visualization / route stages consume
 # (default: the IMPROVED facet-thermal results; set to $MRT_DIR for legacy)
 VIS_MRT_DIR="${VIS_MRT_DIR:-$MRT_FACET_DIR}"
+LEGACY_RADIANT_FLUX_ARG=()
+if [ "$VIS_MRT_DIR" = "$MRT_DIR" ]; then
+    # Only record a second (legacy-surround) contribution archive when the
+    # user explicitly chooses that MRT result for downstream route analysis.
+    LEGACY_RADIANT_FLUX_ARG=(--radiant-flux-config "$RADIANT_FLUX_CONFIG")
+fi
 GRAPHML="${GRAPHML:-$OSM_DIR/pedestrian_network.graphml}"
 POLYLINES="${POLYLINES:-$OSM_DIR/path_polylines.pkl}"      # FULL network (from OSM)
 # Route selection (04_select_routes.py): the N start->end routes are chosen
@@ -272,6 +287,58 @@ if active 3; then
 fi
 
 # ----------------------------------------------------------------------------
+# PARALLEL OSM SURFACE BRANCH -- material subdivision only.
+# This runs AFTER route selection and reads, but never modifies, the graph or
+# selected-route files. It assigns materials to existing terrain face IDs.
+# ----------------------------------------------------------------------------
+GROUND_MATERIAL_ARG=()
+if [ "$OSM_GROUND_MATERIALS_ENABLED" = "1" ]; then
+    if active 2; then
+        log "STEP 2  OSM ground-material subdivision (routing unchanged)"
+        require_file "$OSM_GROUND_CONFIG" 2
+        COMPLETE_INPUT_ARG=()
+        [ -n "$OSM_COMPLETE_INPUT" ] && COMPLETE_INPUT_ARG=(--input-file "$OSM_COMPLETE_INPUT")
+        FORCE_COMPLETE_ARG=()
+        [ "${FORCE_OSM_COMPLETE:-0}" = "1" ] && FORCE_COMPLETE_ARG=(--force-download)
+        "$PY" download_osm_complete_features.py \
+            --ground-mesh "$GROUND_STL" \
+            --config "$OSM_GROUND_CONFIG" \
+            --output-file "$OSM_COMPLETE_CACHE" \
+            "${COMPLETE_INPUT_ARG[@]}" \
+            "${FORCE_COMPLETE_ARG[@]}"
+        require_file "$OSM_GROUND_FEATURES" 2
+        OVERRIDE_ARG=()
+        [ -n "$OSM_GROUND_OVERRIDES" ] && OVERRIDE_ARG=(--overrides "$OSM_GROUND_OVERRIDES")
+        ROUTE_HASH_BEFORE="$(sha256sum "$GRAPHML" "$ROUTE_POLYLINES" "$SELECTED_ROUTES")"
+        "$PY" prepare_osm_ground_materials.py \
+            --osm-features "$OSM_GROUND_FEATURES" \
+            --osm-layer raw_complete_osm_features \
+            --ground-mesh "$GROUND_STL" \
+            --output-dir "$OSM_GROUND_MATERIAL_DIR" \
+            --config "$OSM_GROUND_CONFIG" \
+            --routes-pkl "$ROUTE_POLYLINES" \
+            --buildings-mesh "$BUILDINGS_STL" \
+            --vegetation-mesh "$VEGETATION_STL" \
+            --local-origin-x "$LOCAL_ORIGIN_X" \
+            --local-origin-y "$LOCAL_ORIGIN_Y" \
+            "${OVERRIDE_ARG[@]}"
+        ROUTE_HASH_AFTER="$(sha256sum "$GRAPHML" "$ROUTE_POLYLINES" "$SELECTED_ROUTES")"
+        if [ "$ROUTE_HASH_BEFORE" != "$ROUTE_HASH_AFTER" ]; then
+            echo "FATAL: OSM surface processing changed a protected routing artifact" >&2
+            exit 1
+        fi
+        printf '%s\n' "$ROUTE_HASH_AFTER" > \
+            "$OSM_GROUND_MATERIAL_DIR/route_artifact_integrity.sha256"
+        echo "  Protected route graph/selection hashes unchanged"
+    fi
+    require_file "$OSM_GROUND_MATERIAL_DIR/ground_face_materials.npz" 2
+    require_file "$OSM_GROUND_MATERIAL_DIR/ground_material_catalog.json" 2
+    GROUND_MATERIAL_ARG=(--ground-material-dir "$OSM_GROUND_MATERIAL_DIR")
+else
+    echo "  OSM ground materials disabled: uniform-ground backward-compatible mode"
+fi
+
+# ----------------------------------------------------------------------------
 # STEP 3 -- MRT ray tracing + SVF (stage 05, legacy surround).
 # Produces path_xyz + times.csv that 05a/05b depend on. SVF is computed ONCE
 # here (it is geometry-only) and reused across all timesteps internally.
@@ -290,6 +357,7 @@ if active 3 && ! skip 05; then
         --cloud-cover-fraction "$CLOUD" \
         --k-lad-direct "$K_LAD_DIRECT" --k-lad-diffuse "$K_LAD_DIFFUSE" \
         --clear-sky-emissivity "$CLEAR_SKY_MODEL" \
+        "${LEGACY_RADIANT_FLUX_ARG[@]}" \
         "${WEATHER_ARG[@]}"
 fi
 if active 4; then
@@ -308,6 +376,7 @@ if active 4 && ! skip 05A; then
         --ground-stl "$GROUND_STL" \
         --mrt-dir "$MRT_DIR" \
         --output-dir "$THERMAL_DIR" \
+        "${GROUND_MATERIAL_ARG[@]}" \
         --point-stride "$POINT_STRIDE" --max-distance "$MAX_DISTANCE"
 fi
 if active 5; then require_file "$THERMAL_DIR/facets.npz" 4; fi
@@ -325,6 +394,7 @@ if active 5 && ! skip 05B; then
         --facets-dir "$THERMAL_DIR" \
         --mrt-dir "$MRT_DIR" \
         --output-dir "$THERMAL_DIR" \
+        "${GROUND_MATERIAL_ARG[@]}" \
         --spinup-days "$SPINUP_DAYS" --wind-speed "$WIND_SPEED" \
         --cloud-cover-fraction "$CLOUD" \
         --k-lad-direct "$K_LAD_DIRECT" --k-lad-diffuse "$K_LAD_DIFFUSE" \
@@ -350,7 +420,20 @@ if active 6 && ! skip 05FACET; then
         --k-lad-direct "$K_LAD_DIRECT" --k-lad-diffuse "$K_LAD_DIFFUSE" \
         --clear-sky-emissivity "$CLEAR_SKY_MODEL" \
         --facet-thermal-dir "$THERMAL_DIR" \
+        --radiant-flux-config "$RADIANT_FLUX_CONFIG" \
         "${WEATHER_ARG[@]}"
+fi
+if active 6 && [ "$OSM_GROUND_MATERIALS_ENABLED" = "1" ]; then
+    require_file "$MRT_FACET_DIR/radiant_flux_contributions.npz" 6
+    log "STEP 6  Route-point ground-material diagnostics"
+    "$PY" route_ground_material_diagnostics.py \
+        --mrt-dir "$MRT_FACET_DIR" \
+        --thermal-dir "$THERMAL_DIR" \
+        --ground-mesh "$GROUND_STL" \
+        --ground-material-dir "$OSM_GROUND_MATERIAL_DIR" \
+        --departure-hour "$DEPARTURE_HOUR" \
+        --walking-speed "$WALKING_SPEED_MS" \
+        --output "$OSM_GROUND_MATERIAL_DIR/route_point_ground_material_diagnostics.csv"
 fi
 if active 7; then
     require_file "$VIS_MRT_DIR/tmrt_matrix_C.npy" 6
@@ -398,6 +481,7 @@ if active 8 && ! skip 08; then
         --relative-humidity-pct "$RH_PCT" --wind-speed-ms "$WIND_MS" \
         --local-origin-x "$LOCAL_ORIGIN_X" --local-origin-y "$LOCAL_ORIGIN_Y" \
         --project-crs "$PROJECT_CRS" \
+        --radiant-flux-config "$RADIANT_FLUX_CONFIG" \
         "${WEATHER_ARG[@]}"
 fi
 if active 8 && ! skip 09; then
@@ -418,5 +502,7 @@ fi
 log "Pipeline complete (started at step $START_STEP)"
 echo "  MRT (legacy)     : $MRT_DIR"
 echo "  Facets + temps   : $THERMAL_DIR"
+echo "  Ground materials : $OSM_GROUND_MATERIAL_DIR (enabled=$OSM_GROUND_MATERIALS_ENABLED)"
 echo "  MRT (facet therm): $MRT_FACET_DIR"
+echo "  Radiant flux      : $VIS_DIR/route_utci/radiant_flux_contributions"
 echo "  Visualizations   : $VIS_DIR"

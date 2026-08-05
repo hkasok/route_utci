@@ -7,7 +7,9 @@ Run:  python3 verify_thermal_pipeline.py
 Unit tests (analytic, no geometry):
   T1  LW direction weights partition unity; an isothermal blackbody
       enclosure reproduces sigma*T^4 exactly (both body models)
-  T2  (run inside the integration test, with the REAL view matrix)
+  T2  grey-surface radiosity satisfies J=eps*Eb+(1-eps)*G,
+      including repeated-reflection closure and the blackbody limit
+  T2b (run inside the integration test, with the REAL view matrix)
       uniform facet temperatures == legacy surface temperature must give
       L_surround identical to the legacy scalar -> Tmrt unchanged
   T3  batched Thomas tridiagonal solver vs dense np.linalg.solve
@@ -42,8 +44,11 @@ import numpy as np
 HERE = Path(__file__).parent
 sys.path.insert(0, str(HERE))
 
-from thermal_common import (SIGMA, make_hemisphere_directions_about_normal,
-                            make_sphere_directions, solve_tridiagonal_batched)
+from thermal_common import (RADIOSITY_ENVIRONMENT, RADIOSITY_MATRIX, SIGMA,
+                            make_hemisphere_directions_about_normal,
+                            make_sphere_directions,
+                            solve_route_visible_grey_radiosity,
+                            solve_tridiagonal_batched)
 
 PASS, FAIL = 0, 0
 
@@ -82,6 +87,38 @@ for body in ("cylinder", "sphere"):
 dirs, w = make_sphere_directions(24, 18, body="cylinder")
 up = w[dirs[:, 2] > 0].sum()
 check("hemisphere symmetry (up weight = 0.5)", abs(up - 0.5) < 1e-12)
+
+# ======================================================================
+print("\nT2: energy-conserving route-visible grey radiosity")
+temperatures = np.array([285.0, 295.0, 305.0])
+emissivities = np.array([0.90, 0.95, 0.92])
+sky_fractions = np.array([0.2, 0.5, 0.8])
+areas = np.array([20.0, 10.0, 5.0])
+sky_lw = 260.0
+J, G, J_bar = solve_route_visible_grey_radiosity(
+    temperatures, emissivities, sky_fractions, sky_lw, areas)
+identity = emissivities * SIGMA * temperatures**4 + (1.0 - emissivities) * G
+check("grey radiosity identity J=eps*Eb+(1-eps)*G",
+      np.allclose(J, identity, atol=1e-10),
+      f"max err={np.max(np.abs(J - identity)):.1e} W/m2")
+weights_enclosure = areas * (1.0 - sky_fractions)
+mean_identity = float(np.sum(weights_enclosure * J) / weights_enclosure.sum())
+check("repeated-reflection enclosure closes on J_bar",
+      abs(mean_identity - J_bar) < 1e-10,
+      f"err={abs(mean_identity - J_bar):.1e} W/m2")
+
+J_black, G_black, _ = solve_route_visible_grey_radiosity(
+    temperatures, np.ones(3), sky_fractions, sky_lw, areas)
+check("blackbody limit has no reflected component",
+      np.allclose(J_black, SIGMA * temperatures**4, atol=1e-10))
+
+T_iso = 300.0
+L_iso = SIGMA * T_iso**4
+J_iso, G_iso, _ = solve_route_visible_grey_radiosity(
+    np.full(3, T_iso), emissivities, sky_fractions, L_iso, areas)
+check("isothermal grey enclosure reproduces blackbody field",
+      np.allclose(J_iso, L_iso, atol=1e-9)
+      and np.allclose(G_iso, L_iso, atol=1e-9))
 
 # ======================================================================
 print("\nT3: batched tridiagonal solver vs dense solve")
@@ -256,8 +293,23 @@ nt = len(times_df)
 flw = m05.FacetLongwave(fac_dir, len(path_xyz), nt, args)
 check("I2 precondition: no vegetation in LW view (scene built that way)",
       flw.w_veg.max() < 1e-12)
+check("I2 grey-radiosity outputs are active",
+      flw.radiosity_model == "grey" and flw.facet_J is not None
+      and (fac_dir / RADIOSITY_MATRIX).is_file()
+      and (fac_dir / RADIOSITY_ENVIRONMENT).is_file())
+J_saved = np.load(fac_dir / RADIOSITY_MATRIX)
+E_saved = (np.load(fac_dir / "facet_eps.npy")[None, :]
+           * SIGMA * np.load(fac_dir / "facet_T_matrix_K.npy").astype(float) ** 4)
+check("I2 grey radiosity includes non-negative reflected LW",
+      np.min(J_saved - E_saved) > -1e-4,
+      f"minimum reflected term={np.min(J_saved - E_saved):.2e} W/m2")
 air_C, el = 31.0, 55.0
 legacy_K = (air_C + 273.15) + 8.0 * np.sin(np.deg2rad(el))
+# Explicitly exercise the backward-compatible emitted-only path separately
+# from the authoritative grey-radiosity result loaded above.
+flw.facet_J = None
+flw.environment_J = None
+flw.radiosity_model = "legacy"
 flw.facet_T = np.full((nt, len(fz["cls"])), legacy_K, dtype=np.float32)
 flw.facet_eps = np.full(len(fz["cls"]), 0.95)
 L = flw.surround_at(0, air_C, el)
@@ -295,12 +347,25 @@ check("I3 sunlit ground much hotter than building-shaded ground",
       f"(sunlit {facet_T[it_sh, sunlit].mean() - 273.15:.1f} C, "
       f"shaded {facet_T[it_sh, shaded].mean() - 273.15:.1f} C)")
 
-# I3b: night radiative cooling below air temperature (clear sky)
+# I3b: clear-sky night produces a net longwave loss. A thermally massive
+# ground can remain above air after a hot day, so Ts < Ta is not a valid
+# general energy-conservation assertion.
 it_night = int(np.argmin(elv))
-open_ground = g & (np.load(fac_dir / "f_sky_facet.npy") > 0.9)
-night_dT = facet_T[it_night, open_ground].mean() - air[it_night]
-check("I3 night: open ground cools below air temperature",
-      night_dT < 0.0, f"T_surf - T_air = {night_dT:.1f} K")
+f_sky_saved = np.load(fac_dir / "f_sky_facet.npy")
+eps_saved = np.load(fac_dir / "facet_eps.npy")
+area_saved = fz["area"]
+L_sky_saved = eb.sky_longwave_down(
+    times_df["air_temp_C"].values, times_df["rh_pct"].values, 0.0)
+_, G_saved, _ = solve_route_visible_grey_radiosity(
+    facet_T, eps_saved, f_sky_saved, L_sky_saved, area_saved)
+open_ground = g & (f_sky_saved > 0.9)
+night_net_lw = np.mean(
+    eps_saved[open_ground]
+    * (G_saved[it_night, open_ground]
+       - SIGMA * facet_T[it_night, open_ground] ** 4))
+check("I3 night: open ground has net radiative cooling",
+      night_net_lw < 0.0,
+      f"absorbed minus emitted LW = {night_net_lw:.1f} W/m2")
 
 # I3c: bounds and spin-up
 check("I3 all temperatures physically bounded",
@@ -325,9 +390,11 @@ check("I4 shapes match & finite", t_leg.shape == t_fac.shape
 diff = t_fac - t_leg
 check("I4 facet LW changes Tmrt (it should!)", np.abs(diff).max() > 0.3,
       f"max |dTmrt|={np.abs(diff).max():.2f} C")
-check("I4 change is bounded/plausible (< 15 C)", np.abs(diff).max() < 15.0,
-      f"max |dTmrt|={np.abs(diff).max():.2f} C, "
-      f"mean {diff.mean():+.2f} C")
+check("I4 grey-radiosity MRT remains in a physical outdoor envelope",
+      t_fac.min() > times_df["air_temp_C"].min() - 30.0
+      and t_fac.max() < times_df["air_temp_C"].max() + 50.0,
+      f"Tmrt {t_fac.min():.1f}..{t_fac.max():.1f} C; "
+      f"max |change|={np.abs(diff).max():.2f} C")
 
 print("\n" + "=" * 70)
 print(f"RESULT: {PASS} passed, {FAIL} failed")

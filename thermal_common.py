@@ -7,6 +7,9 @@ verification for each lives in verify_thermal_pipeline.py:
 
   make_sphere_directions      -> weights sum to 1; isothermal enclosure
                                  reproduces sigma*T^4 exactly
+  solve_route_visible_grey_radiosity
+                              -> grey-body identity, enclosure closure,
+                                 blackbody and isothermal limits
   solve_tridiagonal_batched   -> matches dense np.linalg.solve to ~1e-12
   vegetation_transmission...  -> identical function already validated in 05
   nearest_hit_multi           -> checked on a synthetic scene (known hits)
@@ -15,6 +18,8 @@ verification for each lives in verify_thermal_pipeline.py:
 import json
 
 import numpy as np
+
+from osm_ground_materials import DEFAULT_CONFIG as OSM_GROUND_DEFAULT_CONFIG
 
 SIGMA = 5.670374419e-8  # Stefan-Boltzmann, W m^-2 K^-4
 
@@ -64,9 +69,17 @@ DEFAULT_MATERIALS = {
                "insulation_R_m2K_W": 2.5},   # roofs are usually better insulated
 }
 
+# Ground subclasses share their single source of truth with the OSM
+# classification/configuration module. ``ground`` remains the exact legacy
+# uniform class used when the surface branch is disabled.
+for _ground_name, _ground_values in OSM_GROUND_DEFAULT_CONFIG["materials"].items():
+    DEFAULT_MATERIALS[_ground_name] = dict(_ground_values)
+
 # Filename written by 05b into its output directory and read back by 05, so
 # the two stages can be checked against each other rather than trusted.
 MATERIALS_MANIFEST = "materials_used.json"
+RADIOSITY_MATRIX = "facet_radiosity_matrix_Wm2.npy"
+RADIOSITY_ENVIRONMENT = "radiosity_environment_Wm2.npy"
 
 
 def load_materials(material_json=None):
@@ -128,6 +141,105 @@ def resolve_ground_albedo(args, facet_thermal_dir=None):
         source = "--ground-albedo (explicit)"
 
     return float(albedo), source
+
+
+def solve_route_visible_grey_radiosity(
+        surface_temperature_K, emissivity, sky_fraction,
+        sky_longwave_Wm2, area):
+    """Solve an energy-conserving grey-surface enclosure approximation.
+
+    Only the facets selected by stage 05a participate.  Those facets are the
+    first building/ground surfaces visible from the route within 05a's
+    ``--max-distance`` cap, so the solve retains the route-local philosophy
+    rather than creating a full-domain radiosity model.
+
+    For every opaque facet ``i`` the radiosity is
+
+        J_i = eps_i * sigma * T_i**4 + (1 - eps_i) * G_i
+
+    with
+
+        G_i = f_sky_i * L_sky + (1 - f_sky_i) * J_bar.
+
+    ``J_bar`` is the non-sky-area-weighted radiosity of the selected enclosure
+    and is solved analytically, including repeated grey-surface reflections.
+    This is a mean-field closure; it does not claim facet-to-facet geometric
+    view factors that stage 05a does not calculate.  It does enforce Kirchhoff
+    consistency (absorptivity equals emissivity) and exactly partitions each
+    facet's outgoing energy into emission and reflected incident longwave.
+
+    Parameters may describe one time step (``surface_temperature_K`` shape
+    ``(n_facets,)`` and scalar sky longwave) or many time steps (shape
+    ``(n_times, n_facets)`` and ``(n_times,)`` sky longwave).
+
+    Returns ``(J, G, J_bar)`` with shapes corresponding to the input.
+    """
+    temperature = np.asarray(surface_temperature_K, dtype=float)
+    eps = np.asarray(emissivity, dtype=float)
+    f_sky = np.asarray(sky_fraction, dtype=float)
+    facet_area = np.asarray(area, dtype=float)
+    sky_lw = np.asarray(sky_longwave_Wm2, dtype=float)
+
+    squeeze = temperature.ndim == 1
+    if squeeze:
+        temperature = temperature[None, :]
+    if temperature.ndim != 2:
+        raise ValueError("surface_temperature_K must have one or two dimensions")
+    n_times, n_facets = temperature.shape
+    for name, values in (
+        ("emissivity", eps), ("sky_fraction", f_sky), ("area", facet_area),
+    ):
+        if values.shape != (n_facets,):
+            raise ValueError(f"{name} must have shape ({n_facets},), got {values.shape}")
+        if not np.isfinite(values).all():
+            raise ValueError(f"{name} contains non-finite values")
+    if not np.isfinite(temperature).all() or np.any(temperature <= 0):
+        raise ValueError("surface_temperature_K must contain finite positive temperatures")
+    if np.any((eps <= 0) | (eps > 1)):
+        raise ValueError("emissivity must be in (0, 1]")
+    if np.any((f_sky < 0) | (f_sky > 1)):
+        raise ValueError("sky_fraction must be in [0, 1]")
+    if np.any(facet_area <= 0):
+        raise ValueError("facet areas must be positive")
+
+    if sky_lw.ndim == 0:
+        sky_lw = np.full(n_times, float(sky_lw))
+    if sky_lw.shape != (n_times,) or not np.isfinite(sky_lw).all() or np.any(sky_lw < 0):
+        raise ValueError(f"sky_longwave_Wm2 must be scalar or shape ({n_times},)")
+
+    # Facets with a large non-sky hemisphere are the best representatives of
+    # the surface enclosure.  Area preserves the influence of physically large
+    # route-visible surfaces; the non-sky factor excludes isolated sky-facing
+    # roof facets from dominating the street-level enclosure.
+    enclosure_weight = facet_area * (1.0 - f_sky)
+    weight_sum = float(enclosure_weight.sum())
+    if weight_sum <= 0:
+        # All facets see only sky.  Their radiosities remain well-defined and
+        # no surface-to-surface closure is needed.
+        j_bar = sky_lw.copy()
+    else:
+        emitted = eps[None, :] * SIGMA * temperature**4
+        base = emitted + (1.0 - eps)[None, :] * f_sky[None, :] * sky_lw[:, None]
+        reflection_gain = (1.0 - eps) * (1.0 - f_sky)
+        numerator = np.sum(enclosure_weight[None, :] * base, axis=1)
+        denominator = weight_sum - float(np.sum(enclosure_weight * reflection_gain))
+        if denominator <= 0 or not np.isfinite(denominator):
+            raise ValueError("grey-radiosity enclosure is singular")
+        j_bar = numerator / denominator
+
+    irradiation = (
+        f_sky[None, :] * sky_lw[:, None]
+        + (1.0 - f_sky)[None, :] * j_bar[:, None]
+    )
+    radiosity = (
+        eps[None, :] * SIGMA * temperature**4
+        + (1.0 - eps)[None, :] * irradiation
+    )
+    if not np.isfinite(radiosity).all() or np.any(radiosity < 0):
+        raise ValueError("grey-radiosity solve produced invalid radiosity")
+    if squeeze:
+        return radiosity[0], irradiation[0], float(j_bar[0])
+    return radiosity, irradiation, j_bar
 
 # Facet class codes (kept as small ints so they can live in compact arrays)
 CLASS_GROUND = 0

@@ -1,0 +1,276 @@
+{
+  "enabled": true,
+  "affect_route_connectivity": false,
+  "source_mode": "auto",
+  "input_file": null,
+  "download_if_missing": true,
+  "cache_download": true,
+  "domain_buffer_m": 50.0,
+  "cache_directory": "data/osm",
+  "raw_cache_file": "fiu_mmc_complete_osm.gpkg",
+  "preserve_all_tags": true,
+  "preserve_relations": true,
+  "record_download_date": true,
+  "include_vehicle_roads": true,
+  "include_pedestrian_surfaces": true,
+  "include_crossings": true,
+  "include_pedestrian_plazas": true,
+  "include_service_roads": true,
+  "include_parking_aisles": true,
+  "include_landcover": true,
+  "include_parking_areas": true,
+  "include_sports_surfaces": true,
+  "include_water": true,
+  "projected_crs": "EPSG:6346",
+  "minimum_polygon_area_m2": 0.25,
+  "geometry_tolerance_m": 0.02,
+  "boundary_aware_face_assignment": true,
+  "minimum_face_overlap_fraction": 0.05,
+  "infer_width_from_lanes": false,
+  "lane_width_m": 3.2,
+  "fallback_widths_m": {
+    "motorway": 14.0,
+    "motorway_link": 7.0,
+    "trunk": 12.0,
+    "trunk_link": 7.0,
+    "primary": 10.0,
+    "primary_link": 6.5,
+    "secondary": 8.0,
+    "secondary_link": 6.0,
+    "tertiary": 7.0,
+    "tertiary_link": 5.5,
+    "residential": 6.0,
+    "unclassified": 5.5,
+    "living_street": 5.0,
+    "service": 4.0,
+    "parking_aisle": 3.5,
+    "driveway": 3.0,
+    "alley": 3.5,
+    "footway": 2.0,
+    "sidewalk": 1.8,
+    "path": 2.0,
+    "cycleway": 2.5,
+    "crossing": 3.0,
+    "steps": 2.0,
+    "pedestrian": 4.0,
+    "pedestrian_plaza": 8.0
+  },
+  "default_material_by_osm_class": {
+    "vehicle_road": "asphalt_road",
+    "concrete_road": "concrete_road",
+    "sidewalk": "concrete_pedestrian",
+    "footway": "concrete_pedestrian",
+    "pedestrian_path": "asphalt_pedestrian",
+    "mixed_use_path": "asphalt_pedestrian",
+    "crossing": "pedestrian_crossing",
+    "pedestrian_plaza": "pedestrian_plaza",
+    "steps": "concrete_pedestrian",
+    "unpaved_path": "bare_ground",
+    "parking": "asphalt_parking",
+    "parking_aisle": "asphalt_parking",
+    "grass_area": "grass_lawn",
+    "sports_area": "sports_surface",
+    "playground": "playground_surface",
+    "bare_ground": "bare_ground",
+    "water": "water"
+  },
+  "overlap_priority": [
+    "water",
+    "pedestrian_crossing",
+    "pedestrian_plaza",
+    "sidewalk",
+    "pedestrian_path",
+    "vehicle_road",
+    "parking",
+    "sports_surface",
+    "playground_surface",
+    "grass_area",
+    "bare_ground",
+    "generic_ground"
+  ],
+  "material_priority": [
+    "water", "pedestrian_crossing", "pedestrian_plaza",
+    "concrete_pedestrian", "asphalt_pedestrian", "paving_stone_pedestrian",
+    "concrete_road", "asphalt_road", "concrete_parking", "asphalt_parking",
+    "gravel_parking", "artificial_turf", "sports_surface",
+    "playground_surface", "grass_lawn", "bare_ground", "generic_ground"
+  ],
+  "materials": {
+    "generic_ground": {
+      "albedo": 0.18,
+      "emissivity": 0.95,
+      "thermal_conductivity": 1.0,
+      "density": 2000.0,
+      "specific_heat": 1000.0,
+      "k": 1.0,
+      "C": 2000000.0,
+      "depth": 0.5,
+      "n_layers": 8,
+      "bottom_bc": "fixed",
+      "roughness_m": 0.03
+    },
+    "asphalt_road": {
+      "albedo": 0.12,
+      "emissivity": 0.95,
+      "thermal_conductivity": 0.75,
+      "density": 2300.0,
+      "specific_heat": 920.0,
+      "k": 0.75,
+      "C": 2116000.0,
+      "depth": 0.4,
+      "n_layers": 8,
+      "bottom_bc": "fixed",
+      "roughness_m": 0.002
+    },
+    "asphalt_pedestrian_path": {
+      "albedo": 0.14,
+      "emissivity": 0.95,
+      "thermal_conductivity": 0.75,
+      "density": 2250.0,
+      "specific_heat": 920.0,
+      "k": 0.75,
+      "C": 2070000.0,
+      "depth": 0.3,
+      "n_layers": 7,
+      "bottom_bc": "fixed",
+      "roughness_m": 0.002
+    },
+    "concrete_sidewalk": {
+      "albedo": 0.3,
+      "emissivity": 0.94,
+      "thermal_conductivity": 1.4,
+      "density": 2300.0,
+      "specific_heat": 880.0,
+      "k": 1.4,
+      "C": 2024000.0,
+      "depth": 0.25,
+      "n_layers": 7,
+      "bottom_bc": "fixed",
+      "roughness_m": 0.003
+    },
+    "paving_stone_path": {
+      "albedo": 0.24,
+      "emissivity": 0.94,
+      "thermal_conductivity": 1.1,
+      "density": 2200.0,
+      "specific_heat": 840.0,
+      "k": 1.1,
+      "C": 1848000.0,
+      "depth": 0.25,
+      "n_layers": 7,
+      "bottom_bc": "fixed",
+      "roughness_m": 0.006
+    },
+    "unpaved_path": {
+      "albedo": 0.2,
+      "emissivity": 0.95,
+      "thermal_conductivity": 0.8,
+      "density": 1800.0,
+      "specific_heat": 1000.0,
+      "k": 0.8,
+      "C": 1800000.0,
+      "depth": 0.4,
+      "n_layers": 8,
+      "bottom_bc": "fixed",
+      "roughness_m": 0.015
+    },
+    "pedestrian_crossing": {
+      "albedo": 0.26,
+      "emissivity": 0.94,
+      "thermal_conductivity": 1.2,
+      "density": 2250.0,
+      "specific_heat": 880.0,
+      "k": 1.2,
+      "C": 1980000.0,
+      "depth": 0.25,
+      "n_layers": 7,
+      "bottom_bc": "fixed",
+      "roughness_m": 0.004
+    },
+    "concrete_road": {
+      "albedo": 0.28, "emissivity": 0.94,
+      "thermal_conductivity": 1.4, "density": 2300.0,
+      "specific_heat": 880.0, "k": 1.4, "C": 2024000.0,
+      "depth": 0.4, "n_layers": 8, "bottom_bc": "fixed", "roughness_m": 0.003
+    },
+    "asphalt_pedestrian": {
+      "albedo": 0.14, "emissivity": 0.95,
+      "thermal_conductivity": 0.75, "density": 2250.0,
+      "specific_heat": 920.0, "k": 0.75, "C": 2070000.0,
+      "depth": 0.3, "n_layers": 7, "bottom_bc": "fixed", "roughness_m": 0.002
+    },
+    "concrete_pedestrian": {
+      "albedo": 0.30, "emissivity": 0.94,
+      "thermal_conductivity": 1.4, "density": 2300.0,
+      "specific_heat": 880.0, "k": 1.4, "C": 2024000.0,
+      "depth": 0.25, "n_layers": 7, "bottom_bc": "fixed", "roughness_m": 0.003
+    },
+    "paving_stone_pedestrian": {
+      "albedo": 0.24, "emissivity": 0.94,
+      "thermal_conductivity": 1.1, "density": 2200.0,
+      "specific_heat": 840.0, "k": 1.1, "C": 1848000.0,
+      "depth": 0.25, "n_layers": 7, "bottom_bc": "fixed", "roughness_m": 0.006
+    },
+    "pedestrian_plaza": {
+      "albedo": 0.24, "emissivity": 0.94,
+      "thermal_conductivity": 1.1, "density": 2200.0,
+      "specific_heat": 840.0, "k": 1.1, "C": 1848000.0,
+      "depth": 0.3, "n_layers": 7, "bottom_bc": "fixed", "roughness_m": 0.006
+    },
+    "asphalt_parking": {
+      "albedo": 0.12, "emissivity": 0.95,
+      "thermal_conductivity": 0.75, "density": 2300.0,
+      "specific_heat": 920.0, "k": 0.75, "C": 2116000.0,
+      "depth": 0.4, "n_layers": 8, "bottom_bc": "fixed", "roughness_m": 0.002
+    },
+    "concrete_parking": {
+      "albedo": 0.28, "emissivity": 0.94,
+      "thermal_conductivity": 1.4, "density": 2300.0,
+      "specific_heat": 880.0, "k": 1.4, "C": 2024000.0,
+      "depth": 0.4, "n_layers": 8, "bottom_bc": "fixed", "roughness_m": 0.003
+    },
+    "gravel_parking": {
+      "albedo": 0.22, "emissivity": 0.95,
+      "thermal_conductivity": 0.8, "density": 1800.0,
+      "specific_heat": 1000.0, "k": 0.8, "C": 1800000.0,
+      "depth": 0.4, "n_layers": 8, "bottom_bc": "fixed", "roughness_m": 0.015
+    },
+    "grass_lawn": {
+      "albedo": 0.23, "emissivity": 0.96,
+      "thermal_conductivity": 0.6, "density": 1400.0,
+      "specific_heat": 1300.0, "k": 0.6, "C": 1820000.0,
+      "depth": 0.5, "n_layers": 8, "bottom_bc": "fixed", "roughness_m": 0.03
+    },
+    "artificial_turf": {
+      "albedo": 0.18, "emissivity": 0.95,
+      "thermal_conductivity": 0.3, "density": 1100.0,
+      "specific_heat": 1400.0, "k": 0.3, "C": 1540000.0,
+      "depth": 0.15, "n_layers": 6, "bottom_bc": "fixed", "roughness_m": 0.012
+    },
+    "sports_surface": {
+      "albedo": 0.20, "emissivity": 0.95,
+      "thermal_conductivity": 0.5, "density": 1600.0,
+      "specific_heat": 1100.0, "k": 0.5, "C": 1760000.0,
+      "depth": 0.2, "n_layers": 6, "bottom_bc": "fixed", "roughness_m": 0.008
+    },
+    "playground_surface": {
+      "albedo": 0.20, "emissivity": 0.95,
+      "thermal_conductivity": 0.35, "density": 1200.0,
+      "specific_heat": 1300.0, "k": 0.35, "C": 1560000.0,
+      "depth": 0.15, "n_layers": 6, "bottom_bc": "fixed", "roughness_m": 0.01
+    },
+    "bare_ground": {
+      "albedo": 0.20, "emissivity": 0.95,
+      "thermal_conductivity": 0.8, "density": 1800.0,
+      "specific_heat": 1000.0, "k": 0.8, "C": 1800000.0,
+      "depth": 0.5, "n_layers": 8, "bottom_bc": "fixed", "roughness_m": 0.02
+    },
+    "water": {
+      "albedo": 0.08, "emissivity": 0.98,
+      "thermal_conductivity": 0.6, "density": 998.0,
+      "specific_heat": 4180.0, "k": 0.6, "C": 4171640.0,
+      "depth": 1.0, "n_layers": 10, "bottom_bc": "fixed", "roughness_m": 0.0002
+    }
+  },
+  "manual_overrides": {}
+}

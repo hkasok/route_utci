@@ -47,7 +47,11 @@ OUTPUTS (in --output-dir, default ./surface_selected)
 ----------------------------------------------------
   <stem>_route<N>_selected.stl     triangles selected for longwave computation
   <stem>_route<N>_unselected.stl   the remaining triangles
+  <ground-stem>_route<N>_selected_material_<material>.stl
+                                   selected ground split by configured material
   selection_split_report.txt       face/area counts and percentages per mesh
+  ground_material_selection_report.csv
+                                   selected face/area totals by ground material
   selected_faces_<stem>_route<N>.npy  the selected face indices (for scripting)
 
 The route tag is in the filenames so running a different --route-id cannot
@@ -77,6 +81,8 @@ Optional cross-check against a real 05a run (only meaningful with
 """
 
 import argparse
+import csv
+import json
 import time
 from pathlib import Path
 
@@ -85,6 +91,8 @@ import trimesh
 
 from thermal_common import (get_intersector, make_sphere_directions,
                             nearest_hit_multi)
+from osm_ground_materials import (GROUND_FACE_MATERIAL_MAP,
+                                  GROUND_MATERIAL_CATALOG)
 
 # Mesh ids must match 05a_thermal_facets_select.py
 MESH_BUILDINGS = 0
@@ -120,6 +128,15 @@ def parse_args():
                         "to look from). Default: run_output/mrt_facet_out")
     p.add_argument("--output-dir", default="surface_selected",
                    help="Output folder (default: ./surface_selected)")
+    p.add_argument(
+        "--ground-material-dir", default="run_output/osm_ground_materials",
+        help="Folder containing ground_face_materials.npz and "
+             "ground_material_catalog.json. These classify selected ground "
+             "faces into separate material STLs (default: "
+             "run_output/osm_ground_materials)")
+    p.add_argument(
+        "--no-ground-material-stls", action="store_true",
+        help="Skip the additional selected-ground STL split by material")
 
     p.add_argument("--route-id", type=int, default=2,
                    help="Cast rays from THIS route only, so 'selected' is what "
@@ -211,6 +228,102 @@ def write_half(mesh, face_idx, path):
     return len(face_idx), float(mesh.area_faces[face_idx].sum())
 
 
+def load_ground_material_map(material_dir, ground_mesh):
+    """Load and validate the production material ID assigned to every ground face."""
+    material_dir = Path(material_dir)
+    map_path = material_dir / GROUND_FACE_MATERIAL_MAP
+    catalog_path = material_dir / GROUND_MATERIAL_CATALOG
+    missing = [str(path) for path in (map_path, catalog_path) if not path.is_file()]
+    if missing:
+        raise SystemExit(
+            "ERROR: ground-material export requires the production material "
+            f"outputs; missing: {', '.join(missing)}. Run the OSM ground-material "
+            "stage first or pass --ground-material-dir.")
+
+    with catalog_path.open(encoding="utf-8") as stream:
+        catalog = json.load(stream)
+    material_names = catalog.get("material_names")
+    if (not isinstance(material_names, list) or not material_names
+            or len(set(material_names)) != len(material_names)
+            or not all(isinstance(name, str) and name
+                       and name.replace("_", "").isalnum()
+                       for name in material_names)):
+        raise SystemExit(
+            f"ERROR: invalid material_names in {catalog_path}")
+
+    with np.load(map_path) as archive:
+        if "material_id" not in archive:
+            raise SystemExit(f"ERROR: {map_path} does not contain material_id")
+        material_id = np.asarray(archive["material_id"])
+    if material_id.ndim != 1 or len(material_id) != len(ground_mesh.faces):
+        raise SystemExit(
+            f"ERROR: {map_path} has {len(material_id):,} material IDs but the "
+            f"ground STL has {len(ground_mesh.faces):,} faces. The files are "
+            "from different geometry runs.")
+    if not np.issubdtype(material_id.dtype, np.integer):
+        if not np.all(np.equal(material_id, np.floor(material_id))):
+            raise SystemExit(f"ERROR: {map_path} contains non-integer material IDs")
+        material_id = material_id.astype(np.int64)
+    else:
+        material_id = material_id.astype(np.int64, copy=False)
+    if np.any(material_id < 0) or np.any(material_id >= len(material_names)):
+        bad = np.unique(material_id[
+            (material_id < 0) | (material_id >= len(material_names))])
+        raise SystemExit(
+            f"ERROR: {map_path} contains out-of-range material IDs {bad.tolist()} "
+            f"for {len(material_names)} catalog materials")
+
+    signature = catalog.get("ground_mesh_signature", {})
+    expected_faces = signature.get("n_faces")
+    if expected_faces is not None and int(expected_faces) != len(ground_mesh.faces):
+        raise SystemExit(
+            "ERROR: ground material catalog face count does not match ground STL")
+    expected_bounds = np.asarray(signature.get("bounds", []), dtype=float)
+    if (expected_bounds.shape == (2, 3)
+            and not np.allclose(expected_bounds, ground_mesh.bounds,
+                                atol=1.0e-5, rtol=0.0)):
+        raise SystemExit(
+            "ERROR: ground material catalog bounds do not match ground STL; "
+            "refusing to assign materials to the wrong geometry")
+    return material_id, material_names, map_path, catalog_path
+
+
+def write_selected_ground_material_stls(mesh, selected_faces, material_id,
+                                        material_names, stem, route_tag, out_dir):
+    """Intersect selected ground faces with each material and export one STL each."""
+    selected_mask = np.zeros(len(mesh.faces), dtype=bool)
+    selected_mask[np.asarray(selected_faces, dtype=np.int64)] = True
+    rows = []
+    exported_faces = []
+    for mid, material_name in enumerate(material_names):
+        face_idx = np.flatnonzero(selected_mask & (material_id == mid)).astype(np.int64)
+        path = out_dir / (
+            f"{stem}_{route_tag}_selected_material_{material_name}.stl")
+        n_faces, area_m2 = write_half(mesh, face_idx, path)
+        np.save(
+            out_dir / (
+                f"selected_faces_{stem}_{route_tag}_material_{material_name}.npy"),
+            face_idx)
+        rows.append({
+            "material_id": mid,
+            "material_name": material_name,
+            "selected_face_count": n_faces,
+            "selected_area_m2": area_m2,
+            "stl_file": path.name,
+        })
+        if len(face_idx):
+            exported_faces.append(face_idx)
+        print(f"  {path.name:<72} {n_faces:>9,} faces")
+
+    combined = (np.sort(np.concatenate(exported_faces)) if exported_faces
+                else np.empty(0, dtype=np.int64))
+    expected = np.sort(np.asarray(selected_faces, dtype=np.int64))
+    if not np.array_equal(combined, expected):
+        raise RuntimeError(
+            "ground material STL split did not conserve the selected ground faces")
+    return rows
+
+
 def main():
     args = parse_args()
     out_dir = Path(args.output_dir)
@@ -231,6 +344,14 @@ def main():
         meshes[mid] = trimesh.load(str(path), force="mesh")
         print(f"  {MESH_LABEL[mid]:<10} {len(meshes[mid].faces):>9,} faces  "
               f"({path.name})")
+
+    ground_material_data = None
+    if not args.no_ground_material_stls:
+        ground_material_data = load_ground_material_map(
+            args.ground_material_dir, meshes[MESH_GROUND])
+        material_id, material_names, map_path, catalog_path = ground_material_data
+        print(f"  Ground materials: {len(material_names)} classes from {map_path}")
+        print(f"                    catalog {catalog_path}")
 
     mrt_dir = Path(args.mrt_dir)
     pxyz = mrt_dir / "path_xyz.npy"
@@ -325,6 +446,7 @@ def main():
     # ------------------------------------------------------------------
     print(f"\nWriting split meshes to {out_dir}/ ...")
     rows = []
+    material_rows = []
     for mid, mesh in meshes.items():
         stem = stl_paths[mid].stem
         n_all = len(mesh.faces)
@@ -345,6 +467,10 @@ def main():
             a_unsel = float(mesh.area_faces[unsel].sum()) if len(unsel) else 0.0
 
         np.save(out_dir / f"selected_faces_{stem}_{route_tag}.npy", sel)
+        if mid == MESH_GROUND and ground_material_data is not None:
+            print("  Selected ground faces by material:")
+            material_rows = write_selected_ground_material_stls(
+                mesh, sel, material_id, material_names, stem, route_tag, out_dir)
         a_all = float(mesh.area_faces.sum())
         rows.append(dict(mesh=MESH_LABEL[mid], stem=stem, n_all=n_all,
                          n_sel=n_sel, n_unsel=n_unsel, a_all=a_all,
@@ -352,6 +478,13 @@ def main():
         # A split must conserve every triangle -- assert it rather than trust it.
         assert n_sel + n_unsel == n_all, (
             f"{stem}: split lost triangles ({n_sel}+{n_unsel} != {n_all})")
+
+    if material_rows:
+        material_report_path = out_dir / "ground_material_selection_report.csv"
+        with material_report_path.open("w", newline="", encoding="utf-8") as stream:
+            writer = csv.DictWriter(stream, fieldnames=list(material_rows[0]))
+            writer.writeheader()
+            writer.writerows(material_rows)
 
     # ------------------------------------------------------------------
     # Report
@@ -382,11 +515,26 @@ def main():
             f"    area   selected {r['a_sel']:>12,.0f} m2 of "
             f"{r['a_all']:>12,.0f} m2 ({pa:5.1f}%)",
             ""]
+    if material_rows:
+        lines += ["  SELECTED GROUND BY MATERIAL"]
+        for item in material_rows:
+            lines += [
+                f"    {item['material_name']:<28} "
+                f"{item['selected_face_count']:>9,} faces  "
+                f"{item['selected_area_m2']:>12,.1f} m2"]
+        lines += [
+            "",
+            "    Every selected ground face belongs to exactly one material STL.",
+            "    Zero-face configured materials are exported as empty placeholders.",
+            "    Details: ground_material_selection_report.csv",
+            ""]
     if crosscheck_lines:
         lines += ["  Cross-check vs 05a facets.npz:"] + crosscheck_lines + [""]
     lines += [f"  Files: <stem>_{route_tag}_selected.stl / "
               f"<stem>_{route_tag}_unselected.stl",
               f"         selected_faces_<stem>_{route_tag}.npy (face indices)",
+              f"         <ground-stem>_{route_tag}_selected_material_<material>.stl",
+              f"         selected_faces_<ground-stem>_{route_tag}_material_<material>.npy",
               "  Coordinates are unchanged, so both halves overlay the original.",
               ""]
     report = "\n".join(lines)

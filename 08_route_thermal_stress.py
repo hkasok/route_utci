@@ -47,6 +47,14 @@ from pythermalcomfort.models import utci
 from weather_provider import add_weather_args, provider_from_args
 from route_selection import select_routes, load_selected_routes
 from physical_checks import check_utci_inputs
+from radiant_flux_contributions import (
+    CONTRIBUTION_ARCHIVE, CONTRIBUTION_METADATA, LW_SOURCE_COLUMNS,
+    PRIMARY_COLUMNS, SW_SOURCE_COLUMNS, TOTAL_COLUMNS,
+    aggregate_plot_categories, load_contribution_config,
+    plot_ranked_radiant_flux_contributions,
+    plot_surface_longwave_classifications, route_contribution_summary,
+    sample_route_contribution_matrices)
+from thermal_common import SIGMA
 
 
 # UTCI thermal-stress category boundaries (deg C) for reporting a route's
@@ -229,6 +237,12 @@ def parse_args():
     p.add_argument("--mrt-results-dir", required=True, help="Output dir from 05_mrt_network_raytrace.py")
     p.add_argument("--output-dir", required=True)
     p.add_argument("--buildings-stl", default=None)
+    p.add_argument(
+        "--radiant-flux-config", default=None,
+        help=("Optional radiant_flux_contribution_results.json. If enabled, "
+              "sample stage-05 absorbed-flux records at route arrival times "
+              "and create ranked W m^-2 figures without reordering route data."),
+    )
 
     p.add_argument("--n-routes", type=int, default=3)
 
@@ -285,6 +299,7 @@ def main():
     args = parse_args()
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    contribution_config = load_contribution_config(args.radiant_flux_config)
 
     weather = provider_from_args(args)
     report_forcing(weather, args, out_dir)
@@ -303,9 +318,34 @@ def main():
     time_hours = np.array([t.hour + t.minute / 60.0 + t.second / 3600.0 for t in times])
     # unwrap in case times cross midnight boundary at the array edges
     mrt_tree = cKDTree(mrt_xyz[:, :2])
+    contribution_matrices = None
+    contribution_metadata = None
+    direct_transmission_matrix = None
+    if contribution_config["enabled"]:
+        archive_path = mrt_dir / CONTRIBUTION_ARCHIVE
+        metadata_path = mrt_dir / CONTRIBUTION_METADATA
+        if not archive_path.is_file() or not metadata_path.is_file():
+            raise FileNotFoundError(
+                "radiant-flux results are enabled but stage-05 contribution "
+                f"outputs are missing ({archive_path}, {metadata_path}); rerun stage 05")
+        archive = np.load(archive_path)
+        contribution_matrices = {key: archive[key] for key in archive.files}
+        import json
+        contribution_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        expected_shape = (len(time_hours), len(mrt_xyz))
+        for key, matrix in contribution_matrices.items():
+            if matrix.shape != expected_shape:
+                raise ValueError(
+                    f"contribution matrix {key} has {matrix.shape}, expected {expected_shape}")
+        direct_transmission_matrix = np.load(
+            mrt_dir / "direct_transmission_matrix.npy", mmap_mode="r")
+        if direct_transmission_matrix.shape != expected_shape:
+            raise ValueError("direct-transmission matrix does not match MRT grid")
+        print(f"  Loaded absorbed radiant-flux contributions: {archive_path}")
 
     print("\nComputing UTCI along each route (at each point's arrival time)...")
     results = []
+    contribution_route_frames = {}
     for i, route in enumerate(routes):
         xy = route["xy"]
         n_pts = len(xy)
@@ -348,6 +388,47 @@ def main():
                           v=wind_trace, rh=rh_trace,
                           limit_inputs=False).utci
         utci_trace = np.asarray(utci_trace, dtype=float)
+
+        if contribution_matrices is not None:
+            person_emissivity = float(
+                contribution_metadata["person_longwave_emissivity"])
+            sampled_flux, interpolation_scale = sample_route_contribution_matrices(
+                contribution_matrices, time_hours, arrival_hour, nearest_idx,
+                tmrt_trace, person_emissivity=person_emissivity, sigma=SIGMA,
+                validation=contribution_config["validation"])
+            timestamps = (
+                pd.Timestamp(times_df["time"].iloc[0]).normalize()
+                + pd.to_timedelta(arrival_hour, unit="h"))
+            frame_data = {
+                "route_id": np.full(n_pts, i + 1, dtype=int),
+                "point_id": np.arange(n_pts, dtype=int),
+                "original_route_index": np.arange(n_pts, dtype=int),
+                "time": np.asarray(timestamps.astype(str)),
+                "x": xy[:, 0],
+                "y": xy[:, 1],
+                "z": mrt_xyz[nearest_idx, 2],
+                "distance_along_route_m": cumdist,
+                "arrival_hour": arrival_hour,
+            }
+            frame_data.update(sampled_flux)
+            frame_data.update({
+                "mrt_C": tmrt_trace,
+                "mrt_from_recorded_flux_C": (
+                    np.power(sampled_flux["total_absorbed_radiant_flux_Wm2"] /
+                             (person_emissivity * SIGMA), 0.25) - 273.15),
+                "utci_C": utci_trace,
+                "air_temperature_C": ta_trace,
+                "relative_humidity_pct": rh_trace,
+                "wind_speed_ms": wind_trace,
+                "direct_transmission": np.array([
+                    np.interp(hour, time_hours,
+                              direct_transmission_matrix[:, point_index], period=24.0)
+                    for hour, point_index in zip(h, nearest_idx)
+                ]),
+                "route_interpolation_closure_scale": interpolation_scale,
+                "nearest_mrt_point_index": nearest_idx,
+            })
+            contribution_route_frames[i + 1] = pd.DataFrame(frame_data)
 
         walk_duration_min = cumdist[-1] / args.walking_speed_ms / 60.0
         # exposure "dose" above the strong-heat-stress threshold, in
@@ -405,6 +486,58 @@ def main():
     } for r in results]
     pd.DataFrame(summary_rows).sort_values(["mean_utci_c", "max_utci_c"]).to_csv(
         out_dir / "route_ranking_summary.csv", index=False)
+
+    if contribution_route_frames:
+        flux_out = out_dir / "radiant_flux_contributions"
+        flux_out.mkdir(parents=True, exist_ok=True)
+        if contribution_config["export"]["receptor_csv"]:
+            for route_id, frame in contribution_route_frames.items():
+                frame.to_csv(
+                    flux_out / f"route_{route_id}_radiant_flux_contributions.csv",
+                    index=False)
+        if contribution_config["export"]["route_summary_csv"]:
+            route_contribution_summary(
+                contribution_route_frames, contribution_config).to_csv(
+                    flux_out / "route_radiant_flux_contribution_summary.csv",
+                    index=False)
+        annotations = {
+            r["route_id"]: (f"Length {r['length_m']:.0f} m; "
+                            f"walking time {r['walk_duration_min']:.1f} min")
+            for r in results
+        }
+        saved_flux_figures = plot_ranked_radiant_flux_contributions(
+            contribution_route_frames, flux_out, contribution_config,
+            route_annotations=annotations)
+        saved_surface_lw_figures, surface_lw_classes = (
+            plot_surface_longwave_classifications(
+                contribution_route_frames, flux_out, contribution_config,
+                route_annotations=annotations))
+        grouping = {}
+        for route_id, frame in contribution_route_frames.items():
+            _, _, grouped = aggregate_plot_categories(
+                frame, contribution_config["plot_mode"], contribution_config)
+            grouping[str(route_id)] = grouped
+        import json
+        (flux_out / "radiant_flux_plot_manifest.json").write_text(
+            json.dumps({
+                "units": "absorbed W m^-2",
+                "plot_mode": contribution_config["plot_mode"],
+                "sorting": ("each contribution and total independently sorted "
+                            "high-to-low; visualization copies only"),
+                "plot_style": "line curves; no filled or stacked areas",
+                "surface_longwave_classification_plot": {
+                    "contents": ("total surface longwave plus nonzero available "
+                                 "surface-source classifications only"),
+                    "sorting": ("each class and total surface longwave independently "
+                                "sorted high-to-low; visualization copies only"),
+                    "classes_by_route": surface_lw_classes,
+                    "figures": [str(path) for path in saved_surface_lw_figures],
+                },
+                "source_metadata": contribution_metadata,
+                "categories_grouped_into_other_by_route": grouping,
+                "figures": [str(path) for path in saved_flux_figures],
+            }, indent=2), encoding="utf-8")
+        print(f"  Absorbed-flux route tables and figures: {flux_out}")
 
     # ---- Export route geometries for external validation software ----
     export_routes_for_gis(results, out_dir, origin, args.project_crs)

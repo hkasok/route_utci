@@ -45,6 +45,16 @@ DEFAULT_BBOX_LATLON = (-80.381509, 25.752457, -80.369745, 25.759748)
 # Your point-cloud/STL data's coordinate system (NAD83(2011) UTM Zone 17N).
 TARGET_CRS = "EPSG:6346"
 
+# Preserve material/width attributes for the independent ground-surface
+# branch. Adding tags changes no Overpass network filter, graph topology,
+# routing eligibility, edge weight, or route-selection behavior.
+SURFACE_ONLY_OSM_TAGS = [
+    "surface", "width", "est_width", "sidewalk", "sidewalk:width",
+    "sidewalk:left:width", "sidewalk:right:width", "footway", "crossing",
+    "area", "area:highway", "access", "foot", "covered", "lanes",
+    "service",
+]
+
 
 def parse_args():
     p = argparse.ArgumentParser(description="Extract FIU MMC pedestrian network from OSM")
@@ -77,6 +87,10 @@ def main():
     print("[osm] This requires internet access to overpass-api.de -- if this hangs or "
           "fails, check your network connection, not this script's logic.")
 
+    # This extends only the attributes retained on the already-authoritative
+    # route graph. It deliberately does not alter the network query or graph.
+    ox.settings.useful_tags_way = list(dict.fromkeys(
+        list(ox.settings.useful_tags_way) + SURFACE_ONLY_OSM_TAGS))
     G = ox.graph_from_bbox(bbox=bbox, network_type=args.network_type)
     print(f"[osm] Retrieved graph: {len(G.nodes)} nodes, {len(G.edges)} edges")
 
