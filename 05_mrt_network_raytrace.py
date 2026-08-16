@@ -40,6 +40,7 @@ Run:
 """
 
 import argparse
+import hashlib
 import json
 import pickle
 import time
@@ -69,6 +70,22 @@ def parse_args():
     p.add_argument("--polylines-pkl", required=True,
                     help="Output of extract_osm_pedestrian_network.py")
     p.add_argument("--output-dir", required=True)
+    p.add_argument(
+        "--prep-only", action="store_true",
+        help=("Write route points, time forcing, and static SVF products, then "
+              "exit before direct-sun ray tracing and MRT. This mode never "
+              "writes tmrt_matrix_C.npy."),
+    )
+    p.add_argument(
+        "--svf-cache", default=None, metavar="DIR",
+        help=("Optional directory for exact-match reuse of geometry-only SVF "
+              "arrays. Cache identity includes the STL inputs, sampled route "
+              "points, sky sampling, and diffuse vegetation attenuation."),
+    )
+    p.add_argument(
+        "--force-svf", action="store_true",
+        help="Recompute SVF even when --svf-cache contains a valid exact match.",
+    )
     p.add_argument(
         "--radiant-flux-config", default=None,
         help=("Optional radiant_flux_contribution_results.json. When omitted, "
@@ -202,6 +219,107 @@ def parse_args():
 
 
 SIGMA = 5.670374419e-8
+SVF_CACHE_SCHEMA_VERSION = 1
+SVF_CACHE_METADATA = "svf_cache_metadata.json"
+SVF_CACHE_ARRAYS = (
+    "svf_building_only.npy",
+    "svf_planar.npy",
+    "svf_standing.npy",
+)
+
+
+def _sha256_file(path, chunk_size=8 * 1024 * 1024):
+    """Return a streaming SHA-256 digest without loading a large STL at once."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as stream:
+        while True:
+            chunk = stream.read(chunk_size)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _stl_cache_identity(path):
+    """Stable identity for a mesh input used by the static SVF calculation."""
+    resolved = Path(path).resolve()
+    stat = resolved.stat()
+    return {
+        "path": str(resolved),
+        "size_bytes": int(stat.st_size),
+        "mtime_ns": int(stat.st_mtime_ns),
+        "sha256": _sha256_file(resolved),
+    }
+
+
+def _array_cache_identity(path, array):
+    """Content identity for a generated NPY, independent of output directory."""
+    resolved = Path(path)
+    stat = resolved.stat()
+    return {
+        "size_bytes": int(stat.st_size),
+        "sha256": _sha256_file(resolved),
+        "shape": list(array.shape),
+        "dtype": str(array.dtype),
+    }
+
+
+def build_svf_cache_metadata(args, path_xyz, path_xyz_file):
+    """Describe every input that can change the geometry-only SVF fields."""
+    return {
+        "schema_version": SVF_CACHE_SCHEMA_VERSION,
+        "algorithm": "compute_effective_svf_batched",
+        "meshes": {
+            "buildings": _stl_cache_identity(args.buildings_stl),
+            "vegetation": _stl_cache_identity(args.vegetation_stl),
+            "ground": _stl_cache_identity(args.ground_stl),
+        },
+        "path_xyz": _array_cache_identity(path_xyz_file, path_xyz),
+        "sky_sampling": {
+            "n_azimuth": int(args.sky_n_azimuth),
+            "n_elevation": int(args.sky_n_elevation),
+            "k_lad_diffuse": float(args.k_lad_diffuse),
+        },
+    }
+
+
+def load_cached_svf(cache_dir, expected_metadata, n_points):
+    """Load a complete, finite exact-match cache, otherwise return None."""
+    cache_dir = Path(cache_dir)
+    metadata_path = cache_dir / SVF_CACHE_METADATA
+    if not metadata_path.is_file():
+        return None
+    try:
+        with open(metadata_path, encoding="utf-8") as stream:
+            actual_metadata = json.load(stream)
+        if actual_metadata != expected_metadata:
+            print("  SVF cache metadata mismatch; recomputing.")
+            return None
+        arrays = tuple(np.load(cache_dir / name) for name in SVF_CACHE_ARRAYS)
+        for name, values in zip(SVF_CACHE_ARRAYS, arrays):
+            if values.shape != (n_points,):
+                print(f"  SVF cache shape mismatch in {name}; recomputing.")
+                return None
+            if not np.isfinite(values).all():
+                print(f"  SVF cache contains non-finite values in {name}; recomputing.")
+                return None
+        print(f"  reusing cached SVF from {cache_dir}")
+        return arrays
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        print(f"  SVF cache is incomplete or unreadable ({exc}); recomputing.")
+        return None
+
+
+def write_svf_cache(cache_dir, metadata, arrays):
+    """Write SVF arrays first and the validity sidecar last."""
+    cache_dir = Path(cache_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    for name, values in zip(SVF_CACHE_ARRAYS, arrays):
+        np.save(cache_dir / name, values)
+    with open(cache_dir / SVF_CACHE_METADATA, "w", encoding="utf-8") as stream:
+        json.dump(metadata, stream, indent=2, sort_keys=True)
+        stream.write("\n")
+    print(f"  Wrote exact-match SVF cache: {cache_dir}")
 
 
 def get_intersector(mesh):
@@ -1006,7 +1124,8 @@ def main():
     path_xyz = np.column_stack([path_xy, z_ground + args.z_height])
     print(f"  Ground Z range: {z_ground.min():.2f} to {z_ground.max():.2f} m")
 
-    np.save(out_dir / "path_xyz.npy", path_xyz)
+    path_xyz_file = out_dir / "path_xyz.npy"
+    np.save(path_xyz_file, path_xyz)
     np.save(out_dir / "path_segment_id.npy", segment_id)
 
     print("\n" + "=" * 70)
@@ -1015,11 +1134,27 @@ def main():
         args.sky_n_azimuth, args.sky_n_elevation)
     print(f"  Sky directions: {len(sky_directions)}")
 
-    svf_building_only, svf_planar, svf_standing = compute_effective_svf_batched(
-        path_xyz, sky_directions, sky_w_planar, sky_w_cyl,
-        building_intersector, vegetation_intersector,
-        args.k_lad_diffuse, args.svf_batch_size,
-    )
+    svf_metadata = None
+    cached_svf = None
+    if args.svf_cache:
+        svf_metadata = build_svf_cache_metadata(args, path_xyz, path_xyz_file)
+        if args.force_svf:
+            print("  --force-svf set; bypassing any existing SVF cache.")
+        else:
+            cached_svf = load_cached_svf(args.svf_cache, svf_metadata, n_points)
+    if cached_svf is None:
+        svf_building_only, svf_planar, svf_standing = compute_effective_svf_batched(
+            path_xyz, sky_directions, sky_w_planar, sky_w_cyl,
+            building_intersector, vegetation_intersector,
+            args.k_lad_diffuse, args.svf_batch_size,
+        )
+        if args.svf_cache:
+            write_svf_cache(
+                args.svf_cache, svf_metadata,
+                (svf_building_only, svf_planar, svf_standing),
+            )
+    else:
+        svf_building_only, svf_planar, svf_standing = cached_svf
     # The pedestrian's sky fraction depends on body model; the ground below is
     # always a horizontal (planar) receiver.
     svf_person = svf_standing if args.sky_view_body == "standing" else svf_planar
@@ -1070,6 +1205,29 @@ def main():
 
     nt = len(times)
     print(f"  {nt} time steps ({args.dt_min} min resolution)")
+
+    # This is intentionally written before the expensive direct-sun/MRT loop:
+    # 05b needs only this forcing table, and --prep-only is the preparation
+    # half of the merged facet-thermal stage. The column order and formatting
+    # are unchanged from a normal full run.
+    times_df = pd.DataFrame({
+        "time": times, "azimuth_deg": azim, "elevation_deg": elev,
+        "DNI_Wm2": dni, "DHI_Wm2": dhi, "GHI_Wm2": ghi, "air_temp_C": air_temp_C_time,
+        # Carried through so downstream stages inherit identical forcing.
+        "rh_pct": rh_pct_time, "wind_ms": wind_ms_time,
+        "radiation_source": radiation_source,
+    })
+    times_df.to_csv(out_dir / "times.csv", index=False)
+
+    if args.prep_only:
+        print("\n" + "=" * 70)
+        print("Preparation-only run complete; direct-sun/MRT loop was not run.")
+        print("  path_xyz.npy                     -- (n_points, 3) point coordinates")
+        print("  times.csv                        -- solar position + radiation per time step")
+        print("  svf_effective.npy                -- (n_points,) static sky view factor")
+        print("  tmrt_matrix_C.npy                -- NOT WRITTEN in --prep-only mode")
+        print(f"\n[mrt_prep_result] n_points={n_points} n_times={nt} output_dir={out_dir}")
+        return
 
     print("\n" + "=" * 70)
     print("Running direct-sun ray tracing + MRT for each time step...")
@@ -1194,15 +1352,6 @@ def main():
     if facet_lw is not None and facet_lw.local_ground_albedo is not None:
         np.save(out_dir / "local_ground_albedo.npy",
                 facet_lw.local_ground_albedo.astype(np.float32))
-    times_df = pd.DataFrame({
-        "time": times, "azimuth_deg": azim, "elevation_deg": elev,
-        "DNI_Wm2": dni, "DHI_Wm2": dhi, "GHI_Wm2": ghi, "air_temp_C": air_temp_C_time,
-        # Carried through so downstream stages inherit identical forcing.
-        "rh_pct": rh_pct_time, "wind_ms": wind_ms_time,
-        "radiation_source": radiation_source,
-    })
-    times_df.to_csv(out_dir / "times.csv", index=False)
-
     print("\n" + "=" * 70)
     print("Saving lightweight summary (safe at any scale)...")
     summary_rows = []

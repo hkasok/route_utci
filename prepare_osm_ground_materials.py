@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import pickle
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -34,6 +35,13 @@ from osm_ground_materials import (
     resolve_feature_material_overlaps, resolve_feature_width,
     validate_projected_crs,
 )
+
+
+def _ui_progress(percent: float, message: str) -> None:
+    """Emit an optional nested progress event for the browser launcher."""
+    if os.environ.get("TREC_PROGRESS") == "1":
+        print(f"[osm_material_progress] percent={percent:.1f} message={message}",
+              flush=True)
 
 
 def parse_args() -> argparse.Namespace:
@@ -360,6 +368,7 @@ def main() -> None:
     unique = _deduplicate_directed_edges(frame)
     overrides = _load_overrides(config, args.overrides, crs)
     classified = classify_features(unique, config, overrides)
+    _ui_progress(15, "OSM features classified and widths resolved")
 
     mesh = trimesh.load(args.ground_mesh, force="mesh")
     if not isinstance(mesh, trimesh.Trimesh) or len(mesh.faces) == 0:
@@ -387,6 +396,7 @@ def main() -> None:
     material_polygons, overlap_before, overlap_after = resolve_feature_material_overlaps(
         overlap_records, ground_polygon, config["overlap_priority"],
         config["minimum_polygon_area_m2"])
+    _ui_progress(30, "Exclusive material polygons resolved")
     material_names = list(config["materials"])
     centroids = np.asarray(mesh.triangles_center)[:, :2]
     if config.get("boundary_aware_face_assignment", True):
@@ -417,6 +427,7 @@ def main() -> None:
         "terrain_geometry_modified": False,
     }
     (out_dir / GROUND_MATERIAL_CATALOG).write_text(json.dumps(catalog, indent=2), encoding="utf-8")
+    _ui_progress(65, "Terrain triangles assigned persistent material IDs")
 
     gpkg = out_dir / "osm_ground_materials.gpkg"
     if gpkg.exists():
@@ -478,6 +489,7 @@ def main() -> None:
     _write_layer(final[final["assigned_material"].eq("generic_ground")],
                  gpkg, "remaining_generic_ground", written)
     pd.DataFrame(written).to_csv(out_dir / "gpkg_layer_inventory.csv", index=False)
+    _ui_progress(88, "Diagnostic GeoPackage layers exported")
 
     face_area = np.asarray(mesh.area_faces)
     area_by_material = {
@@ -549,6 +561,7 @@ def main() -> None:
     _diagnostic_plot(out_dir / "ground_material_plan",
                      material_polygons, args.routes_pkl,
                      args.buildings_mesh, args.vegetation_mesh)
+    _ui_progress(100, "Ground-material summaries and plan figure complete")
     print(f"OSM material features: {original_count} directed -> {len(unique)} unique; "
           f"{n_included} included")
     print(f"Terrain faces classified: {len(mesh.faces):,}; materials: "

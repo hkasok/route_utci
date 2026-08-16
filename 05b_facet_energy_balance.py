@@ -533,6 +533,11 @@ def main():
                           - cycle_end_snapshots[-2]).max()
             print(f"  cycle {cyc + 1}/{n_cycles}: max |dT| vs previous "
                   f"cycle end = {dmax:.3f} K")
+        else:
+            # Also expose completion of the first (often longest) cycle so
+            # the TREC-Route UI progress bar does not remain static until the
+            # second full diurnal integration has finished.
+            print(f"  cycle 1/{n_cycles}: initial diurnal integration complete")
 
     spinup_delta = (np.abs(cycle_end_snapshots[-1] - cycle_end_snapshots[-2])
                     .max() if n_cycles > 1 else np.nan)

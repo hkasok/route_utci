@@ -8,20 +8,17 @@
 #  N  STEP                              PRODUCES
 #  1  Geometry build (LAZ -> STL)       building/vegetation/ground_final.stl
 #  2  OSM network + route selection     graphml, route_polylines, selected_routes
-#  3  MRT ray tracing + SVF (stage 05)  path_xyz.npy, times.csv, svf_*.npy
-#                                        (now ONLY along the selected routes)
-#  4  Facet selection (stage 05a)       facets.npz, LW view matrix
-#  5  Facet energy balance (stage 05b)  facet_T_matrix_K.npy (surface temps)
-#  6  Facet-thermal MRT (stage 05*)     improved tmrt_matrix_C.npy
-#  7  Visualizations (stages 06, 07)    MRT + UTCI maps / animations
-#  8  Route thermal stress (08, 09)     UTCI exposure + JOS-3 core temp
+#  3  Facet-thermal MRT (merged)        prep -> 05a -> 05b -> improved MRT
+#  4  Visualizations (stages 06, 07)    MRT + UTCI maps / animations
+#  5  Route thermal stress (08-10)      UTCI + JOS-3 + optional comparison
 #
 #  Examples:
 #     ./start.sh          # start at step 2 (OSM) -- assumes STL already built
 #     ./start.sh 1        # full run including the LAZ -> STL geometry build
-#     ./start.sh 3        # re-run everything from MRT onward (geometry+OSM kept)
-#     ./start.sh 7        # only (re)build the visualizations and route stress
-#     ./start.sh 8        # only re-run the route-stress stages (08, 09)
+#     ./start.sh 3        # re-run facet-thermal MRT and everything after it
+#     ./start.sh 4        # only (re)build visualizations and route stress
+#     ./start.sh 5        # only re-run route stress (08, 09, optional compare)
+#     WITH_BASELINE=1 ./start.sh 3  # also compute legacy-surround MRT
 #
 #  Starting at step N runs N, N+1, ... to the end. Steps before N are assumed
 #  already done; the script checks their outputs exist and stops with a clear
@@ -29,15 +26,42 @@
 #  unless you explicitly start at step 1, because it is the slow LAZ pipeline.
 #
 #  You can still force-skip an individual stage with SKIP_<NAME>=1
-#  (GEOM/OSM/05/05A/05B/05FACET/06/07/08/09), e.g. SKIP_07=1 ./start.sh 7.
+#  (GEOM/OSM/OSM_MATERIALS/05/05A/05B/05FACET/06/07/08/09/10), e.g.
+#  SKIP_07=1 ./start.sh 4. Stage 05 is preparation-only unless
+#  WITH_BASELINE=1 requests the legacy-surround MRT result as well.
 # ============================================================================
 
 set -euo pipefail
 cd "$(dirname "$0")"
 
+if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+    cat <<'EOF'
+Usage: bash start.sh [STEP]
+
+Run STEP and every later TREC-Route pipeline step (default: STEP=2):
+  1  Geometry build (LAZ -> STL)
+  2  OSM network, route selection, and ground materials
+  3  Facet-thermal MRT (05 --prep-only -> 05a -> 05b -> facet MRT)
+  4  MRT and UTCI visualizations (06, 07)
+  5  Route stress and optional comparison (08, 09, 10)
+
+Important controls:
+  WITH_BASELINE=1        additionally compute legacy-surround MRT in mrt_out
+  SVF_CACHE_DIR=DIR      exact-match static sky-view cache directory
+  FORCE_SVF=1            rebuild the preparation SVF cache
+  SKIP_<FLAG>=1          skip GEOM, OSM, OSM_MATERIALS, 05, 05A, 05B,
+                         05FACET, 06, 07, 08, 09, or 10
+
+All existing model/environment overrides remain supported, including DATE,
+DEPARTURE_HOUR, WALKING_SPEED_MS, WEATHER_CSV, SUBJECT_PROFILE, N_ROUTES,
+LOCAL_ORIGIN_X/Y, PROJECT_CRS, VIS_MRT_DIR, and SOLWEIG_COMPARE.
+EOF
+    exit 0
+fi
+
 START_STEP="${1:-2}"
-case "$START_STEP" in 1|2|3|4|5|6|7|8) ;; *)
-    echo "ERROR: step must be 1-8 (got '$START_STEP'). See the table in this file." >&2
+case "$START_STEP" in 1|2|3|4|5) ;; *)
+    echo "ERROR: step must be 1-5 (got '$START_STEP'). See the table in this file." >&2
     exit 1 ;; esac
 
 # ############################################################################
@@ -125,10 +149,14 @@ OSM_GROUND_CONFIG="${OSM_GROUND_CONFIG:-$PWD/osm_ground_materials.json}"
 OSM_GROUND_MATERIAL_DIR="${OSM_GROUND_MATERIAL_DIR:-$OUT_ROOT/osm_ground_materials}"
 OSM_GROUND_OVERRIDES="${OSM_GROUND_OVERRIDES:-}"
 RADIANT_FLUX_CONFIG="${RADIANT_FLUX_CONFIG:-$PWD/radiant_flux_contribution_results.json}"
-MRT_DIR="${MRT_DIR:-$OUT_ROOT/mrt_out}"                   # legacy-surround MRT
+MRT_DIR="${MRT_DIR:-$OUT_ROOT/mrt_out}"                   # prep + optional legacy MRT
 THERMAL_DIR="${THERMAL_DIR:-$OUT_ROOT/thermal_out}"       # 05a + 05b outputs
 MRT_FACET_DIR="${MRT_FACET_DIR:-$OUT_ROOT/mrt_facet_out}" # facet-thermal MRT
 VIS_DIR="${VIS_DIR:-$OUT_ROOT/viz}"
+SVF_CACHE_DIR="${SVF_CACHE_DIR:-$OUT_ROOT/svf_cache}"
+WITH_BASELINE="${WITH_BASELINE:-0}"
+SOLWEIG_COMPARE="${SOLWEIG_COMPARE:-0}"
+SOLWEIG_COMPARE_OUTPUT_DIR="${SOLWEIG_COMPARE_OUTPUT_DIR:-$VIS_DIR/compare_solweig}"
 
 # Which MRT results the visualization / route stages consume
 # (default: the IMPROVED facet-thermal results; set to $MRT_DIR for legacy)
@@ -178,6 +206,17 @@ log()  { printf '\n\033[1;36m==== %s ====\033[0m\n' "$*"; }
 skip() { local v="SKIP_$1"; [ "${!v:-0}" = "1" ]; }
 active() { [ "$START_STEP" -le "$1" ]; }   # true if step N is at/after start
 
+# Machine-readable progress events are emitted only for the browser UI.  A
+# normal terminal run remains unchanged.  Percentages mark completed work
+# within a top-level step; the UI also refines the expensive numerical loops
+# from their real batch/time-step counters.
+progress_event() {
+    if [ "${TREC_PROGRESS:-0}" = "1" ]; then
+        printf '[trec_progress] step=%s percent=%s state=%s message=%s\n' \
+            "$1" "$2" "$3" "$4"
+    fi
+}
+
 require_file() {
     if [ ! -f "$1" ]; then
         echo "ERROR: required input not found: $1" >&2
@@ -212,6 +251,9 @@ mkdir -p "$OUT_ROOT"
 # STEP 1 -- Geometry build (LAZ -> STL).  Slow; only if explicitly started
 # here. Runs main.py in the foreground so the pipeline continues after it.
 # ----------------------------------------------------------------------------
+if active 1; then
+    progress_event 1 0 running "Preparing geometry build"
+fi
 if active 1 && ! skip GEOM; then
     log "STEP 1  Geometry build (LAZ -> STL)"
     if [ -z "$INPUT_LAZ" ]; then
@@ -239,8 +281,10 @@ if active 1 && ! skip GEOM; then
         echo "  Memory cap : (systemd-run unavailable -- running without a cap)"
         "${GEOM_CMD[@]}"
     fi
+    progress_event 1 100 done "Geometry STLs complete"
 elif active 1; then
     log "STEP 1  Geometry build -- SKIP_GEOM=1, skipped"
+    progress_event 1 100 skipped "Geometry build skipped"
 fi
 
 # From here on the STL geometry must exist (built above or pre-existing).
@@ -257,6 +301,9 @@ fi
 # ----------------------------------------------------------------------------
 # STEP 2 -- OSM pedestrian network
 # ----------------------------------------------------------------------------
+if active 2; then
+    progress_event 2 0 running "Preparing OSM and material surfaces"
+fi
 if active 2 && ! skip OSM; then
     if [ -f "$GRAPHML" ] && [ -f "$POLYLINES" ] && [ "${FORCE_OSM:-0}" != 1 ]; then
         log "STEP 2  OSM network -- already present, skipped (FORCE_OSM=1 to rebuild)"
@@ -264,6 +311,7 @@ if active 2 && ! skip OSM; then
         log "STEP 2  Extracting OSM pedestrian network"
         "$PY" extract_osm_pedestrian_network.py --output-dir "$OSM_DIR"
     fi
+    progress_event 2 20 running "Pedestrian network ready"
 
     # Select the N start->end routes NOW (cheap, graph-only) so the expensive
     # MRT stages ray-trace along only these routes instead of the entire
@@ -280,8 +328,11 @@ if active 2 && ! skip OSM; then
         --local-origin-x "$LOCAL_ORIGIN_X" --local-origin-y "$LOCAL_ORIGIN_Y" \
         --project-crs "$PROJECT_CRS" \
         "${ENDPOINT_ARG[@]}"
+    progress_event 2 40 running "Candidate routes selected"
+elif active 2; then
+    progress_event 2 40 running "Routing-network work skipped"
 fi
-if active 3; then
+if active 3 && { ! skip 05 || ! skip 05FACET; }; then
     require_file "$ROUTE_POLYLINES" 2
     require_file "$SELECTED_ROUTES" 2
 fi
@@ -293,7 +344,7 @@ fi
 # ----------------------------------------------------------------------------
 GROUND_MATERIAL_ARG=()
 if [ "$OSM_GROUND_MATERIALS_ENABLED" = "1" ]; then
-    if active 2; then
+    if active 2 && ! skip OSM_MATERIALS; then
         log "STEP 2  OSM ground-material subdivision (routing unchanged)"
         require_file "$OSM_GROUND_CONFIG" 2
         COMPLETE_INPUT_ARG=()
@@ -306,6 +357,7 @@ if [ "$OSM_GROUND_MATERIALS_ENABLED" = "1" ]; then
             --output-file "$OSM_COMPLETE_CACHE" \
             "${COMPLETE_INPUT_ARG[@]}" \
             "${FORCE_COMPLETE_ARG[@]}"
+        progress_event 2 55 running "Complete OSM feature cache ready"
         require_file "$OSM_GROUND_FEATURES" 2
         OVERRIDE_ARG=()
         [ -n "$OSM_GROUND_OVERRIDES" ] && OVERRIDE_ARG=(--overrides "$OSM_GROUND_OVERRIDES")
@@ -322,6 +374,7 @@ if [ "$OSM_GROUND_MATERIALS_ENABLED" = "1" ]; then
             --local-origin-x "$LOCAL_ORIGIN_X" \
             --local-origin-y "$LOCAL_ORIGIN_Y" \
             "${OVERRIDE_ARG[@]}"
+        progress_event 2 95 running "Terrain materials partitioned"
         ROUTE_HASH_AFTER="$(sha256sum "$GRAPHML" "$ROUTE_POLYLINES" "$SELECTED_ROUTES")"
         if [ "$ROUTE_HASH_BEFORE" != "$ROUTE_HASH_AFTER" ]; then
             echo "FATAL: OSM surface processing changed a protected routing artifact" >&2
@@ -331,45 +384,63 @@ if [ "$OSM_GROUND_MATERIALS_ENABLED" = "1" ]; then
             "$OSM_GROUND_MATERIAL_DIR/route_artifact_integrity.sha256"
         echo "  Protected route graph/selection hashes unchanged"
     fi
-    require_file "$OSM_GROUND_MATERIAL_DIR/ground_face_materials.npz" 2
-    require_file "$OSM_GROUND_MATERIAL_DIR/ground_material_catalog.json" 2
-    GROUND_MATERIAL_ARG=(--ground-material-dir "$OSM_GROUND_MATERIAL_DIR")
+    if active 2 && skip OSM_MATERIALS; then
+        echo "  OSM ground-material subdivision skipped (SKIP_OSM_MATERIALS=1)"
+    else
+        require_file "$OSM_GROUND_MATERIAL_DIR/ground_face_materials.npz" 2
+        require_file "$OSM_GROUND_MATERIAL_DIR/ground_material_catalog.json" 2
+        GROUND_MATERIAL_ARG=(--ground-material-dir "$OSM_GROUND_MATERIAL_DIR")
+    fi
 else
     echo "  OSM ground materials disabled: uniform-ground backward-compatible mode"
 fi
+if active 2; then
+    if skip OSM && skip OSM_MATERIALS; then
+        progress_event 2 100 skipped "OSM network and material work skipped"
+    else
+        progress_event 2 100 done "OSM routes and ground materials ready"
+    fi
+fi
 
 # ----------------------------------------------------------------------------
-# STEP 3 -- MRT ray tracing + SVF (stage 05, legacy surround).
-# Produces path_xyz + times.csv that 05a/05b depend on. SVF is computed ONCE
-# here (it is geometry-only) and reused across all timesteps internally.
+# STEP 3 -- merged facet-thermal MRT workflow.
+# Stage 05 first prepares only path_xyz, times.csv and static SVF. Stages 05a
+# and 05b consume those cheap byproducts, then the final stage-05 invocation
+# reuses the exact-match SVF cache while computing the authoritative MRT.
 # ----------------------------------------------------------------------------
+SVF_FORCE_ARG=()
+[ "${FORCE_SVF:-0}" = "1" ] && SVF_FORCE_ARG=(--force-svf)
 if active 3 && ! skip 05; then
-    log "STEP 3  MRT ray tracing + SVF (stage 05)"
+    progress_event 3 0 running "Loading MRT geometry and route receptors"
+    log "STEP 3  Facet-thermal MRT -- preparation (stage 05 --prep-only)"
     "$PY" 05_mrt_network_raytrace.py \
         --buildings-stl "$BUILDINGS_STL" \
         --vegetation-stl "$VEGETATION_STL" \
         --ground-stl "$GROUND_STL" \
         --polylines-pkl "$ROUTE_POLYLINES" \
         --output-dir "$MRT_DIR" \
+        --prep-only --svf-cache "$SVF_CACHE_DIR" "${SVF_FORCE_ARG[@]}" \
         --ds-path "$DS_PATH" --dt-min "$DT_MIN" --date "$DATE" \
         --z-height "$Z_HEIGHT" \
         --latitude "$LAT" --longitude "$LON" --timezone "$TZ" \
         --cloud-cover-fraction "$CLOUD" \
         --k-lad-direct "$K_LAD_DIRECT" --k-lad-diffuse "$K_LAD_DIFFUSE" \
         --clear-sky-emissivity "$CLEAR_SKY_MODEL" \
-        "${LEGACY_RADIANT_FLUX_ARG[@]}" \
         "${WEATHER_ARG[@]}"
+    progress_event 3 20 running "Route, forcing, and sky-view preparation complete"
+elif active 3; then
+    progress_event 3 20 running "MRT preparation skipped; using existing products"
 fi
-if active 4; then
+if active 3 && ! skip 05A; then
     require_file "$MRT_DIR/path_xyz.npy" 3
     require_file "$MRT_DIR/times.csv" 3
 fi
 
 # ----------------------------------------------------------------------------
-# STEP 4 -- Facet selection + LW view matrix (stage 05a)
+# STEP 3b -- Facet selection + LW view matrix (stage 05a)
 # ----------------------------------------------------------------------------
-if active 4 && ! skip 05A; then
-    log "STEP 4  Selecting route-visible thermal facets (stage 05a)"
+if active 3 && ! skip 05A; then
+    log "STEP 3  Selecting route-visible thermal facets (stage 05a)"
     "$PY" 05a_thermal_facets_select.py \
         --buildings-stl "$BUILDINGS_STL" \
         --vegetation-stl "$VEGETATION_STL" \
@@ -378,15 +449,18 @@ if active 4 && ! skip 05A; then
         --output-dir "$THERMAL_DIR" \
         "${GROUND_MATERIAL_ARG[@]}" \
         --point-stride "$POINT_STRIDE" --max-distance "$MAX_DISTANCE"
+    progress_event 3 45 running "Route-visible facets and view matrix complete"
+elif active 3; then
+    progress_event 3 45 running "Facet selection skipped; using existing products"
 fi
-if active 5; then require_file "$THERMAL_DIR/facets.npz" 4; fi
+if active 3 && ! skip 05B; then require_file "$THERMAL_DIR/facets.npz" 3; fi
 
 # ----------------------------------------------------------------------------
-# STEP 5 -- Facet 1D surface-energy balance (stage 05b).
-# Same weather as stage 05 (reads times.csv); keep CLOUD equal to step 3.
+# STEP 3c -- Facet 1D surface-energy balance (stage 05b).
+# Same weather as preparation (reads times.csv); keep CLOUD equal.
 # ----------------------------------------------------------------------------
-if active 5 && ! skip 05B; then
-    log "STEP 5  Facet 1D surface-energy balance (stage 05b)"
+if active 3 && ! skip 05B; then
+    log "STEP 3  Facet 1D surface-energy balance (stage 05b)"
     "$PY" 05b_facet_energy_balance.py \
         --buildings-stl "$BUILDINGS_STL" \
         --vegetation-stl "$VEGETATION_STL" \
@@ -399,20 +473,27 @@ if active 5 && ! skip 05B; then
         --cloud-cover-fraction "$CLOUD" \
         --k-lad-direct "$K_LAD_DIRECT" --k-lad-diffuse "$K_LAD_DIFFUSE" \
         --clear-sky-emissivity "$CLEAR_SKY_MODEL"
+    progress_event 3 68 running "Surface temperatures and radiosity complete"
+elif active 3; then
+    progress_event 3 68 running "Facet energy balance skipped; using existing products"
 fi
-if active 6; then require_file "$THERMAL_DIR/facet_T_matrix_K.npy" 5; fi
+if active 3 && ! skip 05FACET; then
+    require_file "$THERMAL_DIR/facet_T_matrix_K.npy" 3
+fi
 
 # ----------------------------------------------------------------------------
-# STEP 6 -- MRT ray tracing again, consuming facet surface temperatures
+# STEP 3d -- authoritative MRT consuming facet surface temperatures.
 # ----------------------------------------------------------------------------
-if active 6 && ! skip 05FACET; then
-    log "STEP 6  Facet-thermal MRT ray tracing (stage 05*)"
+if active 3 && ! skip 05FACET; then
+    progress_event 3 68 running "Loading facet-thermal MRT calculation"
+    log "STEP 3  Facet-thermal MRT ray tracing (stage 05*)"
     "$PY" 05_mrt_network_raytrace.py \
         --buildings-stl "$BUILDINGS_STL" \
         --vegetation-stl "$VEGETATION_STL" \
         --ground-stl "$GROUND_STL" \
         --polylines-pkl "$ROUTE_POLYLINES" \
         --output-dir "$MRT_FACET_DIR" \
+        --svf-cache "$SVF_CACHE_DIR" \
         --ds-path "$DS_PATH" --dt-min "$DT_MIN" --date "$DATE" \
         --z-height "$Z_HEIGHT" \
         --latitude "$LAT" --longitude "$LON" --timezone "$TZ" \
@@ -422,10 +503,13 @@ if active 6 && ! skip 05FACET; then
         --facet-thermal-dir "$THERMAL_DIR" \
         --radiant-flux-config "$RADIANT_FLUX_CONFIG" \
         "${WEATHER_ARG[@]}"
+    progress_event 3 95 running "Facet-thermal MRT complete; preparing diagnostics"
+elif active 3; then
+    progress_event 3 95 running "Facet-thermal MRT calculation skipped"
 fi
-if active 6 && [ "$OSM_GROUND_MATERIALS_ENABLED" = "1" ]; then
-    require_file "$MRT_FACET_DIR/radiant_flux_contributions.npz" 6
-    log "STEP 6  Route-point ground-material diagnostics"
+if active 3 && ! skip 05FACET && [ "$OSM_GROUND_MATERIALS_ENABLED" = "1" ]; then
+    require_file "$MRT_FACET_DIR/radiant_flux_contributions.npz" 3
+    log "STEP 3  Route-point ground-material diagnostics"
     "$PY" route_ground_material_diagnostics.py \
         --mrt-dir "$MRT_FACET_DIR" \
         --thermal-dir "$THERMAL_DIR" \
@@ -435,25 +519,61 @@ if active 6 && [ "$OSM_GROUND_MATERIALS_ENABLED" = "1" ]; then
         --walking-speed "$WALKING_SPEED_MS" \
         --output "$OSM_GROUND_MATERIAL_DIR/route_point_ground_material_diagnostics.csv"
 fi
-if active 7; then
-    require_file "$VIS_MRT_DIR/tmrt_matrix_C.npy" 6
+
+# Optional baseline: retain the old full legacy-surround product without
+# paying for it during normal runs. It shares the same static SVF cache.
+if active 3 && ! skip 05 && [ "$WITH_BASELINE" = "1" ]; then
+    progress_event 3 96 running "Computing opt-in legacy MRT baseline"
+    log "STEP 3  Optional legacy-surround MRT baseline (WITH_BASELINE=1)"
+    "$PY" 05_mrt_network_raytrace.py \
+        --buildings-stl "$BUILDINGS_STL" \
+        --vegetation-stl "$VEGETATION_STL" \
+        --ground-stl "$GROUND_STL" \
+        --polylines-pkl "$ROUTE_POLYLINES" \
+        --output-dir "$MRT_DIR" \
+        --svf-cache "$SVF_CACHE_DIR" \
+        --ds-path "$DS_PATH" --dt-min "$DT_MIN" --date "$DATE" \
+        --z-height "$Z_HEIGHT" \
+        --latitude "$LAT" --longitude "$LON" --timezone "$TZ" \
+        --cloud-cover-fraction "$CLOUD" \
+        --k-lad-direct "$K_LAD_DIRECT" --k-lad-diffuse "$K_LAD_DIFFUSE" \
+        --clear-sky-emissivity "$CLEAR_SKY_MODEL" \
+        "${LEGACY_RADIANT_FLUX_ARG[@]}" \
+        "${WEATHER_ARG[@]}"
+fi
+if active 3; then
+    if skip 05 && skip 05A && skip 05B && skip 05FACET; then
+        progress_event 3 100 skipped "Facet-thermal MRT workflow skipped"
+    else
+        progress_event 3 100 done "Facet-thermal MRT workflow complete"
+    fi
+fi
+if active 4 && { ! skip 06 || ! skip 07 || ! skip 08 || ! skip 09 \
+        || { ! skip 10 && [ "$SOLWEIG_COMPARE" != "0" ]; }; }; then
+    require_file "$VIS_MRT_DIR/tmrt_matrix_C.npy" 3
     echo
     echo "Visualization / route-stress stages consume: $VIS_MRT_DIR"
     echo "(set VIS_MRT_DIR=$MRT_DIR to use the legacy-surround results instead)"
 fi
 
 # ----------------------------------------------------------------------------
-# STEP 7 -- Visualizations (stages 06 MRT, 07 UTCI)
+# STEP 4 -- Visualizations (stages 06 MRT, 07 UTCI)
 # ----------------------------------------------------------------------------
-if active 7 && ! skip 06; then
-    log "STEP 7  Visualizing MRT network (stage 06)"
+if active 4; then
+    progress_event 4 0 running "Preparing MRT visualizations"
+fi
+if active 4 && ! skip 06; then
+    log "STEP 4  Visualizing MRT network (stage 06)"
     "$PY" 06_visualize_mrt_network.py \
         --results-dir "$VIS_MRT_DIR" \
         --buildings-stl "$BUILDINGS_STL" \
         --output-dir "$VIS_DIR/mrt"
 fi
-if active 7 && ! skip 07; then
-    log "STEP 7  Visualizing UTCI network (stage 07)"
+if active 4; then
+    progress_event 4 45 running "MRT visualization complete; preparing UTCI"
+fi
+if active 4 && ! skip 07; then
+    log "STEP 4  Visualizing UTCI network (stage 07)"
     "$PY" 07_visualize_utci_network.py \
         --results-dir "$VIS_MRT_DIR" \
         --buildings-stl "$BUILDINGS_STL" \
@@ -461,13 +581,29 @@ if active 7 && ! skip 07; then
         --relative-humidity-pct "$RH_PCT" --wind-speed-ms "$WIND_MS" \
         "${WEATHER_ARG[@]}"
 fi
+if active 4; then
+    if skip 06 && skip 07; then
+        progress_event 4 100 skipped "Visualization work skipped"
+    else
+        progress_event 4 100 done "MRT and UTCI visualizations complete"
+    fi
+fi
 
 # ----------------------------------------------------------------------------
-# STEP 8 -- Route thermal stress (08 UTCI exposure, 09 JOS-3 core temp)
+# STEP 5 -- Route thermal stress (08 UTCI, 09 JOS-3, optional comparison)
 # ----------------------------------------------------------------------------
-if active 8; then require_file "$SELECTED_ROUTES" 2; fi
-if active 8 && ! skip 08; then
-    log "STEP 8  Route thermal stress -- UTCI exposure (stage 08)"
+if active 5 && { ! skip 08 || ! skip 09 \
+        || { ! skip 10 && [ "$SOLWEIG_COMPARE" != "0" ]; }; }; then
+    require_file "$SELECTED_ROUTES" 2
+fi
+if active 5 && { ! skip 08 || ! skip 09; }; then
+    require_file "$VIS_MRT_DIR/tmrt_matrix_C.npy" 3
+fi
+if active 5; then
+    progress_event 5 0 running "Preparing route-level UTCI analysis"
+fi
+if active 5 && ! skip 08; then
+    log "STEP 5  Route thermal stress -- UTCI exposure (stage 08)"
     # Routes were already chosen in step 2 (04_select_routes.py) and are the
     # exact routes MRT was computed along -- pass them via --routes-pkl so the
     # endpoints/count are consistent end to end (no re-selection here).
@@ -484,8 +620,11 @@ if active 8 && ! skip 08; then
         --radiant-flux-config "$RADIANT_FLUX_CONFIG" \
         "${WEATHER_ARG[@]}"
 fi
-if active 8 && ! skip 09; then
-    log "STEP 8  Route thermal stress -- JOS-3 core temperature (stage 09)"
+if active 5; then
+    progress_event 5 52 running "Route UTCI complete; preparing JOS-3"
+fi
+if active 5 && ! skip 09; then
+    log "STEP 5  Route thermal stress -- JOS-3 core temperature (stage 09)"
     SUBJECT_ARG=()
     [ -n "$SUBJECT_PROFILE" ] && SUBJECT_ARG=(--subject-profile "$SUBJECT_PROFILE")
     "$PY" 09_route_thermal_stress_jos3.py \
@@ -498,9 +637,26 @@ if active 8 && ! skip 09; then
         --relative-humidity-pct "$RH_PCT" --wind-speed-ms "$WIND_MS" \
         "${SUBJECT_ARG[@]}" "${WEATHER_ARG[@]}"
 fi
+if active 5 && ! skip 10 && [ "$SOLWEIG_COMPARE" != "0" ]; then
+    require_file "$VIS_DIR/route_utci/routes_points.csv" 5
+    log "STEP 5  Optional SOLWEIG comparison (stage 10)"
+    SOLWEIG_ARG=()
+    [ "$SOLWEIG_COMPARE" != "1" ] && SOLWEIG_ARG=(--solweig "$SOLWEIG_COMPARE")
+    "$PY" compare_mrt_solweig.py \
+        --ours "$VIS_DIR/route_utci/routes_points.csv" \
+        "${SOLWEIG_ARG[@]}" \
+        --output-dir "$SOLWEIG_COMPARE_OUTPUT_DIR"
+fi
+if active 5; then
+    if skip 08 && skip 09 && { skip 10 || [ "$SOLWEIG_COMPARE" = "0" ]; }; then
+        progress_event 5 100 skipped "Route stress and comparison skipped"
+    else
+        progress_event 5 100 done "Route stress and optional comparison complete"
+    fi
+fi
 
 log "Pipeline complete (started at step $START_STEP)"
-echo "  MRT (legacy)     : $MRT_DIR"
+echo "  MRT prep/baseline: $MRT_DIR (baseline enabled=$WITH_BASELINE)"
 echo "  Facets + temps   : $THERMAL_DIR"
 echo "  Ground materials : $OSM_GROUND_MATERIAL_DIR (enabled=$OSM_GROUND_MATERIALS_ENABLED)"
 echo "  MRT (facet therm): $MRT_FACET_DIR"
