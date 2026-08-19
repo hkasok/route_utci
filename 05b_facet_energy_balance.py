@@ -7,9 +7,10 @@ This REPLACES volumetric CHT for the purpose of route MRT: each facet gets
     absorbed shortwave (full-geometry sun shading + vegetation attenuation)
   + absorbed longwave  (sky + surrounding surfaces)
   - emitted longwave   (eps * sigma * Ts^4)
-  - convection         (h_c * (Ts - Tair);  h_c is the convective-only part
-                         of McAdams 5.7+3.8*U, i.e. with the radiative film
-                         removed since longwave is modelled explicitly)
+  - convection         (h_c * (Ts - Tair), resolved from the same time-varying
+                         wind series used by the route calculation)
+  - optional latent cooling for moisture-capable surfaces using a documented
+    equilibrium-evaporation approximation
   = conduction into a 1D multilayer substrate (implicit Euler, exact
     tridiagonal solve, vectorized across all facets of a class)
 
@@ -75,6 +76,7 @@ from thermal_common import (CLASS_GROUND, CLASS_NAMES, CLASS_ROOF, CLASS_WALL,
                             sun_vector_enu,
                             vegetation_transmission_from_intersections)
 from osm_ground_materials import GROUND_MATERIAL_CATALOG
+from microclimate_field import MicroclimateField, add_microclimate_argument
 
 # Per-class material / model defaults now live in thermal_common.py so that
 # 05 (pedestrian-side reflected shortwave) and 05b (facet absorption) cannot
@@ -92,24 +94,27 @@ def parse_args():
     p.add_argument("--mrt-dir", required=True,
                    help="Output dir of 05 (needs times.csv)")
     p.add_argument("--output-dir", required=True)
+    add_microclimate_argument(p)
     p.add_argument("--ground-material-dir", default=None,
                    help="Optional OSM ground-material output directory. Its "
                         "catalog supplies the same per-material properties "
                         "used to classify ground faces in 05a.")
 
     p.add_argument("--wind-speed", type=float, default=1.5,
-                   help="Near-surface wind speed for convection, m/s")
-    p.add_argument("--convection-model", choices=["convective", "combined"],
-                   default="convective",
-                   help="Surface heat-transfer coefficient. The classic McAdams "
-                        "h = 5.7 + 3.8*U is a COMBINED convective+radiative film "
-                        "coefficient. Because this model already treats longwave "
-                        "radiation explicitly (absorbs L_in, emits eps*sigma*Ts^4), "
-                        "using the combined value as pure convection double-counts "
-                        "the radiative loss and makes surfaces too cool. 'convective' "
-                        "(default) subtracts the radiative part (--radiative-film-wm2k) "
-                        "so only convection is applied here; 'combined' reproduces the "
-                        "old (double-counting) behaviour.")
+                   help="Fallback constant near-surface wind speed, m/s")
+    p.add_argument("--wind-source", choices=["times_csv", "constant"],
+                   default="times_csv",
+                   help="Use time-resolved wind_ms from stage-05 times.csv (default), "
+                        "or the fallback --wind-speed constant.")
+    p.add_argument(
+        "--convection-model",
+        choices=["mcadams", "watmuff", "legacy_subtracted", "combined", "convective"],
+        default="mcadams",
+        help=("Exterior convective coefficient: mcadams=5.7+3.8U (default), "
+              "watmuff=2.8+3.0U, or legacy_subtracted for the former ad-hoc "
+              "radiative-film subtraction. combined and convective remain aliases "
+              "for backward-compatible command lines."),
+    )
     p.add_argument("--h-conv-a", type=float, default=5.7,
                    help="Intercept of the McAdams film coefficient a + b*U (default 5.7)")
     p.add_argument("--h-conv-b", type=float, default=3.8,
@@ -170,7 +175,19 @@ def parse_args():
     p.add_argument("--k-lad-diffuse", type=float, default=0.30,
                    help="Vegetation extinction for diffuse sky (match 05)")
     p.add_argument("--spinup-days", type=int, default=2,
-                   help="Diurnal cycles run before the saved cycle")
+                   help="Minimum diurnal spin-up cycles before convergence may stop")
+    p.add_argument("--maximum-spinup-days", type=int, default=10,
+                   help="Maximum diurnal spin-up cycles before the saved cycle")
+    p.add_argument("--spinup-convergence-tolerance-k", type=float, default=0.10,
+                   help="Maximum cycle-end temperature change required for convergence")
+    p.add_argument("--latent-heat-model", choices=["equilibrium", "none"],
+                   default="equilibrium",
+                   help="Material-dependent equilibrium evaporative cooling (default) "
+                        "or none for the former dry-surface behavior.")
+    p.add_argument("--latent-priestley-taylor-alpha", type=float, default=1.26)
+    p.add_argument("--latent-net-radiation-cap", type=float, default=0.95,
+                   help="Maximum fraction of positive instantaneous net radiation "
+                        "removed as latent heat.")
     p.add_argument("--n-fsky-dirs", type=int, default=64,
                    help="Hemisphere rays per facet for its sky fraction")
     p.add_argument("--facet-batch-size", type=int, default=5000)
@@ -296,8 +313,59 @@ class ClassSolver:
         return self.T[:, 0]
 
 
+def convection_coefficient(wind_ms, model="mcadams", *, a=5.7, b=3.8,
+                           radiative_film=6.0, floor=2.0):
+    """Return exterior convective heat-transfer coefficients in W m-2 K-1.
+
+    ``legacy_subtracted`` reproduces the previous implementation exactly.
+    The aliases ``combined`` and ``convective`` preserve old command lines.
+    """
+    wind = np.asarray(wind_ms, dtype=float)
+    if not np.isfinite(wind).all() or np.any(wind < 0):
+        raise ValueError("surface-energy wind speed must be finite and non-negative")
+    if model in ("mcadams", "combined"):
+        coefficient = a + b * wind
+    elif model == "watmuff":
+        coefficient = 2.8 + 3.0 * wind
+    elif model in ("legacy_subtracted", "convective"):
+        coefficient = np.maximum(a + b * wind - radiative_film, floor)
+    else:
+        raise ValueError(f"unsupported convection model: {model}")
+    return coefficient
+
+
+def equilibrium_latent_heat_flux(net_radiation_wm2, air_temp_c,
+                                 evaporative_efficiency,
+                                 alpha=1.26, cap_fraction=0.95):
+    """Simplified Priestley-Taylor equilibrium latent cooling, W m-2.
+
+    The material ``evaporative_efficiency`` (0=dry, 1=unlimited wet surface)
+    represents water availability.  This is a transparent first-order surface
+    energy term, not a soil-moisture or vegetation-physiology model.
+    """
+    if not 0.0 <= cap_fraction <= 1.0:
+        raise ValueError("latent net-radiation cap must lie in [0, 1]")
+    efficiency = np.asarray(evaporative_efficiency, dtype=float)
+    if (not np.isfinite(efficiency).all()
+            or np.any((efficiency < 0) | (efficiency > 1))):
+        raise ValueError("evaporative_efficiency must be finite and in [0, 1]")
+    temperature = np.asarray(air_temp_c, dtype=float)
+    available = np.maximum(np.asarray(net_radiation_wm2, dtype=float), 0.0)
+    saturation_kpa = 0.6108 * np.exp(17.27 * temperature / (temperature + 237.3))
+    slope_kpa_k = 4098.0 * saturation_kpa / (temperature + 237.3) ** 2
+    psychrometric_kpa_k = 0.066
+    equilibrium_fraction = alpha * slope_kpa_k / (
+        slope_kpa_k + psychrometric_kpa_k)
+    latent = efficiency * equilibrium_fraction * available
+    return np.minimum(latent, cap_fraction * available)
+
+
 def main():
     args = parse_args()
+    if args.spinup_days < 1 or args.maximum_spinup_days < args.spinup_days:
+        raise ValueError("spin-up days must satisfy 1 <= minimum <= maximum")
+    if args.spinup_convergence_tolerance_k <= 0:
+        raise ValueError("spin-up convergence tolerance must be positive")
     out_dir = Path(args.output_dir); out_dir.mkdir(parents=True, exist_ok=True)
     facets_dir = Path(args.facets_dir)
 
@@ -405,6 +473,48 @@ def main():
         print(f"  WARNING: times.csv has no rh_pct column; using "
               f"--fallback-rh-pct {args.fallback_rh_pct}% for sky longwave. "
               f"Re-run 05 to write RH for an exact match.")
+    if args.wind_source == "times_csv":
+        if "wind_ms" not in times_df.columns:
+            raise ValueError(
+                "--wind-source=times_csv requires wind_ms in stage-05 times.csv")
+        wind_ms = times_df["wind_ms"].to_numpy(float)
+        wind_source = "times.csv wind_ms"
+    else:
+        wind_ms = np.full(nt, args.wind_speed, dtype=float)
+        wind_source = f"constant --wind-speed={args.wind_speed:g} m/s"
+    # The optional solved field makes the exterior boundary condition local
+    # to each route-visible facet.  Without it, these broadcast views preserve
+    # the historical spatially uniform calculation exactly.
+    microclimate = (MicroclimateField(args.microclimate_dir)
+                    if args.microclimate_dir else None)
+    if microclimate is not None:
+        field_times = pd.to_datetime(times_df["time"])
+        field_hours = np.array([
+            value.hour + value.minute / 60.0 + value.second / 3600.0
+            for value in field_times], dtype=float)
+        air_C_facet = np.empty((nt, nf), dtype=np.float32)
+        wind_facet = np.empty((nt, nf), dtype=np.float32)
+        for it, hour in enumerate(field_hours):
+            local_ta, local_u, local_v, local_w = microclimate.sample(
+                centroids, hour)
+            air_C_facet[it] = local_ta
+            wind_facet[it] = np.sqrt(
+                local_u * local_u + local_v * local_v + local_w * local_w)
+        if not (np.isfinite(air_C_facet).all()
+                and np.isfinite(wind_facet).all()
+                and np.all(wind_facet >= 0)):
+            raise ValueError("sampled facet microclimate forcing is invalid")
+        wind_source = f"solved microclimate field {args.microclimate_dir}"
+        print(f"  Microclimate coupling: local facet Ta "
+              f"{air_C_facet.min():.1f}..{air_C_facet.max():.1f} C, "
+              f"speed {wind_facet.min():.2f}..{wind_facet.max():.2f} m/s")
+    else:
+        air_C_facet = np.broadcast_to(air_C[:, None], (nt, nf))
+        wind_facet = np.broadcast_to(wind_ms[:, None], (nt, nf))
+    air_K_facet = air_C_facet + 273.15
+    h_conv_facet = convection_coefficient(
+        wind_facet, args.convection_model, a=args.h_conv_a, b=args.h_conv_b,
+        radiative_film=args.radiative_film_wm2k, floor=args.h_conv_floor)
     # Time step from times.csv. IMPORTANT: computed via total_seconds(),
     # which is correct for ANY datetime64 resolution. (An earlier version
     # used .astype("int64")/1e9, which silently assumes nanosecond epoch
@@ -454,23 +564,38 @@ def main():
     sun_vecs = np.array([sun_vector_enu(a, e) for a, e in zip(azim, elev)])
     cos_theta = np.clip(normals @ sun_vecs.T, 0.0, None).T   # (nt, nf)
     sin_el = np.sin(np.deg2rad(np.clip(elev, 0.0, None)))
-    L_sky_t = sky_longwave_down(air_C, rh_pct, args.cloud_cover_fraction,
-                                clear_sky_model=args.clear_sky_emissivity)
+    cloud_fraction_time = (times_df["cloud_fraction"].to_numpy(float)
+                           if "cloud_fraction" in times_df.columns
+                           else np.full(nt, args.cloud_cover_fraction))
+    if (not np.isfinite(cloud_fraction_time).all()
+            or np.any((cloud_fraction_time < 0) | (cloud_fraction_time > 1))):
+        raise ValueError("times.csv cloud_fraction must be finite and in [0, 1]")
+    parameterized_lsky = sky_longwave_down(
+        air_C, rh_pct, cloud_fraction_time,
+        clear_sky_model=args.clear_sky_emissivity)
+    if "LWin_Wm2" in times_df.columns:
+        supplied_lsky = times_df["LWin_Wm2"].to_numpy(float)
+        invalid = np.isfinite(supplied_lsky) & (supplied_lsky < 0)
+        if invalid.any():
+            raise ValueError("times.csv LWin_Wm2 contains negative values")
+        L_sky_t = np.where(np.isfinite(supplied_lsky), supplied_lsky,
+                           parameterized_lsky)
+        lsky_source = ("times.csv where supplied; Prata/selected clear-sky model "
+                       "otherwise")
+    else:
+        L_sky_t = parameterized_lsky
+        lsky_source = "parameterized from times.csv Ta/RH/cloud"
 
     T_deep = (args.deep_soil_temp_c + 273.15 if args.deep_soil_temp_c
               is not None else float(air_K.mean()))
     T_int = args.interior_temp_c + 273.15
-    h_film = args.h_conv_a + args.h_conv_b * args.wind_speed   # McAdams combined
-    if args.convection_model == "convective":
-        # Longwave is modelled explicitly, so remove the radiative part of the
-        # combined film coefficient to avoid double-counting surface radiation.
-        h_conv = max(h_film - args.radiative_film_wm2k, args.h_conv_floor)
-    else:
-        h_conv = h_film                     # legacy combined (double-counts radiation)
-
-    print(f"\nEnergy balance: h_conv = {h_conv:.1f} W/m2K "
-          f"({args.convection_model}; film {h_film:.1f}), "
+    print(f"\nEnergy balance: h_conv = {h_conv_facet.min():.1f}.."
+          f"{h_conv_facet.max():.1f} W/m2K "
+          f"({args.convection_model}; {wind_source}), "
           f"T_deep = {T_deep - 273.15:.1f} C, T_int = {T_int - 273.15:.1f} C")
+    print(f"  Sky longwave: {lsky_source}")
+    print(f"  Latent heat: {args.latent_heat_model} "
+          f"(material evaporative efficiency; alpha={args.latent_priestley_taylor_alpha:g})")
     print(f"  Longwave exchange: {args.longwave_radiosity_model} "
           f"({'emission + reflected incident LW' if args.longwave_radiosity_model == 'grey' else 'legacy emitted-only comparison'})")
 
@@ -493,17 +618,27 @@ def main():
     for name in active_materials:
         eps_facet[members[name]] = materials[name]["emissivity"]
         alb_facet[members[name]] = materials[name]["albedo"]
+    evaporation_facet = np.zeros(nf)
+    for name in active_materials:
+        evaporation_facet[members[name]] = float(
+            materials[name].get("evaporative_efficiency", 0.0))
+    if (not np.isfinite(evaporation_facet).all()
+            or np.any((evaporation_facet < 0) | (evaporation_facet > 1))):
+        raise ValueError("material evaporative_efficiency must lie in [0, 1]")
 
     area = fz["area"]
     T_surf = np.full(nf, float(air_K.mean()))
     T_env = float(air_K.mean())        # legacy-only lagged mean temperature
     facet_T = np.zeros((nt, nf), dtype=np.float32)
-    n_cycles = args.spinup_days + 1
     cycle_end_snapshots = []
+    facet_latent = np.zeros((nt, nf), dtype=np.float32)
 
-    print(f"\nTime integration: {n_cycles} diurnal cycles "
-          f"({args.spinup_days} spin-up + 1 saved)...")
-    for cyc in range(n_cycles):
+    maximum_cycles = args.maximum_spinup_days + 1
+    print(f"\nTime integration: minimum {args.spinup_days + 1}, maximum "
+          f"{maximum_cycles} diurnal cycles; stop at cycle-end change <= "
+          f"{args.spinup_convergence_tolerance_k:g} K...")
+    converged = False
+    for cyc in range(maximum_cycles):
         for it in range(nt):
             if args.longwave_radiosity_model == "grey":
                 # Route-local grey enclosure: only the facets selected by 05a
@@ -519,25 +654,44 @@ def main():
             SW_in = (tau_dir[it] * dni[it] * cos_theta[it]
                      + f_sky * dhi[it]
                      + (1.0 - f_sky) * args.environment_albedo * K_local)
+            latent_all = np.zeros(nf)
             for name, sol in solvers.items():
                 mem = members[name]
                 Q_ext = (1.0 - sol.albedo) * SW_in[mem] + sol.eps * L_in[mem]
-                T_surf[mem] = sol.step(Q_ext, h_conv, air_K[it])
+                if args.latent_heat_model == "equilibrium":
+                    net_radiation = ((1.0 - sol.albedo) * SW_in[mem]
+                                     + sol.eps * (L_in[mem]
+                                                  - SIGMA * T_surf[mem] ** 4))
+                    latent = equilibrium_latent_heat_flux(
+                        net_radiation, air_C_facet[it, mem],
+                        evaporation_facet[mem],
+                        alpha=args.latent_priestley_taylor_alpha,
+                        cap_fraction=args.latent_net_radiation_cap)
+                    Q_ext = Q_ext - latent
+                    latent_all[mem] = latent
+                T_surf[mem] = sol.step(
+                    Q_ext, h_conv_facet[it, mem], air_K_facet[it, mem])
             if args.longwave_radiosity_model == "legacy":
                 T_env = float(np.average(T_surf, weights=area))
-            if cyc == n_cycles - 1:
-                facet_T[it] = T_surf
+            facet_T[it] = T_surf
+            facet_latent[it] = latent_all
         cycle_end_snapshots.append(T_surf.copy())
         if cyc > 0:
             dmax = np.abs(cycle_end_snapshots[-1]
                           - cycle_end_snapshots[-2]).max()
-            print(f"  cycle {cyc + 1}/{n_cycles}: max |dT| vs previous "
+            print(f"  cycle {cyc + 1}/{maximum_cycles}: max |dT| vs previous "
                   f"cycle end = {dmax:.3f} K")
+            if (cyc >= args.spinup_days
+                    and dmax <= args.spinup_convergence_tolerance_k):
+                converged = True
+                break
         else:
             # Also expose completion of the first (often longest) cycle so
             # the TREC-Route UI progress bar does not remain static until the
             # second full diurnal integration has finished.
-            print(f"  cycle 1/{n_cycles}: initial diurnal integration complete")
+            print(f"  cycle 1/{maximum_cycles}: initial diurnal integration complete")
+
+    n_cycles = len(cycle_end_snapshots)
 
     spinup_delta = (np.abs(cycle_end_snapshots[-1] - cycle_end_snapshots[-2])
                     .max() if n_cycles > 1 else np.nan)
@@ -548,6 +702,14 @@ def main():
     np.save(out_dir / "facet_albedo.npy", alb_facet)
     np.save(out_dir / "facet_material_name.npy", facet_material_name)
     np.save(out_dir / "tau_dir_facet.npy", tau_dir)
+    np.save(out_dir / "facet_latent_heat_matrix_Wm2.npy", facet_latent)
+    np.save(out_dir / "facet_evaporative_efficiency.npy", evaporation_facet)
+    if microclimate is not None:
+        np.savez_compressed(
+            out_dir / "facet_microclimate_forcing.npz",
+            air_temperature_C=air_C_facet,
+            wind_speed_ms=wind_facet,
+            h_conv_Wm2K=np.asarray(h_conv_facet, dtype=np.float32))
 
     radiosity_report = [
         f"Longwave radiosity model: {args.longwave_radiosity_model}",
@@ -581,7 +743,16 @@ def main():
 
     rows = []
     for it in range(nt):
-        row = {"time": times_df["time"].iloc[it], "air_temp_C": air_C[it]}
+        row = {"time": times_df["time"].iloc[it],
+               "air_temp_C": float(np.mean(air_C_facet[it])),
+               "air_temp_min_C": float(np.min(air_C_facet[it])),
+               "air_temp_max_C": float(np.max(air_C_facet[it])),
+               "wind_ms": float(np.mean(wind_facet[it])),
+               "wind_min_ms": float(np.min(wind_facet[it])),
+               "wind_max_ms": float(np.max(wind_facet[it])),
+               "h_conv_Wm2K": float(np.mean(h_conv_facet[it])),
+               "latent_heat_mean_Wm2": float(facet_latent[it].mean()),
+               "latent_heat_max_Wm2": float(facet_latent[it].max())}
         for name in active_materials:
             if len(members[name]):
                 Tc = facet_T[it, members[name]] - 273.15
@@ -590,11 +761,13 @@ def main():
         rows.append(row)
     pd.DataFrame(rows).to_csv(out_dir / "facet_summary_by_time.csv",
                               index=False)
-    report = (f"Spin-up convergence: max |T(end of last cycle) - "
+    status = "converged" if converged else "maximum cycles reached"
+    report = (f"Spin-up convergence ({status}): max |T(end of last cycle) - "
               f"T(end of previous)| = {spinup_delta:.4f} K over "
               f"{n_cycles} cycles\n"
-              f"(values < ~0.5 K indicate a converged quasi-periodic "
-              f"state; increase --spinup-days otherwise)\n")
+              f"Target tolerance = {args.spinup_convergence_tolerance_k:.4f} K; "
+              f"minimum spin-up days = {args.spinup_days}, maximum = "
+              f"{args.maximum_spinup_days}\n")
     (out_dir / "spinup_report.txt").write_text(report)
     print("\n" + report)
     print(f"[facet_energy_balance] n_facets={nf} n_times={nt} "

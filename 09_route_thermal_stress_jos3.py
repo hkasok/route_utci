@@ -1,6 +1,6 @@
 """
-09_route_thermal_stress_jos3.py -- find 5 edge-disjoint corner-to-corner
-routes, simulate a person walking each (encountering different shade/sun
+09_route_thermal_stress_jos3.py -- load source-agnostic input routes,
+simulate a person walking each (encountering different shade/sun
 at different times), and compute CUMULATIVE thermal stress using JOS-3,
 a validated 17-segment/multi-node human thermoregulation model.
 
@@ -25,16 +25,15 @@ not a person walking through changing conditions -- same reasoning as
 before, JOS-3's explicit simulate(times, dtime) stepping interface is
 what makes it usable for a genuine route simulation.
 
-Performance: benchmarked directly at ~2.2 ms per simulation step, so a
-~1900-point route (1m spacing) takes ~4s and all 5 routes together
-~20s -- no need to coarsen resolution below what was used before.
+Performance scales with the number and point count of input routes; route
+generation is handled separately by generate_route.py.
 
 Run:
     python3 09_route_thermal_stress_jos3.py \
-        --graphml osm_paths/pedestrian_network.graphml \
+        --routes-dir "input/MMC/routes" \
         --mrt-results-dir mrt_network_output/ \
         --output-dir route_stress_jos3_output/ \
-        --buildings-stl out_full/02_final/building_final.stl \
+        --buildings-stl input/MMC/geometry/building_final.stl \
         --departure-hour 13.0
 """
 
@@ -48,8 +47,9 @@ from scipy.spatial import cKDTree
 from pythermalcomfort.models import JOS3
 
 from weather_provider import add_weather_args, provider_from_args
+from microclimate_field import EnvironmentField, add_microclimate_argument
 from subject_profiles import PROFILES, get_profile, apply_profile_to_model
-from route_selection import select_routes, load_selected_routes
+from generate_route import load_routes_directory, route_arrival_schedule
 from physical_checks import check_jos3_inputs
 
 
@@ -57,68 +57,29 @@ CORE_TEMP_SETPOINT_C = 37.0  # used only for reporting "rise from baseline"
 
 
 # ============================================================
-# Route loading / finding
+# Route loading
 # ============================================================
 def get_routes(args):
-    """Return (routes, start_xy, end_xy, start_label, end_label, connectivity).
-
-    Prefers the routes selected up front by 04_select_routes.py (so we score
-    exactly the routes MRT was ray-traced along). Falls back to selecting them
-    from the graphml here if no --routes-pkl was given (backward compatible).
-    """
-    if args.routes_pkl:
-        print(f"Loading pre-selected routes from {args.routes_pkl} ...")
-        sel = load_selected_routes(args.routes_pkl)
-        routes = [{"xy": np.asarray(r["xy"], dtype=float),
-                   "length_m": float(r["length_m"])} for r in sel["routes"]]
-        print(f"  Loaded {len(routes)} routes "
-              f"(start node {sel['start_node']}, end node {sel['end_node']}, "
-              f"connectivity {sel['connectivity']})")
-        return (routes, tuple(sel["start_xy"]), tuple(sel["end_xy"]),
-                sel["start_node"], sel["end_node"], sel["connectivity"])
-
-    print("No --routes-pkl given; selecting routes from the graphml...")
-    if not args.graphml:
-        raise SystemExit("ERROR: provide either --routes-pkl or --graphml.")
-    import osmnx as ox
-    G_multi = ox.load_graphml(args.graphml)
-    sel = select_routes(
-        G_multi, n_routes=args.n_routes, ds=args.route_sample_spacing_m,
-        project_crs=args.project_crs,
-        origin=(args.local_origin_x, args.local_origin_y),
-        start_latlon=args.start_latlon, end_latlon=args.end_latlon,
-        start_xy=args.start_xy, end_xy=args.end_xy,
-    )
-    routes = [{"xy": r["xy"], "length_m": r["length_m"]} for r in sel["routes"]]
-    pos = sel["pos"]
-    return (routes, pos[sel["start_node"]], pos[sel["end_node"]],
-            sel["start_node"], sel["end_node"], sel["connectivity"])
+    """Load every validated route in numeric route-ID order."""
+    routes = load_routes_directory(
+        Path(args.routes_dir), expected_project_crs=args.project_crs,
+        expected_origin=(args.local_origin_x, args.local_origin_y))
+    print(f"Loading route inputs from {args.routes_dir} ...")
+    print(f"  Loaded {len(routes)} validated route(s): "
+          f"{[route['route_id'] for route in routes]}")
+    return (routes, tuple(routes[0]["xy"][0]), tuple(routes[0]["xy"][-1]),
+            "input_routes", "input_routes", "not_applicable")
 
 
 def parse_args():
     p = argparse.ArgumentParser(description="Route thermal-stress comparison (JOS-3 core temp)")
-    p.add_argument("--routes-pkl", default=None,
-                    help="selected_routes.pkl from 04_select_routes.py. When given, the "
-                         "exact routes MRT was computed along are scored (preferred). If "
-                         "omitted, routes are selected here from --graphml (backward compat).")
-    p.add_argument("--graphml", default=None,
-                    help="pedestrian_network.graphml (only needed if --routes-pkl is omitted)")
+    p.add_argument("--routes-dir", default="input/MMC/routes",
+                    help="Folder containing route_<id>.csv/json inputs "
+                         "(default: 'input/MMC/routes')")
     p.add_argument("--mrt-results-dir", required=True, help="Output dir from 05_mrt_network_raytrace.py")
     p.add_argument("--output-dir", required=True)
     p.add_argument("--buildings-stl", default=None)
 
-    p.add_argument("--n-routes", type=int, default=3)
-
-    # Endpoint control (only used for the --graphml fallback; when --routes-pkl
-    # is given the endpoints are already baked into the selected routes).
-    p.add_argument("--start-latlon", nargs=2, type=float, default=None,
-                    metavar=("LAT", "LON"), help="Route START as latitude longitude.")
-    p.add_argument("--end-latlon", nargs=2, type=float, default=None,
-                    metavar=("LAT", "LON"), help="Route END as latitude longitude.")
-    p.add_argument("--start-xy", nargs=2, type=float, default=None,
-                    metavar=("X", "Y"), help="Route START in the LOCAL frame, meters.")
-    p.add_argument("--end-xy", nargs=2, type=float, default=None,
-                    metavar=("X", "Y"), help="Route END in the LOCAL frame, meters.")
     p.add_argument("--local-origin-x", type=float, default=0.0,
                     help="Origin-shift X (must match extract_osm_pedestrian_network.py).")
     p.add_argument("--local-origin-y", type=float, default=0.0,
@@ -133,8 +94,6 @@ def parse_args():
     p.add_argument("--departure-hour", type=float, default=13.0,
                     help="Hour of day (0-24) the walk begins (default: 13.0, "
                          "solar-afternoon heat. Use 8.0 for a morning walk).")
-    p.add_argument("--route-sample-spacing-m", type=float, default=1.0,
-                    help="Spatial resampling interval along each route, meters (default: 1.0)")
     p.add_argument("--equilibration-min", type=float, default=10.0,
                     help="Minutes of simulated equilibration at the route's starting "
                          "conditions before 'official' walk timing begins, to avoid "
@@ -163,6 +122,7 @@ def parse_args():
     p.add_argument("--person-sex", default=None, choices=["male", "female"])
 
     add_weather_args(p)
+    add_microclimate_argument(p)
     return p.parse_args()
 
 
@@ -172,6 +132,9 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     weather = provider_from_args(args)
+    environment = EnvironmentField(
+        weather, args.microclimate_dir, args.microclimate_receptor_height_m)
+    print(f"Air temperature / velocity forcing: {environment.describe()}")
     print(f"Weather source: {weather.describe()}")
 
     # ---- Resolve the virtual subject -------------------------------------
@@ -217,12 +180,14 @@ def main():
           f"(activity par={args.activity_par}, equilibration={args.equilibration_min} min)...")
     results = []
     for i, route in enumerate(routes):
+        route_id = route["route_id"]
         xy = route["xy"]
         n_pts = len(xy)
 
         seg_lens = np.linalg.norm(np.diff(xy, axis=0), axis=1)
         cumdist = np.concatenate(([0], np.cumsum(seg_lens)))
-        arrival_hour = args.departure_hour + cumdist / args.walking_speed_ms / 3600.0
+        arrival_hour, timing_source = route_arrival_schedule(
+            route, args.departure_hour, args.walking_speed_ms)
 
         _, nearest_idx = mrt_tree.query(xy)
 
@@ -243,15 +208,19 @@ def main():
         # Equilibration: hold at the route's starting conditions before the
         # "official" walk timing begins, to avoid JOS-3's default initial
         # state creating a startup transient in the results.
-        h0 = args.departure_hour % 24.0
+        h0 = arrival_hour[0] % 24.0
         tmrt0 = np.interp(h0, time_hours, tmrt_matrix[:, nearest_idx[0]], period=24.0)
-        ta0 = weather.air_temp_c(h0)
-        rh0, v0 = weather.rh_pct(h0), weather.wind_ms(h0)
+        start_xyz = np.array([xy[0, 0], xy[0, 1],
+                              mrt_xyz[nearest_idx[0], 2]])
+        start_environment = environment.sample(start_xyz, h0)
+        ta0 = float(start_environment.air_temperature_c[0])
+        rh0 = float(start_environment.relative_humidity_pct[0])
+        v0 = float(start_environment.wind_speed_ms[0])
         # JOS-3's .rh is RELATIVE HUMIDITY IN PERCENT (library default 50), the
         # same convention as UTCI -- guard the units before they enter the
         # thermoregulation model, where a fraction would read as ~0.7% (arid).
         check_jos3_inputs(ta0, tmrt0, v0, rh0,
-                          f"stage 09 JOS-3 equilibration, route {i + 1}")
+                          f"stage 09 JOS-3 equilibration, route {route_id}")
         model.tdb, model.tr = ta0, tmrt0
         model.rh, model.v = rh0, v0
         if args.equilibration_min > 0:
@@ -266,13 +235,17 @@ def main():
             h = arrival_hour[j] % 24.0
             tmrt_series = tmrt_matrix[:, nearest_idx[j]]
             tmrt_now = np.interp(h, time_hours, tmrt_series, period=24.0)
-            ta_now = weather.air_temp_c(h)
+            point_xyz = np.array([xy[j, 0], xy[j, 1],
+                                  mrt_xyz[nearest_idx[j], 2]])
+            local_environment = environment.sample(point_xyz, h)
+            ta_now = float(local_environment.air_temperature_c[0])
             dt_s = (arrival_hour[j] - arrival_hour[j - 1]) * 3600.0 if j > 0 else 0.0
 
-            rh_now, v_now = weather.rh_pct(h), weather.wind_ms(h)
+            rh_now = float(local_environment.relative_humidity_pct[0])
+            v_now = float(local_environment.wind_speed_ms[0])
             if j == 0:   # guard once per route (uniform drivers, hot loop)
                 check_jos3_inputs(ta_now, tmrt_now, v_now, rh_now,
-                                  f"stage 09 JOS-3 walk, route {i + 1}")
+                                  f"stage 09 JOS-3 walk, route {route_id}")
             model.tdb, model.tr = ta_now, tmrt_now
             model.rh, model.v = rh_now, v_now
             if dt_s > 0:
@@ -286,9 +259,11 @@ def main():
                             if "hand" in name or "foot" in name]
             hand_foot_trace[j] = float(np.mean(model.t_core[idx_extreme])) if idx_extreme else np.nan
 
-        walk_duration_min = cumdist[-1] / args.walking_speed_ms / 60.0
+        walk_duration_min = (arrival_hour[-1] - arrival_hour[0]) * 60.0
         results.append({
-            "route_id": i + 1,
+            "route_id": route_id,
+            "route_name": route["name"],
+            "timing_source": timing_source,
             "xy": xy,
             "cumdist_m": cumdist,
             "arrival_hour": arrival_hour,
@@ -303,7 +278,8 @@ def main():
             "max_tmrt_c": float(np.max(tmrt_trace)),
             "final_extremity_rise_c": hand_foot_trace[-1] - start_core_c,
         })
-        print(f"  Route {i+1}: {route['length_m']:.0f} m, {walk_duration_min:.1f} min walk, "
+        print(f"  Route {route_id} ({route['name']}): {route['length_m']:.0f} m, "
+              f"{walk_duration_min:.1f} min [{timing_source}], "
               f"final core temp rise = {results[-1]['final_tcore_rise_c']:+.3f} C "
               f"(extremities {results[-1]['final_extremity_rise_c']:+.3f} C)")
 
@@ -317,7 +293,8 @@ def main():
 
     # ---- Save results ----
     summary_rows = [{
-        "route_id": r["route_id"], "length_m": r["length_m"],
+        "route_id": r["route_id"], "route_name": r["route_name"],
+        "timing_source": r["timing_source"], "length_m": r["length_m"],
         "walk_duration_min": r["walk_duration_min"],
         "final_tcore_rise_c": r["final_tcore_rise_c"],
         "mean_tmrt_c": r["mean_tmrt_c"], "max_tmrt_c": r["max_tmrt_c"],
@@ -326,7 +303,7 @@ def main():
     pd.DataFrame(summary_rows).sort_values("final_tcore_rise_c").to_csv(
         out_dir / "route_ranking_summary.csv", index=False)
 
-    # ---- Visualization 1: spatial map of the 5 routes ----
+    # ---- Visualization 1: spatial map of all input routes ----
     building_segments = None
     if args.buildings_stl:
         import trimesh
@@ -343,12 +320,21 @@ def main():
         ax.plot(r["xy"][:, 0], r["xy"][:, 1], "-", color=color, linewidth=2.5,
                 label=f"Route {r['route_id']}: {r['final_tcore_rise_c']:+.2f}\u00b0C core rise "
                       f"({r['length_m']:.0f} m, {r['walk_duration_min']:.0f} min)")
-    ax.scatter(*start_xy, marker="o", s=150, color="black", zorder=5, label="Start")
-    ax.scatter(*end_xy, marker="s", s=150, color="black", zorder=5, label="End")
+    starts = np.array([r["xy"][0] for r in results])
+    ends = np.array([r["xy"][-1] for r in results])
+    ax.scatter(starts[:, 0], starts[:, 1], marker="o", s=90, color="black",
+               zorder=5, label="Route start(s)")
+    ax.scatter(ends[:, 0], ends[:, 1], marker="s", s=90, color="black",
+               zorder=5, label="Route end(s)")
     ax.set_aspect("equal")
     ax.legend(loc="upper left", fontsize=9, framealpha=0.9)
-    ax.set_title(f"{len(results)} edge-disjoint routes, departure at {args.departure_hour:.0f}:00 -- "
-                 f"cumulative thermal stress comparison")
+    timing_label = (
+        "recorded per-route observation times"
+        if any(r["timing_source"] == "recorded_device_timestamps" for r in results)
+        else f"departure at {args.departure_hour:.0f}:00"
+    )
+    ax.set_title(f"{len(results)} input routes, {timing_label} -- "
+                 "cumulative thermal stress comparison")
     ax.set_xlabel("X [m]"); ax.set_ylabel("Y [m]")
     fig.tight_layout()
     fig.savefig(out_dir / "routes_map.png", dpi=140)

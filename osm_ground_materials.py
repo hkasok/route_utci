@@ -217,6 +217,21 @@ DEFAULT_CONFIG["materials"].update({
               "bottom_bc": "fixed", "roughness_m": 0.0002},
 })
 
+# First-order water availability for the optional equilibrium latent-heat term
+# in stage 05b.  These are assumed configurable defaults, not OSM attributes
+# or site measurements.  Impervious materials remain dry; grass, bare soil,
+# unpaved paths, and water receive progressively greater evaporative capacity.
+_EVAPORATIVE_EFFICIENCY = {
+    "generic_ground": 0.05,
+    "unpaved_path": 0.20,
+    "bare_ground": 0.20,
+    "grass_lawn": 0.70,
+    "water": 1.00,
+}
+for _material_name, _material in DEFAULT_CONFIG["materials"].items():
+    _material["evaporative_efficiency"] = _EVAPORATIVE_EFFICIENCY.get(
+        _material_name, 0.0)
+
 
 SURFACE_TO_MATERIAL = {
     "asphalt": {"vehicle": "asphalt_road", "pedestrian": "asphalt_pedestrian",
@@ -270,6 +285,9 @@ def load_osm_ground_config(path: str | Path | None = None) -> dict[str, Any]:
             raise ValueError(f"material {name!r} has invalid albedo")
         if not (0 < float(mat["emissivity"]) <= 1):
             raise ValueError(f"material {name!r} has invalid emissivity")
+        if not (0 <= float(mat.get("evaporative_efficiency", 0.0)) <= 1):
+            raise ValueError(
+                f"material {name!r} has invalid evaporative_efficiency")
     return config
 
 

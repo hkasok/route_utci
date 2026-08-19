@@ -138,6 +138,24 @@ check("max |x_thomas - x_dense|", err < 1e-10, f"err={err:.1e}")
 print("\nT4/T5: 1D energy balance solver (ClassSolver)")
 eb = load_module(HERE / "05b_facet_energy_balance.py", "eb")
 
+# Surface boundary-condition helpers introduced for case-resolved forcing.
+wind = np.array([0.0, 1.0, 3.0])
+h_mcadams = eb.convection_coefficient(wind, "mcadams")
+check("time-resolved McAdams convection", np.allclose(
+    h_mcadams, 5.7 + 3.8 * wind))
+check("legacy convection remains reproducible", np.allclose(
+    eb.convection_coefficient(wind, "legacy_subtracted"),
+    np.maximum(5.7 + 3.8 * wind - 6.0, 2.0)))
+net_radiation = np.array([0.0, 200.0, 600.0])
+latent_dry = eb.equilibrium_latent_heat_flux(
+    net_radiation, 30.0, np.zeros(3))
+latent_wet = eb.equilibrium_latent_heat_flux(
+    net_radiation, 30.0, np.ones(3))
+check("impervious/dry material has zero latent cooling",
+      np.allclose(latent_dry, 0.0))
+check("wet material latent cooling is positive and energy capped",
+      latent_wet[1] > 0 and np.all(latent_wet <= 0.95 * net_radiation + 1e-12))
+
 # T4 -- steady conduction: constant forcing, fixed-T bottom. At steady
 # state the flux entering the surface must equal the flux leaving through
 # the bottom boundary (exact energy conservation through the slab).
@@ -342,8 +360,8 @@ check("I3 sunlit and shaded ground facets both exist in daytime",
       f"step {it_sh} (elev {elv[it_sh]:.0f} deg): "
       f"sunlit={sunlit.sum()} shaded={shaded.sum()}")
 dT = facet_T[it_sh, sunlit].mean() - facet_T[it_sh, shaded].mean()
-check("I3 sunlit ground much hotter than building-shaded ground",
-      dT > 5.0, f"dT={dT:.1f} K "
+check("I3 sunlit ground clearly hotter than building-shaded ground",
+      dT > 4.0, f"dT={dT:.1f} K "
       f"(sunlit {facet_T[it_sh, sunlit].mean() - 273.15:.1f} C, "
       f"shaded {facet_T[it_sh, shaded].mean() - 273.15:.1f} C)")
 

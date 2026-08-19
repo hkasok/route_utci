@@ -42,8 +42,9 @@ import matplotlib.pyplot as plt
 # osmnx 2.x's graph_from_bbox.
 DEFAULT_BBOX_LATLON = (-80.381509, 25.752457, -80.369745, 25.759748)
 
-# Your point-cloud/STL data's coordinate system (NAD83(2011) UTM Zone 17N).
-TARGET_CRS = "EPSG:6346"
+# Backward-compatible standalone default. Case-driven pipeline runs pass the
+# selected case CRS explicitly with --target-crs.
+DEFAULT_TARGET_CRS = "EPSG:6346"
 
 # Preserve material/width attributes for the independent ground-surface
 # branch. Adding tags changes no Overpass network filter, graph topology,
@@ -67,6 +68,8 @@ def parse_args():
                     choices=["walk", "all", "all_public"],
                     help="osmnx network type. 'walk' includes footway/path/pedestrian/"
                          "steps/residential-with-sidewalk-access etc. (default: walk)")
+    p.add_argument("--target-crs", default=DEFAULT_TARGET_CRS,
+                   help="Projected metric CRS shared by the selected case geometry")
     p.add_argument("--local-origin-x", type=float, default=0.0,
                     help="If your STL/point-cloud data was RECENTERED to a local origin "
                          "(rather than kept in raw UTM meters), subtract that origin's "
@@ -94,8 +97,8 @@ def main():
     G = ox.graph_from_bbox(bbox=bbox, network_type=args.network_type)
     print(f"[osm] Retrieved graph: {len(G.nodes)} nodes, {len(G.edges)} edges")
 
-    print(f"[osm] Reprojecting to {TARGET_CRS} (matching your LIDAR data's CRS) ...")
-    G_proj = ox.project_graph(G, to_crs=TARGET_CRS)
+    print(f"[osm] Reprojecting to {args.target_crs} (selected case CRS) ...")
+    G_proj = ox.project_graph(G, to_crs=args.target_crs)
 
     graphml_path = out_dir / "pedestrian_network.graphml"
     ox.save_graphml(G_proj, str(graphml_path))
@@ -134,8 +137,8 @@ def main():
     ax.set_aspect("equal")
     ax.set_xlabel("Local X [m]")
     ax.set_ylabel("Local Y [m]")
-    ax.set_title(f"FIU MMC pedestrian network ({len(polylines)} segments)\n"
-                 f"CRS: {TARGET_CRS}, origin shift: {tuple(origin)}")
+    ax.set_title(f"OSM pedestrian network ({len(polylines)} segments)\n"
+                 f"CRS: {args.target_crs}, origin shift: {tuple(origin)}")
     fig.tight_layout()
     preview_path = out_dir / "network_preview.png"
     fig.savefig(preview_path, dpi=150)

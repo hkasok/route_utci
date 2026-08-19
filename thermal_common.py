@@ -58,13 +58,16 @@ GROUND_ALBEDO = 0.18
 DEFAULT_MATERIALS = {
     "ground": {"k": 1.00, "C": 2.0e6, "depth": 0.50, "n_layers": 8,
                "albedo": GROUND_ALBEDO, "emissivity": 0.95,
+               "evaporative_efficiency": 0.05,
                "bottom_bc": "fixed"},     # fixed T_deep at depth
     "wall":   {"k": 1.40, "C": 1.8e6, "depth": 0.25, "n_layers": 6,
                "albedo": 0.30, "emissivity": 0.90,
+               "evaporative_efficiency": 0.0,
                "bottom_bc": "interior",   # conditioned interior behind insulation
                "insulation_R_m2K_W": 1.5},   # ~U 0.5 incl. film: modestly insulated wall
     "roof":   {"k": 1.00, "C": 1.6e6, "depth": 0.25, "n_layers": 6,
                "albedo": 0.15, "emissivity": 0.92,
+               "evaporative_efficiency": 0.0,
                "bottom_bc": "interior",
                "insulation_R_m2K_W": 2.5},   # roofs are usually better insulated
 }

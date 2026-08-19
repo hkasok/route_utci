@@ -25,7 +25,7 @@ from pythermalcomfort.models import JOS3
 from scipy.spatial import cKDTree
 from scipy.stats import kendalltau, spearmanr
 
-from route_selection import load_selected_routes
+from generate_route import load_routes_directory
 from subject_profiles import PROFILES, get_profile
 from weather_provider import WeatherProvider
 
@@ -49,12 +49,12 @@ class PreparedRoute:
 def parse_args() -> argparse.Namespace:
     """Parse project paths, factorial ranges, and production JOS-3 settings."""
     p = argparse.ArgumentParser(description="Uniform Ta-e simplification analysis")
-    p.add_argument("--baseline-csv", default="run_output/viz/route_jos3/route_ranking_summary.csv")
-    p.add_argument("--routes-pkl", default="run_output/osm_paths/selected_routes.pkl")
-    p.add_argument("--mrt-results-dir", default="run_output/mrt_facet_out")
-    p.add_argument("--weather-csv", default="weather.csv",
+    p.add_argument("--baseline-csv", default="run_output/MMC/viz/route_jos3/route_ranking_summary.csv")
+    p.add_argument("--routes-dir", default="input/MMC/routes")
+    p.add_argument("--mrt-results-dir", default="run_output/MMC/mrt_facet_out")
+    p.add_argument("--weather-csv", default="input/MMC/weather/weather.csv",
                    help="Production weather source; only resolved wind is retained")
-    p.add_argument("--output-dir", default="sensitivity output")
+    p.add_argument("--output-dir", default="run_output/MMC/postprocessing/sensitivity")
     p.add_argument("--ta-min", type=float, default=31.0)
     p.add_argument("--ta-max", type=float, default=35.0)
     p.add_argument("--ta-levels", type=int, default=5)
@@ -511,9 +511,9 @@ def print_summary(overall: pd.DataFrame,cases: pd.DataFrame,pairs: pd.DataFrame)
 
 def main() -> None:
     args=parse_args(); ta_values,e_values=validate_settings(args)
-    routes_path=Path(args.routes_pkl); require_file(routes_path,"selected routes"); require_file(Path(args.weather_csv),"weather CSV")
-    tree,matrix,hours=load_mrt(Path(args.mrt_results_dir)); selection=load_selected_routes(routes_path); raw=selection.get("routes")
-    if not isinstance(raw,list) or not raw: raise ValueError(f"{routes_path} contains no routes")
+    routes_path=Path(args.routes_dir); require_file(Path(args.weather_csv),"weather CSV")
+    tree,matrix,hours=load_mrt(Path(args.mrt_results_dir)); raw=load_routes_directory(routes_path)
+    if not raw: raise ValueError(f"{routes_path} contains no routes")
     routes=prepare_routes(raw,tree,args); benchmark=validate_baseline(Path(args.baseline_csv),[r.route_id for r in routes])
     weather=WeatherProvider(csv_path=args.weather_csv,strict=True)
     for route in routes:

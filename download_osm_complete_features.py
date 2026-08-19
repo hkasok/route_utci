@@ -1,4 +1,4 @@
-"""Download/cache complete OSM physical-surface features for FIU MMC.
+"""Download/cache complete OSM physical-surface features for a TREC-Route case.
 
 This is an independent material-data branch. It never opens the authoritative
 routing graph for writing and never constructs routes.
@@ -32,7 +32,7 @@ QUERY_TAG_KEYS = [
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Download/cache complete FIU MMC OSM features for ground materials")
+        description="Download/cache complete OSM features for ground materials")
     parser.add_argument("--ground-mesh", required=True,
                         help="Terrain mesh defining the exact simulation domain")
     parser.add_argument("--config", default="osm_ground_materials.json")
@@ -40,6 +40,10 @@ def parse_args() -> argparse.Namespace:
                         help="Override configured raw cache GeoPackage")
     parser.add_argument("--input-file", default=None,
                         help="Use a supplied .gpkg/.geojson/.osm/.xml instead of downloading")
+    parser.add_argument("--local-origin-x", type=float, default=0.0,
+                        help="Projected easting added to local mesh X coordinates")
+    parser.add_argument("--local-origin-y", type=float, default=0.0,
+                        help="Projected northing added to local mesh Y coordinates")
     parser.add_argument("--force-download", action="store_true")
     return parser.parse_args()
 
@@ -51,11 +55,19 @@ def _cache_path(config: dict[str, Any], override: str | None) -> Path:
     return name if name.is_absolute() else Path(config["cache_directory"]) / name
 
 
-def _domain(mesh_path: str, projected_crs: str, buffer_m: float):
+def _domain(
+    mesh_path: str,
+    projected_crs: str,
+    buffer_m: float,
+    local_origin_x: float = 0.0,
+    local_origin_y: float = 0.0,
+):
     mesh = trimesh.load(mesh_path, force="mesh", process=False)
     if not isinstance(mesh, trimesh.Trimesh) or len(mesh.faces) == 0:
         raise ValueError("ground mesh must contain triangular faces")
-    polygon = MultiPoint(np.asarray(mesh.vertices)[:, :2]).convex_hull.buffer(buffer_m)
+    vertices_xy = np.asarray(mesh.vertices, dtype=float)[:, :2].copy()
+    vertices_xy += np.array([local_origin_x, local_origin_y], dtype=float)
+    polygon = MultiPoint(vertices_xy).convex_hull.buffer(buffer_m)
     projected = gpd.GeoSeries([polygon], crs=projected_crs)
     return polygon, projected.to_crs(4326).iloc[0], mesh
 
@@ -138,6 +150,36 @@ def feature_inventory(frame: gpd.GeoDataFrame) -> dict[str, Any]:
     }
 
 
+def cache_matches_domain(
+    metadata_path: Path,
+    domain_wgs84,
+    projected_crs: str,
+    local_origin_x: float,
+    local_origin_y: float,
+) -> bool:
+    """Return true only when a cached extract covers this exact shifted domain."""
+    if not metadata_path.is_file():
+        return False
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        cached_bounds = np.asarray(metadata["query_bounds_wgs84"], dtype=float)
+        expected_bounds = np.asarray(domain_wgs84.bounds, dtype=float)
+        cached_crs = CRS.from_user_input(metadata["projected_crs"])
+        expected_crs = CRS.from_user_input(projected_crs)
+        origin_matches = (
+            float(metadata.get("local_origin_x", np.nan)) == float(local_origin_x)
+            and float(metadata.get("local_origin_y", np.nan)) == float(local_origin_y)
+        )
+        return bool(
+            cached_bounds.shape == (4,)
+            and np.allclose(cached_bounds, expected_bounds, rtol=0.0, atol=1e-10)
+            and cached_crs == expected_crs
+            and origin_matches
+        )
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return False
+
+
 def load_user_input(path: Path) -> gpd.GeoDataFrame:
     suffix = path.suffix.lower()
     if suffix in {".gpkg", ".geojson", ".json", ".shp"}:
@@ -183,7 +225,12 @@ def main() -> None:
     cache = _cache_path(config, args.output_file)
     cache.parent.mkdir(parents=True, exist_ok=True)
     domain_projected, domain_wgs84, mesh = _domain(
-        args.ground_mesh, projected_crs, float(config["domain_buffer_m"]))
+        args.ground_mesh,
+        projected_crs,
+        float(config["domain_buffer_m"]),
+        args.local_origin_x,
+        args.local_origin_y,
+    )
     query_path = cache.with_suffix(".overpass.ql")
     metadata_path = cache.with_suffix(".metadata.json")
     write_overpass_query(query_path, domain_wgs84)
@@ -195,7 +242,10 @@ def main() -> None:
             raise FileNotFoundError(f"configured complete OSM input does not exist: {source}")
         frame = load_user_input(source)
         source_description = f"user_file:{source.resolve()}"
-    elif cache.is_file() and not args.force_download:
+    elif (cache.is_file() and not args.force_download
+          and cache_matches_domain(
+              metadata_path, domain_wgs84, projected_crs,
+              args.local_origin_x, args.local_origin_y)):
         frame = gpd.read_file(cache, layer="raw_complete_osm_features")
         inventory = feature_inventory(frame)
         if metadata_path.is_file():
@@ -206,6 +256,8 @@ def main() -> None:
         print(f"[osm_complete] features={len(frame)} cache={cache} downloaded=false")
         return
     else:
+        if cache.is_file() and not args.force_download:
+            print("Ignoring stale complete-OSM cache: domain, CRS, or local origin changed")
         if not config.get("download_if_missing", True):
             raise FileNotFoundError(
                 f"complete OSM cache missing: {cache}. Supply --input-file or run the "
@@ -245,6 +297,8 @@ def main() -> None:
         "query_bounds_wgs84": list(domain_wgs84.bounds),
         "domain_buffer_m": float(config["domain_buffer_m"]),
         "projected_crs": projected_crs,
+        "local_origin_x": float(args.local_origin_x),
+        "local_origin_y": float(args.local_origin_y),
         "ground_mesh": str(Path(args.ground_mesh).resolve()),
         "ground_mesh_faces": int(len(mesh.faces)),
         "feature_count": int(len(frame)),

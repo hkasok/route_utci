@@ -77,7 +77,7 @@ the pipeline's standard locations, viewpoints default to route 2):
 
 Optional cross-check against a real 05a run (only meaningful with
 --all-routes, since 05a traces every route):
-        --all-routes --facets-npz run_output/thermal_out/facets.npz
+        --all-routes --facets-npz run_output/MMC/thermal_out/facets.npz
 """
 
 import argparse
@@ -116,24 +116,24 @@ def parse_args():
                     "longwave computation) and unselected surfaces")
     # Defaults are the pipeline's standard locations (same as start.sh), so a
     # bare `python3 surface_selected.py` works after a normal run.
-    p.add_argument("--buildings-stl", default="out_full/02_final/building_final.stl",
-                   help="(default: out_full/02_final/building_final.stl)")
-    p.add_argument("--vegetation-stl", default="out_full/02_final/vegetation_final.stl",
-                   help="(default: out_full/02_final/vegetation_final.stl)")
-    p.add_argument("--ground-stl", default="out_full/02_final/ground_and_water_final.stl",
-                   help="(default: out_full/02_final/ground_and_water_final.stl)")
-    p.add_argument("--mrt-dir", default="run_output/mrt_facet_out",
+    p.add_argument("--buildings-stl", default="input/MMC/geometry/building_final.stl",
+                   help="(default: input/MMC/geometry/building_final.stl)")
+    p.add_argument("--vegetation-stl", default="input/MMC/geometry/vegetation_final.stl",
+                   help="(default: input/MMC/geometry/vegetation_final.stl)")
+    p.add_argument("--ground-stl", default="input/MMC/geometry/ground_and_water_final.stl",
+                   help="(default: input/MMC/geometry/ground_and_water_final.stl)")
+    p.add_argument("--mrt-dir", default="run_output/MMC/mrt_facet_out",
                    help="Output dir of 05_mrt_network_raytrace.py (needs "
                         "path_xyz.npy + path_segment_id.npy -- the route points "
-                        "to look from). Default: run_output/mrt_facet_out")
-    p.add_argument("--output-dir", default="surface_selected",
-                   help="Output folder (default: ./surface_selected)")
+                        "to look from). Default: run_output/MMC/mrt_facet_out")
+    p.add_argument("--output-dir", default="run_output/MMC/postprocessing/surface_selected",
+                   help="Output folder inside the selected MMC result case")
     p.add_argument(
-        "--ground-material-dir", default="run_output/osm_ground_materials",
+        "--ground-material-dir", default="run_output/MMC/osm_ground_materials",
         help="Folder containing ground_face_materials.npz and "
              "ground_material_catalog.json. These classify selected ground "
              "faces into separate material STLs (default: "
-             "run_output/osm_ground_materials)")
+             "run_output/MMC/osm_ground_materials)")
     p.add_argument(
         "--no-ground-material-stls", action="store_true",
         help="Skip the additional selected-ground STL split by material")

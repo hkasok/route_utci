@@ -1,7 +1,9 @@
 """
 07_visualize_utci_network.py -- compute and visualize UTCI along the
 selected routes, combining the already-computed spatially-resolved Tmrt
-with (spatially-uniform) air temperature, relative humidity and wind.
+with the shared environmental field. Air temperature and velocity are
+spatially uniform by default and become spatially/temporally resolved when
+``--microclimate-dir`` is supplied. Relative humidity remains weather-forced.
 
 UTCI itself is computed with `pythermalcomfort` (validated open-source
 implementation of the Bröde et al. 2012 operational UTCI polynomial) --
@@ -21,13 +23,9 @@ NOTE ON WIND: UTCI expects wind at the 10 m reference height, so the CSV's
 wind_ms must be a 10 m value (the same requirement stage 08 documents).
 Values below 0.5 m/s are floored, as the polynomial is unreliable there.
 
-These three are held SPATIALLY UNIFORM across the whole network -- see
-the earlier discussion: Tmrt dominates UTCI's spatial variability by a
-wide margin (its correlation with UTCI is consistently the highest of
-the four inputs, and its real spatial range across sun/shade is far
-larger than Ta/RH's real spatial range at this scale), so resolving
-only Tmrt spatially while treating Ta/RH/wind as uniform is a
-well-justified simplification, not a meaningful accuracy loss.
+The spatially uniform mode remains the inexpensive backward-compatible
+approximation. The optional diagnostic microclimate stage supplies local Ta
+and all three velocity components; UTCI consumes their speed magnitude.
 
 Color scale: uses the standard, literature-defined 10-category UTCI
 thermal stress classification (Brode et al. 2012 / utci.org), NOT a
@@ -51,6 +49,7 @@ import matplotlib.colors as mcolors
 from pythermalcomfort.models import utci
 
 from weather_provider import add_weather_args, provider_from_args
+from microclimate_field import EnvironmentField, add_microclimate_argument
 from physical_checks import check_utci_inputs
 
 
@@ -126,6 +125,7 @@ def parse_args():
     # arguments, so the UTCI MAP could be computed from different weather than
     # the UTCI ROUTE numbers -- the two were not comparable.
     add_weather_args(p)
+    add_microclimate_argument(p)
 
     p.add_argument("--n-static-panels", type=int, default=6)
     p.add_argument("--n-animated-points", type=int, default=20000)
@@ -328,9 +328,12 @@ def main():
 
     # Weather from the SHARED provider -- identical source to 05/08/09.
     weather = provider_from_args(args)
+    environment = EnvironmentField(
+        weather, args.microclimate_dir, args.microclimate_receptor_height_m)
     prov = weather.provenance()
     print(f"\nWeather (spatially uniform, same source as MRT + route stages):")
     print(f"  {weather.describe()}")
+    print(f"  Air field: {environment.describe()}")
     for var, label in (("air_temp_C", "air temperature"),
                        ("rh_pct", "relative humidity"),
                        ("wind_ms", "wind speed")):
@@ -344,12 +347,12 @@ def main():
     utci_matrix = np.zeros_like(tmrt_matrix)
     for it, t in enumerate(times):
         hour = t.hour + t.minute / 60.0
-        ta, rh_h, v_h = weather.forcing_at(hour)
+        local = environment.sample(path_xyz, hour)
         tr = tmrt_matrix[it]
         # UTCI's polynomial is unreliable below 0.5 m/s -- keep the existing floor.
-        v = np.full(n_points, max(float(v_h), 0.5))
-        rh = np.full(n_points, float(rh_h))
-        ta_arr = np.full(n_points, float(ta))
+        v = np.maximum(local.utci_wind_speed_10m_ms, 0.5)
+        rh = local.relative_humidity_pct
+        ta_arr = local.air_temperature_c
         if it == 0:   # units/range guard once (values are uniform per step)
             check_utci_inputs(ta_arr, tr, v, rh, f"stage 07 UTCI at {t}")
         result = utci(tdb=ta_arr, tr=tr, v=v, rh=rh, limit_inputs=False)

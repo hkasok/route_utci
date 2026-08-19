@@ -10,7 +10,8 @@ view). One file, ~zero startup cost, runs in your browser.
 
 WHAT IT DOES
 ------------
-  * One button per pipeline step (1-5) to run ONLY that step
+  * Step 1 selects an input case and its corresponding output case
+  * One button per executable pipeline step (2-6) to run ONLY that step
   * A second button per step to run that step AND everything after it
   * Live logs and per-step progress measured from real workflow checkpoints
     and numerical loop counters, with a Stop button
@@ -42,12 +43,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # step number -> (label, [SKIP_ flags that belong to this step])
 STEPS = [
-    (1, "Geometry build (LAZ → STL)", ["GEOM"]),
-    (2, "OSM network + ground materials", ["OSM", "OSM_MATERIALS"]),
+    (2, "OSM data + ground materials", ["OSM", "OSM_MATERIALS"]),
     (3, "Facet-thermal MRT (prep → 05a → 05b → MRT)",
      ["05", "05A", "05B", "05FACET"]),
-    (4, "Visualizations (06, 07)", ["06", "07"]),
-    (5, "Route stress (UTCI 08 + JOS-3 09 + compare 10)",
+    (4, "Optional full-surface radiation + 3-D Ta/velocity → recoupled MRT",
+     ["URBAN_RADIATION", "MICROCLIMATE", "MICROCLIMATE_05B",
+      "MICROCLIMATE_05FACET"]),
+    (5, "Visualizations (06, 07)", ["06", "07"]),
+    (6, "Route stress (UTCI 08 + JOS-3 09 + compare 10)",
      ["08", "09", "10"]),
 ]
 LAST_STEP = STEPS[-1][0]
@@ -62,6 +65,8 @@ class Runner:
 
     def __init__(self, workdir):
         self.workdir = workdir
+        self.input_root = os.path.join(workdir, "input")
+        self.output_root = os.path.join(workdir, "run_output")
         self.proc = None
         self.lines = []
         self.lock = threading.Lock()
@@ -96,11 +101,51 @@ class Runner:
         return self.proc is not None and self.proc.poll() is None
 
     # -- run -------------------------------------------------------------
-    def start(self, step, only, extra_env):
+    @staticmethod
+    def _case_name(name):
+        name = str(name or "").strip()
+        if not name or name in {".", ".."} or os.path.basename(name) != name:
+            raise ValueError(f"Invalid case folder name: {name!r}")
+        return name
+
+    def available_cases(self):
+        """Return selectable input cases and existing/suggested output cases."""
+        input_cases = []
+        if os.path.isdir(self.input_root):
+            input_cases = sorted(
+                entry.name for entry in os.scandir(self.input_root)
+                if entry.is_dir() and os.path.isfile(os.path.join(entry.path, "case.json")))
+        output_cases = []
+        if os.path.isdir(self.output_root):
+            output_cases = sorted(
+                entry.name for entry in os.scandir(self.output_root) if entry.is_dir())
+        return input_cases, sorted(set(input_cases) | set(output_cases))
+
+    def _resolve_cases(self, input_case, output_case):
+        input_name = self._case_name(input_case)
+        output_name = self._case_name(output_case)
+        input_dir = os.path.abspath(os.path.join(self.input_root, input_name))
+        output_dir = os.path.abspath(os.path.join(self.output_root, output_name))
+        if os.path.commonpath([input_dir, os.path.abspath(self.input_root)]) != os.path.abspath(self.input_root):
+            raise ValueError("Input case must be below the project input folder")
+        if os.path.commonpath([output_dir, os.path.abspath(self.output_root)]) != os.path.abspath(self.output_root):
+            raise ValueError("Output case must be below the project run_output folder")
+        if not os.path.isfile(os.path.join(input_dir, "case.json")):
+            raise ValueError(f"Input case has no case.json: {input_dir}")
+        os.makedirs(output_dir, exist_ok=True)
+        return input_name, output_name, input_dir, output_dir
+
+    def start(self, step, only, extra_env, input_case="MMC", output_case="MMC"):
         if self.is_running():
             return False, "A run is already in progress."
         if step not in {number for number, _label, _flags in STEPS}:
             return False, f"Invalid pipeline step: {step}"
+
+        try:
+            input_name, output_name, input_dir, output_dir = self._resolve_cases(
+                input_case, output_case)
+        except (OSError, ValueError) as exc:
+            return False, str(exc)
 
         env = os.environ.copy()
         skips = []
@@ -112,17 +157,43 @@ class Runner:
                         env[f"SKIP_{f}"] = "1"
                         skips.append(f"SKIP_{f}=1")
 
-        # user-supplied "KEY=VALUE KEY=VALUE" overrides (e.g. DEPARTURE_HOUR=15)
-        applied = []
+        # User overrides may change model settings, but case-path settings are
+        # controlled exclusively by Step 1 so outputs cannot leak to another case.
+        case_path_overrides = {
+            "CASE_CONFIG", "ROUTES_DIR", "WEATHER_CSV", "GEOM_DIR",
+            "BUILDINGS_STL", "VEGETATION_STL", "GROUND_STL", "OUT_ROOT",
+            "OSM_DIR", "OSM_COMPLETE_CACHE", "OSM_GROUND_FEATURES",
+            "OSM_GROUND_CONFIG", "OSM_GROUND_MATERIAL_DIR",
+            "RADIANT_FLUX_CONFIG", "MRT_DIR", "THERMAL_DIR",
+            "MRT_FACET_DIR", "MICROCLIMATE_DIR", "URBAN_RADIATION_DIR",
+            "URBAN_RADIATION_CONFIG", "VIS_DIR", "SVF_CACHE_DIR",
+            "SOLWEIG_COMPARE_OUTPUT_DIR", "GRAPHML", "POLYLINES",
+            "ROUTE_POLYLINES",
+        }
+        applied, ignored = [], []
         for token in shlex.split(extra_env or ""):
             if "=" in token:
                 k, v = token.split("=", 1)
-                env[k] = v
-                applied.append(f"{k}={v}")
+                if k in case_path_overrides:
+                    ignored.append(k)
+                else:
+                    env[k] = v
+                    applied.append(f"{k}={v}")
         # These two settings belong to the UI transport and cannot be disabled
         # by an optional user override.
+        for key in case_path_overrides:
+            env.pop(key, None)
         env["PYTHONUNBUFFERED"] = "1"
         env["TREC_PROGRESS"] = "1"
+        env["CASE_NAME"] = input_name
+        env["INPUT_CASE_DIR"] = input_dir
+        env["OUTPUT_CASE_DIR"] = output_dir
+        env["OUT_ROOT"] = output_dir
+        # Selecting the visibly optional step is an explicit request to run
+        # it. Starting an earlier step with "This + after" leaves the
+        # enhancement off unless WITH_MICROCLIMATE=1 was entered manually.
+        if step == 4:
+            env["WITH_MICROCLIMATE"] = "1"
 
         mode = "only this step" if only else "this step and everything after"
         planned = {step} if only else set(range(step, LAST_STEP + 1))
@@ -143,8 +214,12 @@ class Runner:
             self.route_count = 0
             self.route_phase = ""
         self._append(f"$ cd {self.workdir}")
+        self._append(f"$ input case:  {input_name} ({input_dir})")
+        self._append(f"$ output case: {output_name} ({output_dir})")
         if applied:
             self._append(f"$ env {' '.join(applied)}")
+        if ignored:
+            self._append("$ ignored case-path override(s): " + ", ".join(ignored))
         if skips:
             self._append(f"$ (fencing to one step: {' '.join(skips)})")
         self._append(f"$ bash start.sh {step}\n")
@@ -221,21 +296,6 @@ class Runner:
                     step, 55 + 40 * fraction, "running", nested.group(2).strip())
                 return True
 
-        # Geometry progress follows main.py's actual sequential build phases.
-        if step == 1:
-            geometry_phases = (
-                ("---- Stage 0:", 5, "Splitting classified point cloud"),
-                ("---- Stage 1:", 20, "Building vegetation geometry"),
-                ("---- Stage 2:", 40, "Building footprint geometry"),
-                ("---- Stage 3a:", 60, "Rasterizing terrain"),
-                ("---- Stage 3b:", 72, "Clustering terrain mesh"),
-                ("---- Stage 3c:", 86, "Planar terrain decimation"),
-            )
-            for token, percent, message in geometry_phases:
-                if token in line:
-                    self._update_progress(step, percent, "running", message)
-                    break
-
         # The merged MRT step exposes counters from all four numerical phases.
         if step == 3:
             with self.lock:
@@ -273,6 +333,41 @@ class Runner:
 
         if step == 4:
             phase_markers = (
+                ("Partitioning terrain triangles", 4, "Aligning triangles to material boundaries"),
+                ("Precomputing full-domain facet sky-view", 8, "Full-surface sky-view ray tracing"),
+                ("Precomputing ray-visible route-zone", 12, "Route-zone longwave view factors"),
+                ("Reusing exact-match full-surface", 12, "Reusing full-surface radiation geometry"),
+            )
+            for token, percent, message in phase_markers:
+                if token in line:
+                    self._update_progress(step, percent, "running", message)
+            match = re.search(r"full-surface radiation\s+(\d+)/(\d+)", line)
+            if match and int(match.group(2)):
+                fraction = int(match.group(1)) / int(match.group(2))
+                self._update_progress(
+                    step, 12 + 27 * fraction, "running",
+                    f"Surface radiation/conduction {int(100 * fraction)}%")
+            match = re.search(r"microclimate step\s+(\d+)/(\d+)", line)
+            if match and int(match.group(2)):
+                fraction = int(match.group(1)) / int(match.group(2))
+                self._update_progress(
+                    step, 40 + 31 * fraction, "running",
+                    f"3-D air-field solve {int(100 * fraction)}%")
+            match = re.search(r"\bcycle\s+(\d+)/(\d+)", line)
+            if match and int(match.group(2)):
+                fraction = int(match.group(1)) / int(match.group(2))
+                self._update_progress(
+                    step, 71 + 12 * fraction, "running",
+                    f"Surface recoupling {int(100 * fraction)}%")
+            match = re.search(r"\bstep\s+(\d+)/(\d+)", line)
+            if match and int(match.group(2)) and "microclimate step" not in line:
+                fraction = int(match.group(1)) / int(match.group(2))
+                self._update_progress(
+                    step, 83 + 15 * fraction, "running",
+                    f"MRT regeneration {int(100 * fraction)}%")
+
+        if step == 5:
+            phase_markers = (
                 ("Loading results...", 5, "Loading MRT results"),
                 ("Building static key-times overview", 18, "Drawing MRT overview"),
                 ("Building interactive animated HTML (subsampled", 30, "Writing MRT animation"),
@@ -285,7 +380,7 @@ class Runner:
                     self._update_progress(step, percent, "running", message)
                     break
 
-        if step == 5:
+        if step == 6:
             loaded = re.search(r"Loaded\s+(\d+)\s+routes", line)
             if loaded:
                 with self.lock:
@@ -382,7 +477,15 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  button:hover:not(:disabled){background:#27384a}
  button:disabled{opacity:.4;cursor:not-allowed}
  button.go{border-color:#2b6cb0;background:#1c3f66}
- button.stop{border-color:#b91c1c;background:#5b1414}
+button.stop{border-color:#b91c1c;background:#5b1414}
+ .case-panel{max-width:1220px;margin:0 0 14px;padding:12px 14px;border-radius:8px;
+             border:1px solid #33465c;background:#171d24;display:flex;
+             align-items:center;gap:12px;flex-wrap:wrap}
+ .case-number{color:#93c5fd;font-weight:700}.case-title{font-weight:600;margin-right:8px}
+ .case-panel label{color:#9fb0c3;font-size:12px}
+ select{margin-left:5px;padding:6px 28px 6px 9px;border-radius:6px;
+        border:1px solid #33465c;background:#0e1319;color:#dfe6ee}
+ .case-path{color:#7d8ea3;font:11px ui-monospace,monospace;flex-basis:100%}
  .progress-wrap{display:grid;grid-template-columns:minmax(150px,1fr) 104px;
                 gap:8px;align-items:center;min-width:265px}
  .progress-track{height:12px;border-radius:999px;overflow:hidden;
@@ -412,6 +515,12 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
   <button class="stop" id="stopb" onclick="stop()" disabled>Stop</button>
 </header>
 <main>
+ <div class="case-panel">
+  <span class="case-number">1</span><span class="case-title">Problem selection</span>
+  <label>Input case <select id="inputcase"></select></label>
+  <label>Output case <select id="outputcase"></select></label>
+  <span class="case-path" id="casepath">Loading available cases…</span>
+ </div>
  <div id="envrow">
   <input id="env" placeholder="optional overrides, e.g.  DEPARTURE_HOUR=15.0 SUBJECT_PROFILE=child">
   <div id="hint">Left button = run only that step. Right button = that step and everything after. Progress is measured from completed pipeline phases and numerical loop counters.</div>
@@ -441,7 +550,9 @@ async function run(step,only){
   if(busy) return;
   logEl.textContent=''; offset=0;
   const response=await fetch('/run',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({step:step,only:only,env:document.getElementById('env').value})});
+    body:JSON.stringify({step:step,only:only,env:document.getElementById('env').value,
+      input_case:document.getElementById('inputcase').value,
+      output_case:document.getElementById('outputcase').value})});
   const result=await response.json();
   if(!result.ok){ logEl.textContent='ERROR: '+result.msg+'\\n'; return; }
   poll();
@@ -450,6 +561,27 @@ async function stop(){ await fetch('/stop',{method:'POST'}); }
 function setBusy(b){
   busy=b; stopB.disabled=!b;
   document.querySelectorAll('#steps button').forEach(x=>x.disabled=b);
+  document.getElementById('inputcase').disabled=b;
+  document.getElementById('outputcase').disabled=b;
+}
+function updateCasePath(){
+  const input=document.getElementById('inputcase').value;
+  const output=document.getElementById('outputcase').value;
+  document.getElementById('casepath').textContent=`input/${input}  →  run_output/${output}`;
+}
+async function loadCases(){
+  const response=await fetch('/cases'); const data=await response.json();
+  const input=document.getElementById('inputcase'), output=document.getElementById('outputcase');
+  input.innerHTML=''; output.innerHTML='';
+  (data.input_cases||[]).forEach(name=>input.add(new Option(name,name)));
+  (data.output_cases||[]).forEach(name=>output.add(new Option(name,name)));
+  const preferred=(data.input_cases||[]).includes('MMC')?'MMC':(data.input_cases||[])[0];
+  if(preferred){ input.value=preferred; output.value=preferred; }
+  input.onchange=()=>{
+    if([...output.options].some(option=>option.value===input.value)) output.value=input.value;
+    updateCasePath();
+  };
+  output.onchange=updateCasePath; updateCasePath();
 }
 function updateProgress(progress){
   STEPS.forEach(([n])=>{
@@ -483,7 +615,7 @@ async function poll(){
   setBusy(d.status==='running'||d.status==='stopping');
   if(d.status==='running'||d.status==='stopping') setTimeout(poll,600);
 }
-poll();
+loadCases(); poll();
 </script></body></html>"""
 
 
@@ -504,6 +636,10 @@ def make_handler(runner):
             if self.path == "/" or self.path.startswith("/index"):
                 steps = json.dumps([[n, html.escape(l)] for n, l, _ in STEPS])
                 self._send(200, PAGE.replace("__STEPS__", steps), "text/html; charset=utf-8")
+            elif self.path == "/cases":
+                input_cases, output_cases = runner.available_cases()
+                self._send(200, json.dumps({"input_cases": input_cases,
+                                            "output_cases": output_cases}))
             elif self.path.startswith("/log"):
                 q = self.path.split("?", 1)[1] if "?" in self.path else ""
                 off = 0
@@ -523,7 +659,9 @@ def make_handler(runner):
             if self.path == "/run":
                 ok, msg = runner.start(int(payload.get("step", 1)),
                                        bool(payload.get("only", False)),
-                                       payload.get("env", ""))
+                                       payload.get("env", ""),
+                                       payload.get("input_case", "MMC"),
+                                       payload.get("output_case", "MMC"))
                 self._send(200, json.dumps({"ok": ok, "msg": msg}))
             elif self.path == "/stop":
                 self._send(200, json.dumps({"ok": runner.stop()}))

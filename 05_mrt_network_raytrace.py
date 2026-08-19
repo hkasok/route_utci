@@ -60,6 +60,8 @@ from radiant_flux_contributions import (
     canonical_sw_source, load_contribution_config,
     validate_contribution_arrays, write_contribution_metadata)
 from weather_provider import add_weather_args, provider_from_args
+from microclimate_field import EnvironmentField, add_microclimate_argument
+from radiation_forcing import resolve_radiation_forcing
 
 
 def parse_args():
@@ -70,6 +72,7 @@ def parse_args():
     p.add_argument("--polylines-pkl", required=True,
                     help="Output of extract_osm_pedestrian_network.py")
     p.add_argument("--output-dir", required=True)
+    add_microclimate_argument(p)
     p.add_argument(
         "--prep-only", action="store_true",
         help=("Write route points, time forcing, and static SVF products, then "
@@ -211,6 +214,12 @@ def parse_args():
             "periodically interpolated to model timesteps. When omitted, the "
             "existing pvlib clear-sky plus cloud-adjustment model is unchanged."
         ),
+    )
+    p.add_argument(
+        "--radiation-forcing-config", default=None,
+        help=("Optional case-level radiation_forcing.json. Supports clear-sky, "
+              "independent component CSV, or a documented mobile-shortwave "
+              "upper-envelope cloud estimate. --radiation-csv takes precedence."),
     )
     p.add_argument("--surface-temp-offset-day-c", type=float, default=8.0)
     p.add_argument("--cloud-cover-fraction", type=float, default=0.0)
@@ -669,6 +678,7 @@ def estimate_mrt_from_radiation(dni, dhi, ghi, elevation_deg, tau_direct,
                                  local_ground_albedo=None,
                                  reflected_source_fractions=None,
                                  L_surround_components=None,
+                                 L_sky_override=None,
                                  return_contributions=False):
     # lw_sky_frac: FULL-SPHERE sky fraction for the LONGWAVE blend (from 05a's
     #   cylinder view, ground-inclusive). When None the blend falls back to the
@@ -687,8 +697,11 @@ def estimate_mrt_from_radiation(dni, dhi, ghi, elevation_deg, tau_direct,
     # (Prata) by default, shared with 05b so surfaces and pedestrian see one
     # identical sky. This replaced a constant 0.78 that badly understated
     # longwave in humid climates.
-    L_sky = sky_longwave_down(air_temp_C, rh_pct, cloud_fraction,
-                              clear_sky_model=args.clear_sky_emissivity)
+    if L_sky_override is None or not np.isfinite(L_sky_override):
+        L_sky = sky_longwave_down(air_temp_C, rh_pct, cloud_fraction,
+                                  clear_sky_model=args.clear_sky_emissivity)
+    else:
+        L_sky = float(L_sky_override)
 
     surface_offset = args.surface_temp_offset_day_c * max(sin_el, 0.0)
     surface_K = air_K + surface_offset
@@ -1178,20 +1191,41 @@ def main():
     solar = pvlib.solarposition.get_solarposition(times, args.latitude, args.longitude)
     elev = solar["apparent_elevation"].values
     azim = solar["azimuth"].values
+    clearsky = location.get_clearsky(times, model="ineichen")
     if args.radiation_csv:
         dni, dhi, ghi = load_radiation_csv(args.radiation_csv, times)
         radiation_source = str(Path(args.radiation_csv).resolve())
+        cloud_fraction_time = np.full(len(times), args.cloud_cover_fraction)
+        lwin_time = np.full(len(times), np.nan)
+        forcing_metadata = {
+            "mode": "legacy_radiation_csv",
+            "source_file": radiation_source,
+            "configured_cloud_fraction": args.cloud_cover_fraction,
+            "note": "DNI/DHI/GHI from --radiation-csv; sky longwave remains parameterized.",
+        }
         print(f"  Irradiance forcing: measured/reference CSV {radiation_source}")
     else:
-        clearsky = location.get_clearsky(times, model="ineichen")
-        dni, dhi, ghi = apply_cloud_adjustment(
-            clearsky["dni"].values,
-            clearsky["dhi"].values,
-            elev,
-            args.cloud_cover_fraction,
+        resolved_forcing = resolve_radiation_forcing(
+            args.radiation_forcing_config, times,
+            clearsky["dni"].values, clearsky["dhi"].values,
+            clearsky["ghi"].values, elev, args.cloud_cover_fraction,
         )
-        radiation_source = "pvlib_ineichen_clear_sky_plus_cloud_adjustment"
+        dni = resolved_forcing.dni_wm2
+        dhi = resolved_forcing.dhi_wm2
+        ghi = resolved_forcing.ghi_wm2
+        cloud_fraction_time = resolved_forcing.cloud_fraction
+        lwin_time = resolved_forcing.lwin_wm2
+        radiation_source = resolved_forcing.source
+        forcing_metadata = resolved_forcing.metadata
         print(f"  Irradiance forcing: {radiation_source}")
+        if "inferred_case_cloud_fraction" in forcing_metadata:
+            print("  Mobile upper-envelope cloud estimate: "
+                  f"{forcing_metadata['inferred_case_cloud_fraction']:.3f} "
+                  f"from {forcing_metadata['n_usable_daytime_samples']} usable samples")
+            for warning in forcing_metadata.get("warnings", []):
+                print(f"  WARNING: {warning}")
+    (out_dir / "radiation_forcing_metadata.json").write_text(
+        json.dumps(forcing_metadata, indent=2) + "\n", encoding="utf-8")
     # ------------------------------------------------------------------
     # Air temperature from the shared provider, evaluated at the decimal
     # hour of each model timestep. Tmrt uses air temperature only (sky
@@ -1215,6 +1249,8 @@ def main():
         "DNI_Wm2": dni, "DHI_Wm2": dhi, "GHI_Wm2": ghi, "air_temp_C": air_temp_C_time,
         # Carried through so downstream stages inherit identical forcing.
         "rh_pct": rh_pct_time, "wind_ms": wind_ms_time,
+        "cloud_fraction": cloud_fraction_time,
+        "LWin_Wm2": lwin_time,
         "radiation_source": radiation_source,
     })
     times_df.to_csv(out_dir / "times.csv", index=False)
@@ -1231,11 +1267,19 @@ def main():
 
     print("\n" + "=" * 70)
     print("Running direct-sun ray tracing + MRT for each time step...")
+    environment = EnvironmentField(
+        weather, args.microclimate_dir, args.microclimate_receptor_height_m)
+    print(f"Air temperature / velocity forcing: {environment.describe()}")
     facet_lw = None
     if args.facet_thermal_dir:
         facet_lw = FacetLongwave(args.facet_thermal_dir, n_points, nt, args)
     tmrt_matrix = np.zeros((nt, n_points), dtype=np.float32)
     direct_transmission_matrix = np.zeros((nt, n_points), dtype=np.float32)
+    local_air_min = np.zeros(nt, dtype=float)
+    local_air_mean = np.zeros(nt, dtype=float)
+    local_air_max = np.zeros(nt, dtype=float)
+    local_wind_mean = np.zeros(nt, dtype=float)
+    local_wind_max = np.zeros(nt, dtype=float)
     contribution_matrices = None
     if record_contributions:
         stored_keys = PRIMARY_COLUMNS + TOTAL_COLUMNS
@@ -1249,6 +1293,14 @@ def main():
 
     t_loop_start = time.time()
     for it, (t, el, az) in enumerate(zip(times, elev, azim)):
+        local_environment = environment.sample(path_xyz, float(hour_of_day[it]))
+        local_air_c = local_environment.air_temperature_c
+        local_wind_ms = local_environment.wind_speed_ms
+        local_air_min[it] = float(np.min(local_air_c))
+        local_air_mean[it] = float(np.mean(local_air_c))
+        local_air_max[it] = float(np.max(local_air_c))
+        local_wind_mean[it] = float(np.mean(local_wind_ms))
+        local_wind_max[it] = float(np.max(local_wind_ms))
         if el <= 0.0:
             tau_direct = np.zeros(n_points)
         else:
@@ -1264,10 +1316,11 @@ def main():
         local_ground_albedo = None
         reflected_source_fractions = None
         if facet_lw is not None:
-            sky_lw_current = float(sky_longwave_down(
-                air_temp_C_time[it], rh_pct_time[it],
-                args.cloud_cover_fraction,
-                clear_sky_model=args.clear_sky_emissivity))
+            sky_lw_current = (float(lwin_time[it]) if np.isfinite(lwin_time[it])
+                              else float(sky_longwave_down(
+                                  air_temp_C_time[it], rh_pct_time[it],
+                                  cloud_fraction_time[it],
+                                  clear_sky_model=args.clear_sky_emissivity)))
             surround_result = facet_lw.surround_at(
                 it, air_temp_C_time[it], el,
                 sky_longwave_Wm2=sky_lw_current,
@@ -1283,11 +1336,12 @@ def main():
 
         radiation_result = estimate_mrt_from_radiation(
             dni[it], dhi[it], ghi[it], el, tau_direct, svf_person, svf_ground,
-            air_temp_C_time[it], rh_pct_time[it], args.cloud_cover_fraction, args,
+            local_air_c, rh_pct_time[it], cloud_fraction_time[it], args,
             L_surround_override=L_surround_override, lw_sky_frac=lw_sky_frac,
             local_ground_albedo=local_ground_albedo,
             reflected_source_fractions=reflected_source_fractions,
             L_surround_components=L_surround_components,
+            L_sky_override=lwin_time[it],
             return_contributions=record_contributions,
         )
         if record_contributions:
@@ -1360,7 +1414,11 @@ def main():
             "time": t.isoformat(),
             "elevation_deg": elev[it],
             "DNI_Wm2": dni[it], "DHI_Wm2": dhi[it], "GHI_Wm2": ghi[it],
-            "air_temp_C": air_temp_C_time[it],
+            "air_temp_C": local_air_mean[it],
+            "air_temp_min_C": local_air_min[it],
+            "air_temp_max_C": local_air_max[it],
+            "wind_mean_ms": local_wind_mean[it],
+            "wind_max_ms": local_wind_max[it],
             "tmrt_mean_C": float(np.mean(tmrt_matrix[it])),
             "tmrt_min_C": float(np.min(tmrt_matrix[it])),
             "tmrt_max_C": float(np.max(tmrt_matrix[it])),
@@ -1377,12 +1435,24 @@ def main():
               f"(out of {n_points:,} total)...")
         records = []
         for it, t in enumerate(times):
-            for ip in sub_idx:
+            sub_environment = environment.sample(
+                path_xyz[sub_idx], float(hour_of_day[it]))
+            for local_index, ip in enumerate(sub_idx):
                 records.append({
                     "time": t.isoformat(), "point_index": int(ip),
                     "x": path_xyz[ip, 0], "y": path_xyz[ip, 1], "z": path_xyz[ip, 2],
                     "svf_effective": svf_person[ip],
                     "direct_transmission": direct_transmission_matrix[it, ip],
+                    "air_temp_C": float(
+                        sub_environment.air_temperature_c[local_index]),
+                    "wind_ms": float(
+                        sub_environment.wind_speed_ms[local_index]),
+                    "wind_u_ms": float(
+                        sub_environment.velocity_u_ms[local_index]),
+                    "wind_v_ms": float(
+                        sub_environment.velocity_v_ms[local_index]),
+                    "wind_w_ms": float(
+                        sub_environment.velocity_w_ms[local_index]),
                     "tmrt_C": tmrt_matrix[it, ip],
                 })
         pd.DataFrame(records).to_csv(out_dir / "detailed_subsample.csv", index=False)

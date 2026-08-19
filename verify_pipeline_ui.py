@@ -36,14 +36,22 @@ check("progress-wrap" in PAGE and "progress-${n}" in PAGE,
       "each generated step row has a right-side progress bar")
 check("role=\"progressbar\"" in PAGE and "aria-valuenow" in PAGE,
       "progress bars expose accessible state")
-check(len(STEPS) == 5, "all five top-level pipeline steps represented")
-check(STEPS[2][2] == ["05", "05A", "05B", "05FACET"],
+check("Problem selection" in PAGE and "inputcase" in PAGE and "outputcase" in PAGE,
+      "Step 1 selects input and output case folders")
+check("Generate routes" not in PAGE and "Geometry build" not in PAGE,
+      "case-specific preparation actions are absent from the UI")
+check(len(STEPS) == 5 and [step[0] for step in STEPS] == [2, 3, 4, 5, 6],
+      "only executable steps 2-6 have run controls")
+check(STEPS[1][2] == ["05", "05A", "05B", "05FACET"],
       "merged step retains all four independently skippable substages")
+check(STEPS[2][2] == ["URBAN_RADIATION", "MICROCLIMATE", "MICROCLIMATE_05B",
+                      "MICROCLIMATE_05FACET"],
+      "optional radiation/microclimate owns full-surface, solver, and recoupling substages")
 
 
 print("\nT2: real counter parsing")
 runner = Runner(".")
-runner.planned_steps = {2, 3, 4, 5}
+runner.planned_steps = {2, 3, 4, 5, 6}
 runner.active_step = 3
 for step in runner.planned_steps:
     runner.progress[step] = {"percent": 0.0, "state": "queued", "message": "Waiting"}
@@ -76,6 +84,13 @@ runner._parse_progress("  cycle 2/3: max |dT| vs previous cycle end = 0.5 K")
 check(59.0 < runner.progress[3]["percent"] < 61.0,
       "surface-energy progress uses completed cycle fraction")
 
+runner.active_step = 4
+runner.planned_steps.add(4)
+runner.progress[4] = {"percent": 12.0, "state": "running", "message": "Radiation"}
+runner._parse_progress("  full-surface radiation 5/10 -- Ts 20.0..40.0 C")
+check(25.0 < runner.progress[4]["percent"] < 26.0,
+      "full-surface radiation progress uses transient timestep fraction")
+
 
 print("\nT3: explicit workflow markers and monotonicity")
 runner._parse_progress(
@@ -96,34 +111,38 @@ check(runner.progress[3]["percent"] == 100.0
 
 print("\nT4: real subprocess lifecycle")
 with tempfile.TemporaryDirectory() as tmp:
+    (Path(tmp) / "input" / "MMC").mkdir(parents=True)
+    (Path(tmp) / "input" / "MMC" / "case.json").write_text("{}")
     script = Path(tmp) / "start.sh"
     script.write_text(
         "#!/usr/bin/env bash\n"
-        "echo '[trec_progress] step=4 percent=0 state=running message=Starting plots'\n"
+        "echo '[trec_progress] step=5 percent=0 state=running message=Starting plots'\n"
         "echo 'Building static key-times overview...'\n"
-        "echo '[trec_progress] step=4 percent=100 state=done message=Plots complete'\n"
-        "echo '[trec_progress] step=5 percent=0 state=running message=Starting routes'\n"
+        "echo '[trec_progress] step=5 percent=100 state=done message=Plots complete'\n"
+        "echo '[trec_progress] step=6 percent=0 state=running message=Starting routes'\n"
         "echo '  Loaded 3 routes'\n"
         "echo 'Computing UTCI along each route'\n"
         "echo '  Route 1: complete'\n"
         "echo '  Route 2: complete'\n"
         "echo '  Route 3: complete'\n"
-        "echo '[trec_progress] step=5 percent=100 state=done message=Routes complete'\n",
+        "echo '[trec_progress] step=6 percent=100 state=done message=Routes complete'\n",
         encoding="utf-8")
     runner = Runner(tmp)
-    ok, _ = runner.start(4, False, "")
+    ok, _ = runner.start(5, False, "")
     wait_for_runner(runner)
     _lines, _offset, status, _current, progress = runner.snapshot(0)
     check(ok and status == "done", "successful child process updates overall status")
-    check(progress["4"]["state"] == "done" and progress["4"]["percent"] == 100.0,
-          "first planned step completes")
     check(progress["5"]["state"] == "done" and progress["5"]["percent"] == 100.0,
+          "first planned step completes")
+    check(progress["6"]["state"] == "done" and progress["6"]["percent"] == 100.0,
           "subsequent planned step completes independently")
-    check(progress["1"]["state"] == "idle", "steps outside the run remain untouched")
+    check(progress["2"]["state"] == "idle", "steps outside the run remain untouched")
 
 
 print("\nT5: only-this fencing for every top-level step")
 with tempfile.TemporaryDirectory() as tmp:
+    (Path(tmp) / "input" / "MMC").mkdir(parents=True)
+    (Path(tmp) / "input" / "MMC" / "case.json").write_text("{}")
     script = Path(tmp) / "start.sh"
     script.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
     for selected, _label, _flags in STEPS:
@@ -139,6 +158,22 @@ with tempfile.TemporaryDirectory() as tmp:
         }
         check(ok and status == "done" and all(item in fence_line for item in expected),
               f"step {selected} fences every later stage ({len(expected)} flags)")
+
+print("\nT6: optional-step activation")
+with tempfile.TemporaryDirectory() as tmp:
+    (Path(tmp) / "input" / "MMC").mkdir(parents=True)
+    (Path(tmp) / "input" / "MMC" / "case.json").write_text("{}")
+    script = Path(tmp) / "start.sh"
+    script.write_text(
+        "#!/usr/bin/env bash\n"
+        "echo WITH_MICROCLIMATE=$WITH_MICROCLIMATE\n"
+        "exit 0\n", encoding="utf-8")
+    runner = Runner(tmp)
+    ok, _ = runner.start(4, True, "WITH_MICROCLIMATE=0")
+    wait_for_runner(runner)
+    lines, _offset, status, _current, _progress = runner.snapshot(0)
+    check(ok and status == "done" and "WITH_MICROCLIMATE=1" in lines,
+          "selecting UI step 4 explicitly enables the optional solver")
 
 print("\n" + "=" * 68)
 print(f"RESULT: {passed} passed, {failed} failed")
