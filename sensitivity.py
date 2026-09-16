@@ -55,6 +55,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--weather-csv", default="input/MMC/weather/weather.csv",
                    help="Production weather source; only resolved wind is retained")
     p.add_argument("--output-dir", default="run_output/MMC/postprocessing/sensitivity")
+    p.add_argument("--clothing-provenance",
+                   default="run_output/MMC/viz/route_jos3/clothing_provenance.json",
+                   help="Stage-09 clothing_provenance.json. The ensemble stage 09 "
+                        "resolved for each route is reapplied unchanged to every "
+                        "reference case, so the comparison isolates the Ta/e "
+                        "substitution instead of also varying insulation.")
     p.add_argument("--ta-min", type=float, default=31.0)
     p.add_argument("--ta-max", type=float, default=35.0)
     p.add_argument("--ta-levels", type=int, default=5)
@@ -97,6 +103,36 @@ def validate_settings(args: argparse.Namespace) -> tuple[np.ndarray, np.ndarray]
     if args.e_min < 0:
         raise ValueError("Vapor pressure cannot be negative")
     return np.linspace(args.ta_min, args.ta_max, args.ta_levels), np.linspace(args.e_min, args.e_max, args.e_levels)
+
+
+def load_segment_clothing(path: Path, model: JOS3) -> dict[int, list[float]]:
+    """Per-route JOS-3 segment clo, as stage 09 resolved it for the benchmark.
+
+    Without this the reference cases run the subject nude while the stage-09
+    benchmark wears an ensemble, and the resulting insulation offset is reported
+    as if it were the error introduced by uniform meteorology.
+    """
+    import json
+    require_file(path, "stage-09 clothing provenance")
+    record = json.loads(Path(path).read_text())
+    segments = list(record.get("segments", []))
+    body_names = list(getattr(model, "body_names", []))
+    if segments != body_names:
+        raise ValueError(
+            "clothing provenance segment order differs from this JOS-3 build; "
+            "refusing to apply clothing to the wrong body parts")
+    clo_by_route: dict[int, list[float]] = {}
+    for entry in record.get("routes", []):
+        values = [float(v) for v in entry["segment_clo"]]
+        if len(values) != len(body_names):
+            raise ValueError(f"route {entry['route_id']}: expected "
+                             f"{len(body_names)} segment clo values, got {len(values)}")
+        if not all(np.isfinite(values)) or any(v < 0 for v in values):
+            raise ValueError(f"route {entry['route_id']}: invalid segment clo")
+        clo_by_route[int(entry["route_id"])] = values
+    if not clo_by_route:
+        raise ValueError(f"no route clothing records in {path}")
+    return clo_by_route
 
 
 def resolve_subject(args: argparse.Namespace) -> dict[str, Any]:
@@ -201,13 +237,19 @@ def vapor_pressure_to_rh_pct(ta_c: float, vapor_pressure_hpa: float) -> float:
     return rh
 
 
-def initialize_jos3_model(subject: dict[str, Any], activity: float) -> tuple[JOS3, np.ndarray]:
+def initialize_jos3_model(subject: dict[str, Any], activity: float,
+                          segment_clo: list[float] | None = None
+                          ) -> tuple[JOS3, np.ndarray]:
     """Create fresh production-equivalent JOS-3 state and normalized BSA weights."""
     model = JOS3(height=subject["height"], weight=subject["weight"], age=subject["age"],
                  sex=subject["sex"], fat=subject["fat"], ci=subject["ci"])
     if subject["setpoint_shift_c"]:
         model.cr_set_point = model.cr_set_point + subject["setpoint_shift_c"]
     model.par = activity
+    if segment_clo is None:
+        raise ValueError("segment clothing is required: a nude reference subject "
+                         "cannot be differenced against a clothed benchmark")
+    model.clo = list(segment_clo)
     weights = np.asarray(model.bsa, float)
     if not np.isfinite(weights).all() or weights.sum() <= 0:
         raise ValueError("JOS-3 returned invalid BSA weights")
@@ -217,11 +259,15 @@ def initialize_jos3_model(subject: dict[str, Any], activity: float) -> tuple[JOS
 def simulate_uniform_reference_case(routes: list[PreparedRoute], mrt_matrix: np.ndarray,
                                     time_hours: np.ndarray, weather: WeatherProvider,
                                     subject: dict[str, Any], args: argparse.Namespace,
-                                    ta_ref_c: float, e_ref_hpa: float) -> list[dict[str, Any]]:
+                                    ta_ref_c: float, e_ref_hpa: float,
+                                    clo_by_route: dict[int, list[float]]) -> list[dict[str, Any]]:
     """Run one fresh JOS-3 model per route with constant Ta/RH and resolved MRT/wind."""
     rh = vapor_pressure_to_rh_pct(ta_ref_c, e_ref_hpa); rows = []
     for route in routes:
-        model, weights = initialize_jos3_model(subject, args.activity_par)
+        if route.route_id not in clo_by_route:
+            raise KeyError(f"no stage-09 clothing record for route {route.route_id}")
+        model, weights = initialize_jos3_model(subject, args.activity_par,
+                                              clo_by_route[route.route_id])
         def core() -> float:
             value = float(np.sum(np.asarray(model.t_core)*weights))
             if not np.isfinite(value):
@@ -315,13 +361,13 @@ def calculate_pairwise_metrics(summary: dict[str, Any], benchmark: pd.DataFrame,
     return rows
 
 
-def run_factorial_analysis(routes, matrix, hours, weather, subject, args, ta_values, e_values, benchmark):
+def run_factorial_analysis(routes, matrix, hours, weather, subject, args, ta_values, e_values, benchmark, clo_by_route):
     """Run every case/route with fresh state and return detailed metrics."""
     all_rows=[]; cases=[]; pairs=[]; combinations=list(itertools.product(ta_values, e_values))
     for number,(ta,e) in enumerate(combinations, 1):
         case_id=f"CASE_{number:03d}"; rh=vapor_pressure_to_rh_pct(ta,e)
         print(f"Case {number}/{len(combinations)}: Ta={ta:.2f} C, e={e:.2f} hPa, RH={rh:.2f}%")
-        reference=pd.DataFrame(simulate_uniform_reference_case(routes,matrix,hours,weather,subject,args,float(ta),float(e)))
+        reference=pd.DataFrame(simulate_uniform_reference_case(routes,matrix,hours,weather,subject,args,float(ta),float(e),clo_by_route))
         for row in reference.itertuples(): print(f"  Route {row.route_id}: final core rise {row.reference_final_tcore_rise_c:+.6f} C")
         summary, annotated=calculate_ranking_metrics(case_id,float(ta),float(e),rh,benchmark,reference,args.departure_hour)
         all_rows.append(annotated); cases.append(summary); pairs.extend(calculate_pairwise_metrics(summary,benchmark,reference))
@@ -520,8 +566,16 @@ def main() -> None:
         wind=np.asarray(weather.wind_ms(route.arrival_hour%24),float)
         if not np.isfinite(wind).all(): raise ValueError(f"Non-finite resolved wind for route {route.route_id}")
     subject=resolve_subject(args); out=Path(args.output_dir); out.mkdir(parents=True,exist_ok=True); ncases=len(ta_values)*len(e_values)
+    probe,_=initialize_jos3_model(subject,args.activity_par,[0.0]*17)
+    clo_by_route=load_segment_clothing(Path(args.clothing_provenance),probe)
+    missing=[r.route_id for r in routes if r.route_id not in clo_by_route]
+    if missing: raise KeyError(f"no stage-09 clothing record for routes {missing}")
+    whole_body={rid:float(np.average(v,weights=np.asarray(probe.bsa,float)))
+                for rid,v in clo_by_route.items()}
     print("Uniform-reference JOS-3 factorial analysis"); print(f"  Routes: {len(routes)}"); print(f"  Ta levels: {len(ta_values)}"); print(f"  Vapor-pressure levels: {len(e_values)}"); print(f"  Reference cases: {ncases}"); print(f"  Total JOS-3 simulations: {ncases*len(routes)}"); print("  Uniform Ta/e; resolved MRT and wind retained")
-    results,cases,pairs=run_factorial_analysis(routes,matrix,hours,weather,subject,args,ta_values,e_values,benchmark)
+    print(f"  Clothing (from stage 09, held fixed): "
+          + ", ".join(f"route {r}={whole_body[r]:.3f} clo" for r in sorted(whole_body)))
+    results,cases,pairs=run_factorial_analysis(routes,matrix,hours,weather,subject,args,ta_values,e_values,benchmark,clo_by_route)
     route_summary=calculate_route_errors(results); slopes=calculate_sensitivity_slopes(results); overall=build_overall_summary(results,cases,pairs)
     paths=save_csv_outputs(out,results,cases,route_summary,pairs,overall,slopes)
     paths+=save_surface_figures(results,out)+save_ranking_figures(cases,out)+save_prediction_envelope(results,out)+save_benchmark_scatter(results,out)+save_sensitivity_plot(slopes,out)
