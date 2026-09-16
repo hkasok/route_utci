@@ -161,6 +161,58 @@ def globe_flux_budget(points: pd.DataFrame) -> dict:
     return out
 
 
+def surface_temperature_budget(points: pd.DataFrame) -> dict:
+    """Ground surface temperature inverted from the two longwave channels.
+
+    L_up = eps*sigma*Ts^4 + (1 - eps)*L_down, so the upwelling channel gives the
+    surface temperature each side implies once the reflected part is removed.
+    Reporting day and night separately separates a mean offset from a
+    diurnal-amplitude error: a surface whose thermal admittance is too low runs
+    hot by day AND cold by night, which a single daytime bias cannot reveal.
+    """
+    sigma, eps = 5.670374419e-8, 0.95
+
+    def ts(l_up, l_down):
+        return ((l_up - (1.0 - eps) * l_down) / (eps * sigma)) ** 0.25 - 273.15
+
+    out = {}
+    for period in ("day", "night"):
+        s = points[points["period"] == period].dropna(
+            subset=["measured_lwout_wm2", "sensor_longwave_up_Wm2",
+                    "measured_lwin_wm2", "sensor_longwave_down_Wm2"])
+        if len(s) < 3:
+            continue
+        out[period] = {
+            "n": int(len(s)),
+            "measured_surface_C": float(ts(s["measured_lwout_wm2"].mean(),
+                                           s["measured_lwin_wm2"].mean())),
+            "model_surface_C": float(ts(s["sensor_longwave_up_Wm2"].mean(),
+                                        s["sensor_longwave_down_Wm2"].mean())),
+            "measured_sky_C": float((s["measured_lwin_wm2"].mean() / sigma) ** 0.25
+                                    - 273.15),
+            "model_sky_C": float((s["sensor_longwave_down_Wm2"].mean() / sigma) ** 0.25
+                                 - 273.15),
+        }
+        out[period]["surface_bias_K"] = (out[period]["model_surface_C"]
+                                         - out[period]["measured_surface_C"])
+    if "day" in out and "night" in out:
+        ma = out["day"]["measured_surface_C"] - out["night"]["measured_surface_C"]
+        da = out["day"]["model_surface_C"] - out["night"]["model_surface_C"]
+        out["amplitude"] = {
+            "measured_K": float(ma), "model_K": float(da),
+            "excess_fraction": float(da / ma - 1.0),
+            # Surface amplitude under periodic forcing scales as 1/mu with
+            # mu = sqrt(k*rho*c); this is the admittance factor that would close it.
+            "admittance_factor_needed": float(da / ma),
+            "volumetric_factor_needed": float((da / ma) ** 2),
+            "mean_offset_K": float((out["day"]["surface_bias_K"]
+                                    + out["night"]["surface_bias_K"]) / 2.0),
+            "amplitude_bias_K": float((out["day"]["surface_bias_K"]
+                                       - out["night"]["surface_bias_K"]) / 2.0),
+        }
+    return out
+
+
 def _square(ax, lo, hi, xlabel, ylabel, title):
     ax.plot([lo, hi], [lo, hi], "k--", lw=0.9, zorder=1, label="1:1")
     ax.set_xlim(lo, hi)
@@ -379,6 +431,7 @@ def main() -> None:
     radio = figure_radiometer(points, out)
     shadow = shadow_registration(points, out)
     budget = globe_flux_budget(points)
+    surface = surface_temperature_budget(points)
     spin = points[~points["globe_spinup_affected"].astype(bool)] \
         if "globe_spinup_affected" in points else points
     within_r = {p: within_case_r(spin[spin["period"] == p],
@@ -416,8 +469,22 @@ def main() -> None:
               f"excess {b['excess_Wm2']:+6.1f} W/m2  -> "
               f"dTg {b['implied_bias_K']:+.2f} K (actual {b['actual_bias_K']:+.2f} K)")
 
+    if "amplitude" in surface:
+        a = surface["amplitude"]
+        print("\nSURFACE TEMPERATURE (inverted from the longwave channels)")
+        for period in ("day", "night"):
+            b = surface[period]
+            print(f"  {period:5s} measured {b['measured_surface_C']:6.2f}  "
+                  f"model {b['model_surface_C']:6.2f}  bias {b['surface_bias_K']:+.2f} K")
+        print(f"  amplitude measured {a['measured_K']:.2f} K  model {a['model_K']:.2f} K "
+              f"({a['excess_fraction']:+.0%})")
+        print(f"  mean offset {a['mean_offset_K']:+.2f} K, amplitude error "
+              f"{a['amplitude_bias_K']:+.2f} K -> admittance factor needed "
+              f"{a['admittance_factor_needed']:.2f}")
+
     summary = {"n_points": int(len(points)), "globe": globe, "shadow": shadow,
                "globe_flux_budget": budget, "globe_within_case_r": within_r,
+               "surface_temperature": surface,
                "radiometer": {k: v for k, v in radio.items()},
                "date_aligned": int(aligned.sum()),
                "date_mismatched": int((~aligned).sum())}

@@ -140,6 +140,11 @@ class MeasuredRoute:
     measurement_csv: str
     mrt_dir: str
     mrt_snap_max_m: float
+    # JOS-3 segment clothing, as stage 09 resolved it for this walk. It cancels
+    # in the benchmark-minus-uniform difference but sets the absolute level of
+    # DeltaTcore, which is reported, so it is carried explicitly rather than
+    # left at the library default of nude.
+    segment_clo: list[float] = field(default_factory=list)
     benchmark: dict = field(default_factory=dict)
 
     @property
@@ -294,12 +299,36 @@ def load_measured_route(entry: dict, position: int) -> MeasuredRoute:
         mean_walking_speed_ms=distance_m / (duration_min * 60.0),
         timing_source=timing_source,
         measurement_csv=str(entry["measurement_csv"]), mrt_dir=str(mrt_dir),
-        mrt_snap_max_m=float(np.max(snap_distance)))
+        mrt_snap_max_m=float(np.max(snap_distance)),
+        segment_clo=stage09_segment_clo(Path(mrt_dir).parent.parent, case_name,
+                                        int(route["route_id"])))
 
 
 # ---------------------------------------------------------------------------
 # JOS-3 engine (stage-09 conventions, shared by benchmark and uniform cases)
 # ---------------------------------------------------------------------------
+def stage09_segment_clo(run_output_root: Path, case_name: str,
+                        route_id: int) -> list[float]:
+    """Segment clothing stage 09 resolved for this walk.
+
+    Clothing cancels in the benchmark-minus-uniform difference this study
+    reports, but it sets the absolute level of DeltaTcore, which is also
+    reported and compared against a 0.10 degC criterion, so the walk is
+    dressed as stage 09 dressed it rather than left nude.
+    """
+    path = (Path(run_output_root) / case_name / "viz" / "route_jos3"
+            / "clothing_provenance.json")
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"{case_name}: stage-09 clothing provenance not found at {path}; "
+            "run stage 09 for this case first")
+    record = json.loads(path.read_text())
+    for entry in record.get("routes", []):
+        if int(entry.get("route_id", -1)) == int(route_id):
+            return [float(v) for v in entry["segment_clo"]]
+    return []
+
+
 def run_jos3_walk(route: MeasuredRoute, ta_series: np.ndarray,
                   rh_series: np.ndarray, subject: dict,
                   args: argparse.Namespace, context: str) -> dict:
@@ -320,7 +349,8 @@ def run_jos3_walk(route: MeasuredRoute, ta_series: np.ndarray,
         raise ValueError(f"{context}: Ta/RH series length mismatch")
     check_jos3_inputs(ta_series, mrt, wind, rh_series, context)
 
-    model, weights = initialize_jos3_model(subject, args.activity_par)
+    model, weights = initialize_jos3_model(subject, args.activity_par,
+                                           route.segment_clo or None)
 
     def core_c() -> float:
         value = float(np.sum(np.asarray(model.t_core) * weights))

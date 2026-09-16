@@ -173,6 +173,20 @@ _GROUND: tuple[Material, ...] = (
        albedo_range=(0.10, 0.30), emissivity_range=(0.90, 0.97),
        source_reference="Oke, Boundary Layer Climates, mixed urban ground",
        notes="Explicit named fallback for terrain no rule could classify."),
+    # Portuguese calcada: hand-set limestone setts, often with basalt inlay,
+    # bedded on sand over a compacted base. It is the dominant pedestrian
+    # surface in historic Lisbon, and differs from the concrete/asphalt classes
+    # that OSM defaults assign to a footway in two ways that matter thermally:
+    # a much higher albedo (the limestone is near-white) and a markedly higher
+    # thermal admittance sqrt(k*rho*c) ~ 2200 against ~1250-1680, which damps
+    # the diurnal surface-temperature swing.
+    _m("calcada_limestone", CATEGORY_GROUND, 0.38, 0.94, 2.10, 2600.0, 900.0,
+       0.50, 8, roughness_m=0.006, evaporative_efficiency=0.0,
+       albedo_range=(0.30, 0.50), emissivity_range=(0.90, 0.96),
+       source_reference="Limestone thermal properties, Clauser & Huenges (1995); "
+                        "albedo of light natural stone paving, Oke (1987)",
+       notes="Portuguese calcada; light limestone setts. Use as the regional "
+             "pedestrian-surface default for Lisbon rather than concrete."),
     _m("asphalt_road", CATEGORY_GROUND, 0.12, 0.95, 0.75, 2300.0, 920.0,
        0.40, 8, roughness_m=0.002,
        albedo_range=(0.05, 0.20), emissivity_range=(0.90, 0.98),
