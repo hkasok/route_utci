@@ -13,8 +13,12 @@ WHAT IT DOES
   * Step 1 selects an input case and its corresponding output case
   * One button per executable pipeline step (2-6) to run ONLY that step
   * A second button per step to run that step AND everything after it
+  * A "Run all cases" control with a from-step dropdown: every input case
+    (input/<case> -> run_output/<case>) is run sequentially from the chosen
+    step to the end; a failing case is reported and the rest continue
   * Live logs and per-step progress measured from real workflow checkpoints
-    and numerical loop counters, with a Stop button
+    and numerical loop counters, with a Stop button (also cancels the
+    remaining all-cases queue)
 
 "Run only this step" works by calling `start.sh N` with SKIP_<NAME>=1 set
 for every stage after N -- start.sh itself always runs N..end, so the skips
@@ -44,16 +48,118 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 # step number -> (label, [SKIP_ flags that belong to this step])
 STEPS = [
     (2, "OSM data + ground materials", ["OSM", "OSM_MATERIALS"]),
-    (3, "Facet-thermal MRT (prep → 05a → 05b → MRT)",
+    (3, "Pedestrian-level potential-flow wind (05e)", ["PEDESTRIAN_WIND"]),
+    (4, "Facet-thermal MRT (prep → 05a → 05b → MRT)",
      ["05", "05A", "05B", "05FACET"]),
-    (4, "Optional full-surface radiation + 3-D Ta/velocity → recoupled MRT",
-     ["URBAN_RADIATION", "MICROCLIMATE", "MICROCLIMATE_05B",
-      "MICROCLIMATE_05FACET"]),
     (5, "Visualizations (06, 07)", ["06", "07"]),
     (6, "Route stress (UTCI 08 + JOS-3 09 + compare 10)",
      ["08", "09", "10"]),
 ]
 LAST_STEP = STEPS[-1][0]
+
+# ---------------------------------------------------------------------------
+# DEVELOPER / POST-PROCESSING TOOLS  --  deliberately separate from the
+# numbered pipeline.
+#
+# These are development-time utilities: validation against field measurements,
+# case-preparation preprocessing, and cross-model comparison. They are NOT
+# part of the simulation a normal user runs, and this whole section is
+# expected to be removed or folded into the product later depending on how
+# TREC-Route is positioned. Keeping it fenced here means the numbered steps
+# stay the supported workflow.
+#
+# Each entry builds an argv list from the selected case. Only keys in this
+# registry can ever be launched -- the browser sends a key, never a command.
+def _dev_validation_radiometer(ctx):
+    return ["python3", "compare_mrt_lisbon_data.py",
+            "--aggregate-output-dir",
+            os.path.join("run_output", "lisbon_sensor_validation")]
+
+
+def _dev_validation_radiometer_with_mrt(ctx):
+    return _dev_validation_radiometer(ctx) + ["--include-globe-mrt-comparison"]
+
+
+def _dev_compare_solweig(ctx):
+    return ["python3", "compare_mrt_solweig.py",
+            "--ours", os.path.join(ctx["output_dir"], "viz", "route_utci",
+                                   "routes_points.csv"),
+            "--output-dir", os.path.join(ctx["output_dir"], "viz",
+                                         "compare_solweig")]
+
+
+def _dev_weather_from_sensors(ctx):
+    return ["python3", "weather_from_sensors.py", "--case", ctx["input_dir"]]
+
+
+def _dev_weather_from_sensors_preview(ctx):
+    return _dev_weather_from_sensors(ctx) + ["--no-activate"]
+
+
+def _dev_validate_routes(ctx):
+    return ["python3", "generate_route.py", "--validate-only",
+            "--output-dir", os.path.join(ctx["input_dir"], "routes")]
+
+
+def _dev_surface_selected(ctx):
+    return ["python3", "surface_selected.py",
+            "--output-dir", os.path.join(ctx["output_dir"], "surface_selected")]
+
+
+def _dev_generate_book(ctx):
+    return ["python3", "generate_book.py",
+            "--case", ctx["input_dir"],
+            "--output", os.path.join(ctx["output_dir"],
+                                     "trec_route_physics_book.pdf")]
+
+
+# key -> (label, description, argv builder)
+DEV_TOOLS = {
+    "validation_radiometer": (
+        "Field validation: radiometer + black globe",
+        "Like-for-like comparison against the Lisbon mobile measurements (all "
+        "discovered cases): the emulated four-component radiometer channels, "
+        "and the emulated Campbell BLACKGLOBE-L against the measured globe.",
+        _dev_validation_radiometer),
+    "validation_radiometer_full": (
+        "Field validation: + globe-derived MRT context",
+        "Same, plus the opt-in globe-derived MRT comparison. The globe sensor "
+        "measures a different quantity than a standing-cylinder MRT, so treat "
+        "that panel as context, not a validation claim.",
+        _dev_validation_radiometer_with_mrt),
+    "compare_solweig": (
+        "Cross-model: compare MRT with SOLWEIG",
+        "Compare this case's per-route MRT/UTCI against SOLWEIG output.",
+        _dev_compare_solweig),
+    "weather_from_sensors_preview": (
+        "Forcing: build weather + solar from sensors (preview)",
+        "NEEDS A MEASUREMENT CAMPAIGN (lisbon1-6). Fits this case's weather "
+        "and time-dependent solar forcing from its mobile measurements and "
+        "writes the files, WITHOUT repointing case.json. Inspect the "
+        "provenance JSON first.",
+        _dev_weather_from_sensors_preview),
+    "weather_from_sensors": (
+        "Forcing: build weather + solar from sensors (activate)",
+        "NEEDS A MEASUREMENT CAMPAIGN (lisbon1-6). Same, and repoints "
+        "case.json at the generated weather and radiation forcing. Re-run the "
+        "pipeline from step 4 afterwards -- the surface spin-up depends on "
+        "the full-day weather.",
+        _dev_weather_from_sensors),
+    "validate_routes": (
+        "Preprocessing: validate case routes",
+        "Check the selected case's route CSV/JSON contract without changing "
+        "any route.",
+        _dev_validate_routes),
+    "surface_selected": (
+        "Diagnostics: export route-visible surfaces",
+        "Write the STL surfaces a route can actually see, for inspection in "
+        "an external viewer.",
+        _dev_surface_selected),
+    "generate_book": (
+        "Docs: build the physics PDF",
+        "Render the implementation and physics documentation to PDF.",
+        _dev_generate_book),
+}
 PROGRESS_RE = re.compile(
     r"^\[trec_progress\]\s+step=(\d+)\s+percent=([0-9.]+)\s+"
     r"state=(\w+)\s+message=(.*)$")
@@ -77,6 +183,7 @@ class Runner:
         self.progress = self._empty_progress()
         self.route_count = 0
         self.route_phase = ""
+        self.batch_active = False   # a sequential all-cases run is in flight
 
     @staticmethod
     def _empty_progress():
@@ -98,6 +205,8 @@ class Runner:
                     self.current, progress)
 
     def is_running(self):
+        if self.batch_active:
+            return True
         return self.proc is not None and self.proc.poll() is None
 
     # -- run -------------------------------------------------------------
@@ -135,18 +244,24 @@ class Runner:
         os.makedirs(output_dir, exist_ok=True)
         return input_name, output_name, input_dir, output_dir
 
-    def start(self, step, only, extra_env, input_case="MMC", output_case="MMC"):
-        if self.is_running():
-            return False, "A run is already in progress."
-        if step not in {number for number, _label, _flags in STEPS}:
-            return False, f"Invalid pipeline step: {step}"
+    # User overrides may change model settings, but case-path settings are
+    # controlled exclusively by Step 1 so outputs cannot leak to another case.
+    CASE_PATH_OVERRIDES = {
+        "CASE_CONFIG", "ROUTES_DIR", "WEATHER_CSV", "GEOM_DIR",
+        "BUILDINGS_STL", "VEGETATION_STL", "GROUND_STL", "OUT_ROOT",
+        "OSM_DIR", "OSM_COMPLETE_CACHE", "OSM_GROUND_FEATURES",
+        "OSM_GROUND_CONFIG", "OSM_GROUND_MATERIAL_DIR",
+        "RADIANT_FLUX_CONFIG", "MRT_DIR", "THERMAL_DIR",
+        "MRT_FACET_DIR", "MICROCLIMATE_DIR", "URBAN_RADIATION_DIR",
+        "URBAN_RADIATION_CONFIG", "PEDESTRIAN_WIND_DIR",
+        "VIS_DIR", "SVF_CACHE_DIR",
+        "SOLWEIG_COMPARE_OUTPUT_DIR", "GRAPHML", "POLYLINES",
+        "ROUTE_POLYLINES",
+    }
 
-        try:
-            input_name, output_name, input_dir, output_dir = self._resolve_cases(
-                input_case, output_case)
-        except (OSError, ValueError) as exc:
-            return False, str(exc)
-
+    def _build_env(self, step, only, extra_env, input_name, input_dir,
+                   output_dir):
+        """Child environment for one case run plus the log annotations."""
         env = os.environ.copy()
         skips = []
         if only:
@@ -156,32 +271,18 @@ class Runner:
                     for f in flags:
                         env[f"SKIP_{f}"] = "1"
                         skips.append(f"SKIP_{f}=1")
-
-        # User overrides may change model settings, but case-path settings are
-        # controlled exclusively by Step 1 so outputs cannot leak to another case.
-        case_path_overrides = {
-            "CASE_CONFIG", "ROUTES_DIR", "WEATHER_CSV", "GEOM_DIR",
-            "BUILDINGS_STL", "VEGETATION_STL", "GROUND_STL", "OUT_ROOT",
-            "OSM_DIR", "OSM_COMPLETE_CACHE", "OSM_GROUND_FEATURES",
-            "OSM_GROUND_CONFIG", "OSM_GROUND_MATERIAL_DIR",
-            "RADIANT_FLUX_CONFIG", "MRT_DIR", "THERMAL_DIR",
-            "MRT_FACET_DIR", "MICROCLIMATE_DIR", "URBAN_RADIATION_DIR",
-            "URBAN_RADIATION_CONFIG", "VIS_DIR", "SVF_CACHE_DIR",
-            "SOLWEIG_COMPARE_OUTPUT_DIR", "GRAPHML", "POLYLINES",
-            "ROUTE_POLYLINES",
-        }
         applied, ignored = [], []
         for token in shlex.split(extra_env or ""):
             if "=" in token:
                 k, v = token.split("=", 1)
-                if k in case_path_overrides:
+                if k in self.CASE_PATH_OVERRIDES:
                     ignored.append(k)
                 else:
                     env[k] = v
                     applied.append(f"{k}={v}")
-        # These two settings belong to the UI transport and cannot be disabled
+        # These settings belong to the UI transport and cannot be disabled
         # by an optional user override.
-        for key in case_path_overrides:
+        for key in self.CASE_PATH_OVERRIDES:
             env.pop(key, None)
         env["PYTHONUNBUFFERED"] = "1"
         env["TREC_PROGRESS"] = "1"
@@ -189,18 +290,14 @@ class Runner:
         env["INPUT_CASE_DIR"] = input_dir
         env["OUTPUT_CASE_DIR"] = output_dir
         env["OUT_ROOT"] = output_dir
-        # Selecting the visibly optional step is an explicit request to run
-        # it. Starting an earlier step with "This + after" leaves the
-        # enhancement off unless WITH_MICROCLIMATE=1 was entered manually.
-        if step == 4:
-            env["WITH_MICROCLIMATE"] = "1"
+        return env, applied, ignored, skips
 
-        mode = "only this step" if only else "this step and everything after"
+    def _reset_progress(self, step, only, current):
+        """Arm the per-step bars for one (possibly repeated) case run."""
         planned = {step} if only else set(range(step, LAST_STEP + 1))
         with self.lock:
-            self.lines = []
             self.status = "running"
-            self.current = f"Step {step} ({mode})"
+            self.current = current
             self.active_step = step
             self.planned_steps = planned
             self.progress = self._empty_progress()
@@ -213,6 +310,33 @@ class Runner:
             }
             self.route_count = 0
             self.route_phase = ""
+
+    def _spawn(self, step, env):
+        return subprocess.Popen(
+            ["bash", "start.sh", str(step)],
+            cwd=self.workdir, env=env,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1, start_new_session=True,
+        )
+
+    def start(self, step, only, extra_env, input_case="MMC", output_case="MMC"):
+        if self.is_running():
+            return False, "A run is already in progress."
+        if step not in {number for number, _label, _flags in STEPS}:
+            return False, f"Invalid pipeline step: {step}"
+
+        try:
+            input_name, output_name, input_dir, output_dir = self._resolve_cases(
+                input_case, output_case)
+        except (OSError, ValueError) as exc:
+            return False, str(exc)
+
+        env, applied, ignored, skips = self._build_env(
+            step, only, extra_env, input_name, input_dir, output_dir)
+        mode = "only this step" if only else "this step and everything after"
+        with self.lock:
+            self.lines = []
+        self._reset_progress(step, only, f"Step {step} ({mode})")
         self._append(f"$ cd {self.workdir}")
         self._append(f"$ input case:  {input_name} ({input_dir})")
         self._append(f"$ output case: {output_name} ({output_dir})")
@@ -225,12 +349,7 @@ class Runner:
         self._append(f"$ bash start.sh {step}\n")
 
         try:
-            self.proc = subprocess.Popen(
-                ["bash", "start.sh", str(step)],
-                cwd=self.workdir, env=env,
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, bufsize=1, start_new_session=True,
-            )
+            self.proc = self._spawn(step, env)
         except Exception as exc:                      # e.g. start.sh missing
             with self.lock:
                 self.status = "failed"
@@ -241,6 +360,178 @@ class Runner:
 
         threading.Thread(target=self._pump, daemon=True).start()
         return True, "started"
+
+    def start_tool(self, tool_key, extra_env, input_case="MMC",
+                   output_case="MMC"):
+        """Run one registered developer/post-processing tool.
+
+        The browser sends only a REGISTRY KEY; the command line is built here,
+        so the UI can never be used to execute an arbitrary command.
+        """
+        if self.is_running():
+            return False, "A run is already in progress."
+        if tool_key not in DEV_TOOLS:
+            return False, f"Unknown developer tool: {tool_key}"
+        try:
+            input_name, output_name, input_dir, output_dir = self._resolve_cases(
+                input_case, output_case)
+        except (OSError, ValueError) as exc:
+            return False, str(exc)
+
+        label, _description, builder = DEV_TOOLS[tool_key]
+        command = builder({"input_dir": input_dir, "output_dir": output_dir,
+                           "input_case": input_name, "output_case": output_name})
+        env, applied, ignored, _skips = self._build_env(
+            LAST_STEP, True, extra_env, input_name, input_dir, output_dir)
+        env.pop("TREC_PROGRESS", None)   # tools do not emit step progress
+
+        with self.lock:
+            self.lines = []
+            self.status = "running"
+            self.current = f"Developer tool: {label}"
+            self.active_step = None
+            self.planned_steps = set()
+            self.progress = self._empty_progress()
+        self._append(f"$ cd {self.workdir}")
+        self._append(f"$ developer tool: {label}")
+        self._append(f"$ input case:  {input_name} ({input_dir})")
+        self._append(f"$ output case: {output_name} ({output_dir})")
+        if applied:
+            self._append(f"$ env {' '.join(applied)}")
+        if ignored:
+            self._append("$ ignored case-path override(s): " + ", ".join(ignored))
+        self._append("$ " + " ".join(shlex.quote(part) for part in command) + "\n")
+        try:
+            self.proc = subprocess.Popen(
+                command, cwd=self.workdir, env=env,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1, start_new_session=True)
+        except Exception as exc:
+            with self.lock:
+                self.status = "failed"
+            self._append(f"ERROR: could not launch {command[1]}: {exc}")
+            return False, str(exc)
+        threading.Thread(target=self._pump_tool, daemon=True).start()
+        return True, f"started {label}"
+
+    def _pump_tool(self):
+        code = self._pump_stream()
+        with self.lock:
+            if self.status == "stopping":
+                self.status = "stopped"
+                self.lines.append("\n--- stopped by user ---")
+            elif code == 0:
+                self.status = "done"
+                self.lines.append("\n--- developer tool finished successfully ---")
+            else:
+                self.status = "failed"
+                self.lines.append(f"\n--- developer tool exited with code {code} ---")
+
+    def start_all(self, step, extra_env):
+        """Run EVERY input case (input/<case> -> run_output/<case>)
+        sequentially from the chosen step onward."""
+        if self.is_running():
+            return False, "A run is already in progress."
+        if step not in {number for number, _label, _flags in STEPS}:
+            return False, f"Invalid pipeline step: {step}"
+        cases, _outputs = self.available_cases()
+        if not cases:
+            return False, "No input cases with a case.json were found."
+        with self.lock:
+            self.lines = []
+            self.batch_active = True
+        self._reset_progress(
+            step, False, f"All cases from step {step}: starting {cases[0]}")
+        self._append(f"$ cd {self.workdir}")
+        self._append(f"$ run ALL cases from step {step}: {', '.join(cases)}")
+        threading.Thread(target=self._run_batch, daemon=True,
+                         args=(step, extra_env, cases)).start()
+        return True, f"started {len(cases)} case(s) from step {step}"
+
+    def _run_batch(self, step, extra_env, cases):
+        total = len(cases)
+        failures = []
+        completed = 0
+        for index, name in enumerate(cases, 1):
+            with self.lock:
+                if self.status == "stopping":
+                    break
+            try:
+                input_name, output_name, input_dir, output_dir = (
+                    self._resolve_cases(name, name))
+            except (OSError, ValueError) as exc:
+                failures.append((name, str(exc)))
+                self._append(f"\nERROR: skipping case {name}: {exc}")
+                continue
+            env, applied, ignored, _skips = self._build_env(
+                step, False, extra_env, input_name, input_dir, output_dir)
+            self._reset_progress(
+                step, False,
+                f"Case {index}/{total} ({name}) -- step {step} onward")
+            self._append(f"\n===== CASE {index}/{total}: {name} "
+                         f"(input/{name} -> run_output/{name}) =====")
+            if applied:
+                self._append(f"$ env {' '.join(applied)}")
+            if ignored:
+                self._append("$ ignored case-path override(s): "
+                             + ", ".join(ignored))
+            self._append(f"$ bash start.sh {step}\n")
+            try:
+                self.proc = self._spawn(step, env)
+            except Exception as exc:
+                failures.append((name, str(exc)))
+                self._append(f"ERROR: could not launch start.sh: {exc}")
+                continue
+            code = self._pump_stream()
+            with self.lock:
+                stopping = self.status == "stopping"
+            if stopping:
+                break
+            if code == 0:
+                completed += 1
+                self._finish_progress(success=True)
+                self._append(f"--- case {name} finished successfully ---")
+            else:
+                failures.append((name, f"exit code {code}"))
+                self._finish_progress(success=False, code=code)
+                self._append(f"--- case {name} exited with code {code}; "
+                             "continuing with remaining cases ---")
+        with self.lock:
+            self.batch_active = False
+            if self.status == "stopping":
+                self.status = "stopped"
+                self.lines.append("\n--- all-cases run stopped by user ---")
+                if self.active_step in self.planned_steps:
+                    self.progress[self.active_step]["state"] = "stopped"
+                    self.progress[self.active_step]["message"] = "Stopped by user"
+            elif failures:
+                self.status = "failed"
+                summary = "; ".join(f"{n} ({why})" for n, why in failures)
+                self.current = (f"All-cases run: {completed}/{total} succeeded, "
+                                f"{len(failures)} failed")
+                self.lines.append(f"\n--- all-cases run finished: {completed}/"
+                                  f"{total} succeeded; FAILED: {summary} ---")
+            else:
+                self.status = "done"
+                self.current = f"All {total} cases completed from step {step}"
+                self.lines.append(f"\n--- all {total} cases finished "
+                                  "successfully ---")
+
+    def _finish_progress(self, success, code=None):
+        """Close out the per-step bars for one case inside a batch."""
+        with self.lock:
+            for number in self.planned_steps:
+                item = self.progress[number]
+                if success:
+                    if item["state"] == "queued":
+                        item.update(percent=100.0, state="skipped",
+                                    message="Skipped by configuration")
+                    elif item["state"] == "running":
+                        item.update(percent=100.0, state="done",
+                                    message="Complete")
+                elif number == self.active_step:
+                    item.update(state="failed",
+                                message=f"Failed (exit {code})")
 
     def _update_progress(self, step, percent=None, state=None, message=None,
                          allow_decrease=False):
@@ -296,8 +587,31 @@ class Runner:
                     step, 55 + 40 * fraction, "running", nested.group(2).strip())
                 return True
 
-        # The merged MRT step exposes counters from all four numerical phases.
+        # The pedestrian potential-flow solve exposes its geometry-sampling
+        # batches plus explicit phase markers.
         if step == 3:
+            match = re.search(r"cut-cell occupancy batch\s+(\d+)/(\d+)", line)
+            if match and int(match.group(2)):
+                fraction = int(match.group(1)) / int(match.group(2))
+                self._update_progress(
+                    step, 5 + 55 * fraction, "running",
+                    f"Pedestrian-level geometry sampling {int(100 * fraction)}%")
+            phase_markers = (
+                ("Assembling potential-flow system", 65,
+                 "Assembling potential-flow system"),
+                ("Solving potential-flow Laplace system", 70,
+                 "Solving the Laplace system"),
+                ("Potential-flow solve complete", 85,
+                 "Potential-flow solve complete"),
+                ("Writing pedestrian wind outputs", 92,
+                 "Writing pedestrian wind outputs"),
+            )
+            for token, percent, message in phase_markers:
+                if token in line:
+                    self._update_progress(step, percent, "running", message)
+
+        # The merged MRT step exposes counters from all four numerical phases.
+        if step == 4:
             with self.lock:
                 current_percent = float(self.progress[step]["percent"])
             match = re.search(r"SVF batch\s+(\d+)/(\d+)", line)
@@ -312,7 +626,8 @@ class Runner:
                         step, 69 + 8 * fraction, "running",
                         f"Final MRT: rebuilding sky view {int(100 * fraction)}%")
             match = re.search(r"\bbatch\s+(\d+)/(\d+)", line)
-            if match and int(match.group(2)) and 20.0 <= current_percent < 45.0:
+            if match and int(match.group(2)) and 20.0 <= current_percent < 45.0 \
+                    and "occupancy" not in line:
                 fraction = int(match.group(1)) / int(match.group(2))
                 self._update_progress(
                     step, 20 + 23 * fraction, "running",
@@ -330,41 +645,6 @@ class Runner:
                     self._update_progress(
                         step, 70 + 25 * fraction, "running",
                         f"Facet-thermal radiation {int(100 * fraction)}%")
-
-        if step == 4:
-            phase_markers = (
-                ("Partitioning terrain triangles", 4, "Aligning triangles to material boundaries"),
-                ("Precomputing full-domain facet sky-view", 8, "Full-surface sky-view ray tracing"),
-                ("Precomputing ray-visible route-zone", 12, "Route-zone longwave view factors"),
-                ("Reusing exact-match full-surface", 12, "Reusing full-surface radiation geometry"),
-            )
-            for token, percent, message in phase_markers:
-                if token in line:
-                    self._update_progress(step, percent, "running", message)
-            match = re.search(r"full-surface radiation\s+(\d+)/(\d+)", line)
-            if match and int(match.group(2)):
-                fraction = int(match.group(1)) / int(match.group(2))
-                self._update_progress(
-                    step, 12 + 27 * fraction, "running",
-                    f"Surface radiation/conduction {int(100 * fraction)}%")
-            match = re.search(r"microclimate step\s+(\d+)/(\d+)", line)
-            if match and int(match.group(2)):
-                fraction = int(match.group(1)) / int(match.group(2))
-                self._update_progress(
-                    step, 40 + 31 * fraction, "running",
-                    f"3-D air-field solve {int(100 * fraction)}%")
-            match = re.search(r"\bcycle\s+(\d+)/(\d+)", line)
-            if match and int(match.group(2)):
-                fraction = int(match.group(1)) / int(match.group(2))
-                self._update_progress(
-                    step, 71 + 12 * fraction, "running",
-                    f"Surface recoupling {int(100 * fraction)}%")
-            match = re.search(r"\bstep\s+(\d+)/(\d+)", line)
-            if match and int(match.group(2)) and "microclimate step" not in line:
-                fraction = int(match.group(1)) / int(match.group(2))
-                self._update_progress(
-                    step, 83 + 15 * fraction, "running",
-                    f"MRT regeneration {int(100 * fraction)}%")
 
         if step == 5:
             phase_markers = (
@@ -408,12 +688,16 @@ class Runner:
                         f"JOS-3 routes {int(100 * fraction)}%")
         return False
 
-    def _pump(self):
+    def _pump_stream(self):
+        """Relay one child's stdout into logs/progress; return its exit code."""
         for line in self.proc.stdout:
             clean = line.rstrip("\n")
             if not self._parse_progress(clean):
                 self._append(clean)
-        code = self.proc.wait()
+        return self.proc.wait()
+
+    def _pump(self):
+        code = self._pump_stream()
         with self.lock:
             if self.status == "stopping":
                 self.status = "stopped"
@@ -446,10 +730,13 @@ class Runner:
             if self.active_step in self.planned_steps:
                 self.progress[self.active_step]["state"] = "stopping"
                 self.progress[self.active_step]["message"] = "Stopping"
-        try:
-            os.killpg(os.getpgid(self.proc.pid), signal.SIGTERM)
-        except Exception:
-            self.proc.terminate()
+        # Stopping an all-cases run also cancels the remaining queue: the
+        # batch thread checks the status before and after every case.
+        if self.proc is not None and self.proc.poll() is None:
+            try:
+                os.killpg(os.getpgid(self.proc.pid), signal.SIGTERM)
+            except Exception:
+                self.proc.terminate()
         return True
 
 
@@ -504,6 +791,13 @@ button.stop{border-color:#b91c1c;background:#5b1414}
  #env{width:100%;padding:7px 9px;border-radius:6px;border:1px solid #33465c;
       background:#0e1319;color:#dfe6ee;font:13px ui-monospace,monospace}
  #hint{color:#7d8ea3;font-size:12px;margin-top:5px}
+ #devpanel{max-width:1220px;margin:16px 0 0;padding:10px 14px;border-radius:8px;
+           border:1px dashed #5b4a2a;background:#17140f}
+ #devpanel summary{cursor:pointer;color:#d7b46a;font-weight:600;font-size:13px}
+ .dev-note{color:#7d8ea3;font-size:12px;margin:8px 0 10px;max-width:900px}
+ #tools td{padding:4px 8px 4px 0;vertical-align:middle}
+ #tools td.tl{color:#dfe6ee;width:290px}
+ #tools td.td{color:#7d8ea3;font-size:12px;width:100%}
  #log{margin-top:14px;background:#0b0f14;border:1px solid #263140;border-radius:8px;
       padding:12px;height:52vh;overflow:auto;white-space:pre-wrap;
       font:12.5px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;color:#cbd5e1}
@@ -526,10 +820,27 @@ button.stop{border-color:#b91c1c;background:#5b1414}
   <div id="hint">Left button = run only that step. Right button = that step and everything after. Progress is measured from completed pipeline phases and numerical loop counters.</div>
  </div>
  <table id="steps"></table>
+ <div class="case-panel" id="runallpanel" style="margin-top:14px">
+  <span class="case-title">Run all cases</span>
+  <label>from step <select id="allstep"></select></label>
+  <button class="go" id="runallb" onclick="runAll()">Run all cases</button>
+  <span style="color:#7d8ea3;font-size:12px">Runs every input case
+   (input/&lt;case&gt; → run_output/&lt;case&gt;) one after another, from the
+   chosen step to the end. A failing case is reported and the rest continue.</span>
+ </div>
+ <details id="devpanel">
+  <summary>Developer / post-processing tools (temporary — not part of the numbered pipeline)</summary>
+  <div class="dev-note">Development-time utilities: validation against field
+   measurements, case preprocessing, and cross-model comparison. They run on the
+   case selected above and do not change the pipeline result. This section is
+   expected to be removed or folded into the product later.</div>
+  <table id="tools"></table>
+ </details>
  <div id="log"></div>
 </main>
 <script>
 const STEPS=__STEPS__;
+const TOOLS=__TOOLS__;
 const t=document.getElementById('steps');
 STEPS.forEach(([n,label])=>{
   const tr=document.createElement('tr');
@@ -542,6 +853,13 @@ STEPS.forEach(([n,label])=>{
       <div class="progress-track"><div class="progress-fill"></div></div>
       <span class="progress-text">not run</span></div></td>`;
   t.appendChild(tr);
+});
+const toolTable=document.getElementById('tools');
+TOOLS.forEach(([key,label,description])=>{
+  const tr=document.createElement('tr');
+  tr.innerHTML=`<td class="tl">${label}</td><td class="td">${description}</td>
+    <td><button class="toolb" onclick="runTool('${key}')">Run</button></td>`;
+  toolTable.appendChild(tr);
 });
 let offset=0, busy=false;
 const logEl=document.getElementById('log'), stEl=document.getElementById('status'),
@@ -557,13 +875,43 @@ async function run(step,only){
   if(!result.ok){ logEl.textContent='ERROR: '+result.msg+'\\n'; return; }
   poll();
 }
+async function runAll(){
+  if(busy) return;
+  logEl.textContent=''; offset=0;
+  const response=await fetch('/run_all',{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({step:parseInt(document.getElementById('allstep').value,10),
+      env:document.getElementById('env').value})});
+  const result=await response.json();
+  if(!result.ok){ logEl.textContent='ERROR: '+result.msg+'\\n'; return; }
+  poll();
+}
+async function runTool(key){
+  if(busy) return;
+  logEl.textContent=''; offset=0;
+  const response=await fetch('/run_tool',{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({tool:key,env:document.getElementById('env').value,
+      input_case:document.getElementById('inputcase').value,
+      output_case:document.getElementById('outputcase').value})});
+  const result=await response.json();
+  if(!result.ok){ logEl.textContent='ERROR: '+result.msg+'\\n'; return; }
+  poll();
+}
 async function stop(){ await fetch('/stop',{method:'POST'}); }
 function setBusy(b){
   busy=b; stopB.disabled=!b;
   document.querySelectorAll('#steps button').forEach(x=>x.disabled=b);
+  document.querySelectorAll('#tools button').forEach(x=>x.disabled=b);
   document.getElementById('inputcase').disabled=b;
   document.getElementById('outputcase').disabled=b;
+  document.getElementById('runallb').disabled=b;
+  document.getElementById('allstep').disabled=b;
 }
+(function(){
+  const allstep=document.getElementById('allstep');
+  STEPS.forEach(([n,label])=>allstep.add(new Option(`step ${n} — ${label}`,n)));
+})();
 function updateCasePath(){
   const input=document.getElementById('inputcase').value;
   const output=document.getElementById('outputcase').value;
@@ -635,7 +983,12 @@ def make_handler(runner):
         def do_GET(self):
             if self.path == "/" or self.path.startswith("/index"):
                 steps = json.dumps([[n, html.escape(l)] for n, l, _ in STEPS])
-                self._send(200, PAGE.replace("__STEPS__", steps), "text/html; charset=utf-8")
+                tools = json.dumps([[key, html.escape(label),
+                                     html.escape(description)]
+                                    for key, (label, description, _b)
+                                    in DEV_TOOLS.items()])
+                page = PAGE.replace("__STEPS__", steps).replace("__TOOLS__", tools)
+                self._send(200, page, "text/html; charset=utf-8")
             elif self.path == "/cases":
                 input_cases, output_cases = runner.available_cases()
                 self._send(200, json.dumps({"input_cases": input_cases,
@@ -662,6 +1015,16 @@ def make_handler(runner):
                                        payload.get("env", ""),
                                        payload.get("input_case", "MMC"),
                                        payload.get("output_case", "MMC"))
+                self._send(200, json.dumps({"ok": ok, "msg": msg}))
+            elif self.path == "/run_all":
+                ok, msg = runner.start_all(int(payload.get("step", 2)),
+                                           payload.get("env", ""))
+                self._send(200, json.dumps({"ok": ok, "msg": msg}))
+            elif self.path == "/run_tool":
+                ok, msg = runner.start_tool(str(payload.get("tool", "")),
+                                            payload.get("env", ""),
+                                            payload.get("input_case", "MMC"),
+                                            payload.get("output_case", "MMC"))
                 self._send(200, json.dumps({"ok": ok, "msg": msg}))
             elif self.path == "/stop":
                 self._send(200, json.dumps({"ok": runner.stop()}))

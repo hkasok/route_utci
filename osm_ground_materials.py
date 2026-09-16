@@ -19,6 +19,8 @@ from typing import Any, Iterable
 
 import numpy as np
 from pyproj import CRS
+
+import material_library
 from shapely import area as shapely_area
 from shapely import contains_xy, intersection as shapely_intersection, make_valid
 from shapely import polygons as shapely_polygons
@@ -114,59 +116,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "gravel_parking", "artificial_turf", "sports_surface",
         "playground_surface", "grass_lawn", "bare_ground", "generic_ground",
     ],
-    "materials": {
-        # Assumed, configurable defaults; not site measurements.  C is also
-        # provided explicitly for direct use by the existing 1-D solver.
-        "generic_ground": {
-            "albedo": 0.18, "emissivity": 0.95,
-            "thermal_conductivity": 1.00, "density": 2000.0,
-            "specific_heat": 1000.0, "k": 1.00, "C": 2.00e6,
-            "depth": 0.50, "n_layers": 8, "bottom_bc": "fixed",
-            "roughness_m": 0.03,
-        },
-        "asphalt_road": {
-            "albedo": 0.12, "emissivity": 0.95,
-            "thermal_conductivity": 0.75, "density": 2300.0,
-            "specific_heat": 920.0, "k": 0.75, "C": 2.116e6,
-            "depth": 0.40, "n_layers": 8, "bottom_bc": "fixed",
-            "roughness_m": 0.002,
-        },
-        "asphalt_pedestrian_path": {
-            "albedo": 0.14, "emissivity": 0.95,
-            "thermal_conductivity": 0.75, "density": 2250.0,
-            "specific_heat": 920.0, "k": 0.75, "C": 2.070e6,
-            "depth": 0.30, "n_layers": 7, "bottom_bc": "fixed",
-            "roughness_m": 0.002,
-        },
-        "concrete_sidewalk": {
-            "albedo": 0.30, "emissivity": 0.94,
-            "thermal_conductivity": 1.40, "density": 2300.0,
-            "specific_heat": 880.0, "k": 1.40, "C": 2.024e6,
-            "depth": 0.25, "n_layers": 7, "bottom_bc": "fixed",
-            "roughness_m": 0.003,
-        },
-        "paving_stone_path": {
-            "albedo": 0.24, "emissivity": 0.94,
-            "thermal_conductivity": 1.10, "density": 2200.0,
-            "specific_heat": 840.0, "k": 1.10, "C": 1.848e6,
-            "depth": 0.25, "n_layers": 7, "bottom_bc": "fixed",
-            "roughness_m": 0.006,
-        },
-        "unpaved_path": {
-            "albedo": 0.20, "emissivity": 0.95,
-            "thermal_conductivity": 0.80, "density": 1800.0,
-            "specific_heat": 1000.0, "k": 0.80, "C": 1.80e6,
-            "depth": 0.40, "n_layers": 8, "bottom_bc": "fixed",
-            "roughness_m": 0.015,
-        },
-        "pedestrian_crossing": {
-            "albedo": 0.26, "emissivity": 0.94,
-            "thermal_conductivity": 1.20, "density": 2250.0,
-            "specific_heat": 880.0, "k": 1.20, "C": 1.98e6,
-            "depth": 0.25, "n_layers": 7, "bottom_bc": "fixed",
-            "roughness_m": 0.004,
-        },
-    },
+    # Material PROPERTIES are not defined here. They live in
+    # material_library.py, the single authoritative database, and are injected
+    # below. OSM supplies CLASSIFICATION; the library supplies PHYSICS. Keeping
+    # a second copy of albedo/emissivity/k/C here is what previously let one
+    # stage disagree with another about the same surface.
+    "materials": {},
     "manual_overrides": {},
 }
 
@@ -217,20 +172,12 @@ DEFAULT_CONFIG["materials"].update({
               "bottom_bc": "fixed", "roughness_m": 0.0002},
 })
 
-# First-order water availability for the optional equilibrium latent-heat term
-# in stage 05b.  These are assumed configurable defaults, not OSM attributes
-# or site measurements.  Impervious materials remain dry; grass, bare soil,
-# unpaved paths, and water receive progressively greater evaporative capacity.
-_EVAPORATIVE_EFFICIENCY = {
-    "generic_ground": 0.05,
-    "unpaved_path": 0.20,
-    "bare_ground": 0.20,
-    "grass_lawn": 0.70,
-    "water": 1.00,
-}
-for _material_name, _material in DEFAULT_CONFIG["materials"].items():
-    _material["evaporative_efficiency"] = _EVAPORATIVE_EFFICIENCY.get(
-        _material_name, 0.0)
+# Inject the ground-relevant material properties from the ONE authoritative
+# database. Water is included because OSM classifies open water as a ground
+# surface class here; vegetation is not, because canopy is handled by the
+# transmission model rather than by a facet energy balance.
+DEFAULT_CONFIG["materials"] = material_library.legacy_material_table(
+    categories=(material_library.CATEGORY_GROUND, material_library.CATEGORY_WATER))
 
 
 SURFACE_TO_MATERIAL = {

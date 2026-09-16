@@ -358,7 +358,7 @@ def main():
     if not pxyz.is_file():
         raise SystemExit(
             f"ERROR: {pxyz} not found. Run the pipeline through step 3 first "
-            f"(./start.sh 3) so the route points exist, or point --mrt-dir at "
+            f"(./start.sh 4) so the route points exist, or point --mrt-dir at "
             f"an existing MRT output directory.")
     path_xyz = np.load(pxyz)
     n_all_pts = len(path_xyz)
@@ -378,7 +378,7 @@ def main():
         if not seg_path.is_file():
             raise SystemExit(
                 f"ERROR: {seg_path} not found, so route membership is unknown. "
-                f"Re-run stage 05 (./start.sh 3) to write it, or pass "
+                f"Re-run stage 05 (./start.sh 4) to write it, or pass "
                 f"--all-routes to use every route point.")
         seg = np.load(seg_path)
         if len(seg) != n_all_pts:

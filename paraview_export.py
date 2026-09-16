@@ -1,8 +1,9 @@
 """paraview_export.py -- dependency-free VTK XML writers for ParaView.
 
-TREC-Route's optional step 4 stores its results as raw ``.npy``/``.npz``
-arrays, which ParaView cannot open directly.  This module writes the two
-VTK XML container types those results need:
+TREC-Route's numerical stages store their results as raw ``.npy``/``.npz``
+arrays, which ParaView cannot open directly.  This module writes the VTK
+XML container types those results need -- used by the step-3 pedestrian
+potential-flow export (05e) and the legacy 3-D stages (05c/05d):
 
   * ``write_vtr``  -- RectilinearGrid (``.vtr``) for the structured 3-D
     air-temperature/velocity field of stage 05c.  Field values live at the

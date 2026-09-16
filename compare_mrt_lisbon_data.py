@@ -32,10 +32,18 @@ Compare selected cases::
 
     python3 compare_mrt_lisbon_data.py --case lisbon1 --case lisbon3
 
-Where four-component radiometer fields are available, the script also creates
-a clearly labelled two-hemisphere absorbed-flux diagnostic.  This is more
-physically informative than trying to decompose MRT into additive temperature
-terms, but it is not a six-directional human-radiation measurement.
+EVERY comparison here is LIKE FOR LIKE: the four measured radiometer channels
+against TREC-Route's emulated radiometer, one quantity against itself on the
+same horizontal, cosine-weighted angular convention.
+
+The model's own product -- the cylinder-weighted, full-sphere BODY-ABSORBED
+flux -- is still exported for reference, but it is never compared against a
+horizontal sensor. An earlier version did exactly that, via a two-hemisphere
+reconstruction of the radiometer, and the resulting component "errors" were
+convention rather than model error: across the six Lisbon cases the sky/surface
+longwave split alone accounted for -142..-182 and +169..+226 W/m2, reproducing
+each case's stage-05 sky view weight to within 0.011. That comparison, its
+figures and its columns have been removed rather than kept behind a flag.
 
 The script does not alter model results, measurement files, the generalized
 pipeline, or any physical parameter.
@@ -82,11 +90,19 @@ FLUX_COLUMNS = {
     "sw_total_absorbed_Wm2", "lw_sky_absorbed_Wm2",
     "lw_surface_total_absorbed_Wm2", "lw_total_absorbed_Wm2",
     "total_absorbed_radiant_flux_Wm2",
+    # Emulated four-component radiometer -- the like-for-like comparison side.
+    "sensor_shortwave_down_Wm2", "sensor_shortwave_up_Wm2",
+    "sensor_longwave_down_Wm2", "sensor_longwave_up_Wm2",
 }
-PERSON_SHORTWAVE_ABSORPTIVITY = 0.70
-PERSON_LONGWAVE_EMISSIVITY = 0.97
-TWO_HEMISPHERE_SW_EFFECTIVE_FACTOR = 0.25
-TWO_HEMISPHERE_LW_VIEW_FACTOR = 0.50
+# Emulated black globe. Optional because a run made before the globe emulation
+# existed has a valid absorbed-flux archive without these columns; the globe
+# comparison is then skipped rather than the whole comparison failing.
+GLOBE_FLUX_COLUMNS = {
+    "globe_absorbed_flux_Wm2", "globe_radiative_equilibrium_C",
+    "globe_steady_temperature_C", "globe_transient_temperature_C",
+    "globe_spinup_affected", "globe_ventilation_ms",
+}
+PERSON_LONGWAVE_EMISSIVITY = 0.97   # only used for the opt-in globe-MRT context
 
 
 def parse_args() -> argparse.Namespace:
@@ -116,6 +132,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--minimum-subgroup-n", type=int, default=3,
         help="Do not report metrics for smaller subgroups")
+    parser.add_argument(
+        "--include-globe-mrt-comparison", action="store_true",
+        help="Also report measured-versus-modelled MRT. OFF by default: the "
+             "Lisbon reference MRT is globe-derived, so it is a sphere-weighted, "
+             "thermally damped quantity, while TREC-Route reports an "
+             "instantaneous standing-cylinder MRT. Across the six cases the "
+             "reference varies by only 7-9 degC per walk (sd 1.5-1.9) and is "
+             "uncorrelated with measured SWin (r = -0.15..+0.10), while the "
+             "same files' radiometer implies 36-48 degC of variation, so a "
+             "pointwise MRT comparison mostly measures that mismatch. Enable "
+             "only for context, never as a validation claim, until a "
+             "globe-equivalent model output exists.")
     parser.add_argument("--dpi", type=int, default=300)
     return parser.parse_args()
 
@@ -243,8 +271,15 @@ def add_trec_flux_columns(frame: pd.DataFrame, result_dir: Path) -> None:
         if not np.array_equal(flux["point_id"].to_numpy(int),
                               flux["original_route_index"].to_numpy(int)):
             raise ValueError(f"{path}: plotting/export order no longer matches route order")
-        blocks.append(flux.loc[:, sorted(FLUX_COLUMNS)])
-    flux_all = pd.concat(blocks, ignore_index=True).rename(columns={"point_id": "seq"})
+        blocks.append(flux)
+    # Only keep globe columns every route actually has: mixing a route that
+    # carries them with one that does not would fabricate NaNs and then trip the
+    # unmatched-row guard below for the wrong reason.
+    globe_available = set.intersection(
+        *(GLOBE_FLUX_COLUMNS & set(block.columns) for block in blocks))
+    wanted = sorted(FLUX_COLUMNS | globe_available)
+    flux_all = pd.concat([block.loc[:, wanted] for block in blocks],
+                         ignore_index=True).rename(columns={"point_id": "seq"})
     before = frame[["route_id", "seq"]].copy()
     merged = frame.merge(flux_all, on=["route_id", "seq"], how="left",
                          validate="one_to_one", sort=False)
@@ -255,40 +290,6 @@ def add_trec_flux_columns(frame: pd.DataFrame, result_dir: Path) -> None:
     for column in merged.columns:
         if column not in frame.columns:
             frame[column] = merged[column].to_numpy()
-
-
-def add_measured_flux_diagnostics(frame: pd.DataFrame) -> None:
-    """Build approximate absorbed fluxes from the four-component radiometer.
-
-    The shortwave factor is a globe-like effective projected-area diagnostic;
-    the longwave factor assigns half the body view to each measured hemisphere.
-    These terms are useful for mechanism diagnosis but are not an exact
-    six-directional standing-person reconstruction.
-    """
-    required = ("measured_swin_wm2", "measured_swout_wm2",
-                "measured_lwin_wm2", "measured_lwout_wm2")
-    missing = [column for column in required if column not in frame]
-    if missing:
-        raise ValueError(f"four-component flux diagnostic unavailable; missing {missing}")
-    frame["measured_sw_absorbed_diagnostic_wm2"] = (
-        PERSON_SHORTWAVE_ABSORPTIVITY * TWO_HEMISPHERE_SW_EFFECTIVE_FACTOR
-        * (frame["measured_swin_wm2"] + frame["measured_swout_wm2"]))
-    frame["measured_lw_sky_absorbed_proxy_wm2"] = (
-        PERSON_LONGWAVE_EMISSIVITY * TWO_HEMISPHERE_LW_VIEW_FACTOR
-        * frame["measured_lwin_wm2"])
-    frame["measured_lw_surface_absorbed_proxy_wm2"] = (
-        PERSON_LONGWAVE_EMISSIVITY * TWO_HEMISPHERE_LW_VIEW_FACTOR
-        * frame["measured_lwout_wm2"])
-    frame["measured_lw_absorbed_diagnostic_wm2"] = (
-        frame["measured_lw_sky_absorbed_proxy_wm2"]
-        + frame["measured_lw_surface_absorbed_proxy_wm2"])
-    frame["measured_total_absorbed_diagnostic_wm2"] = (
-        frame["measured_sw_absorbed_diagnostic_wm2"]
-        + frame["measured_lw_absorbed_diagnostic_wm2"])
-    sigma = 5.670374419e-8
-    frame["measured_flux_equivalent_mrt_c"] = (
-        (frame["measured_total_absorbed_diagnostic_wm2"]
-         / (PERSON_LONGWAVE_EMISSIVITY * sigma)) ** 0.25 - 273.15)
 
 
 def load_case_pairs(
@@ -447,7 +448,6 @@ def load_case_pairs(
         raise ValueError(f"{case_name}: paired MRT values are not finite")
     add_atmospheric_forcing_columns(output, times_path)
     add_trec_flux_columns(output, result_dir)
-    add_measured_flux_diagnostics(output)
 
     audit = {
         "case_id": case_name,
@@ -467,8 +467,11 @@ def load_case_pairs(
         "prediction_file": str(prediction_path.resolve()),
         "mrt_times_file": str(times_path.resolve()),
         "absorbed_flux_convention": (
-            "Two-hemisphere diagnostic: SW=0.70*0.25*(SWin+SWout); "
-            "LW=0.97*0.5*(LWin+LWout). Not a six-directional human measurement."),
+            "Body-absorbed flux is standing-cylinder weighted and is NOT "
+            "compared against the radiometer. Field comparison uses the "
+            "emulated instrument channels only: the four horizontal "
+            "cosine-weighted radiometer components, and the emulated "
+            "black-globe temperature."),
     }
     return output.sort_values(["route_id", "seq"]).reset_index(drop=True), audit
 
@@ -543,25 +546,38 @@ def calculate_metrics(frame: pd.DataFrame, case_id: str,
     return pd.DataFrame(records)
 
 
+# LIKE-FOR-LIKE radiometer comparison.
+#
+# Each pair is the SAME physical quantity on the SAME angular weighting: a
+# horizontal, cosine-weighted up- or down-facing sensor. The model side is
+# stage-05's emulated four-component radiometer (SENSOR_COLUMNS), not its
+# body-absorbed flux.
+#
+# The previous mapping compared body-absorbed flux against a two-hemisphere
+# reconstruction of the radiometer. That is a cross-convention comparison and
+# it produced large, systematic, meaningless component errors: the up-facing
+# pyrgeometer's hemisphere contains sky AND walls above the horizon, while the
+# model's `lw_sky` is sky only, weighted by a standing cylinder whose sky
+# fraction in these canyons is 0.07-0.33 rather than the 0.5 the proxy assumes.
+# Measured against the six Lisbon cases, that convention alone accounted for
+# the entire -142..-182 W/m2 "sky deficit" and the matching "+169..+226 W/m2
+# surface excess" (the ratio reproduced each case's stage-05 sky weight to
+# within 0.011). Those components are not separable by this instrument, so
+# they are no longer reported as model error.
 FLUX_COMPONENTS = {
-    "shortwave_total_diagnostic": (
-        "measured_sw_absorbed_diagnostic_wm2", "sw_total_absorbed_Wm2"),
-    "longwave_sky_proxy": (
-        "measured_lw_sky_absorbed_proxy_wm2", "lw_sky_absorbed_Wm2"),
-    "longwave_surface_proxy": (
-        "measured_lw_surface_absorbed_proxy_wm2",
-        "lw_surface_total_absorbed_Wm2"),
-    "longwave_total_diagnostic": (
-        "measured_lw_absorbed_diagnostic_wm2", "lw_total_absorbed_Wm2"),
-    "total_absorbed_diagnostic": (
-        "measured_total_absorbed_diagnostic_wm2",
-        "total_absorbed_radiant_flux_Wm2"),
+    "shortwave_down": ("measured_swin_wm2", "sensor_shortwave_down_Wm2"),
+    "shortwave_up": ("measured_swout_wm2", "sensor_shortwave_up_Wm2"),
+    "longwave_down": ("measured_lwin_wm2", "sensor_longwave_down_Wm2"),
+    "longwave_up": ("measured_lwout_wm2", "sensor_longwave_up_Wm2"),
 }
 
-
 def flux_metric_record(case_id: str, scope: str, group: str, component: str,
-                       frame: pd.DataFrame, minimum_n: int) -> dict | None:
-    measured_column, predicted_column = FLUX_COMPONENTS[component]
+                       frame: pd.DataFrame, minimum_n: int,
+                       components: dict | None = None) -> dict | None:
+    components = components or FLUX_COMPONENTS
+    measured_column, predicted_column = components[component]
+    if measured_column not in frame or predicted_column not in frame:
+        return None
     measured = frame[measured_column].to_numpy(float)
     predicted = frame[predicted_column].to_numpy(float)
     valid = np.isfinite(measured) & np.isfinite(predicted)
@@ -585,7 +601,9 @@ def flux_metric_record(case_id: str, scope: str, group: str, component: str,
 
 
 def calculate_flux_metrics(frame: pd.DataFrame, case_id: str,
-                           minimum_n: int) -> pd.DataFrame:
+                           minimum_n: int,
+                           components: dict | None = None) -> pd.DataFrame:
+    components = components or FLUX_COMPONENTS
     records: list[dict] = []
     groups = [("overall", "all", frame)]
     for scope, column in (("route", "route_name"),
@@ -594,9 +612,10 @@ def calculate_flux_metrics(frame: pd.DataFrame, case_id: str,
         groups.extend((scope, str(group), subset) for group, subset in
                       frame.groupby(column, sort=True, observed=True))
     for scope, group, subset in groups:
-        for component in FLUX_COMPONENTS:
+        for component in components:
             record = flux_metric_record(
-                case_id, scope, group, component, subset, minimum_n)
+                case_id, scope, group, component, subset, minimum_n,
+                components=components)
             if record is not None:
                 records.append(record)
     return pd.DataFrame(records)
@@ -782,107 +801,291 @@ def plot_case_residuals(frame: pd.DataFrame, output: Path, dpi: int) -> None:
     save_figure(fig, output / "mrt_residual_diagnostics", dpi)
 
 
-def plot_day_absorbed_flux_along_route(frame: pd.DataFrame, output: Path,
-                                       dpi: int) -> None:
-    """Plot measured diagnostic and TREC-Route fluxes along each day route."""
+def plot_day_radiometer_along_route(frame: pd.DataFrame, output: Path,
+                                    dpi: int) -> None:
+    """Measured versus modelled radiometer channels along each day route.
+
+    This is the primary figure for reading how radiant flux varies along a
+    walk, so every panel compares ONE quantity against itself on the same
+    horizontal, cosine-weighted angular convention.
+
+    It replaces an earlier version whose panels put the model's
+    cylinder-weighted, full-sphere BODY-ABSORBED flux against a
+    two-hemisphere reconstruction of the radiometer. Those panels carried
+    offsets that were pure convention rather than model error -- worst in the
+    surface-longwave panel, which set a downward pyrgeometer seeing only the
+    ground against the model's ground + walls + canopy, giving a +117 W/m2
+    offset at a shape correlation of 0.03. That comparison is gone.
+    """
     specifications = [
-        ("measured_total_absorbed_diagnostic_wm2",
-         "total_absorbed_radiant_flux_Wm2", "Total absorbed flux"),
-        ("measured_sw_absorbed_diagnostic_wm2",
-         "sw_total_absorbed_Wm2", "Absorbed shortwave diagnostic"),
-        ("measured_lw_absorbed_diagnostic_wm2",
-         "lw_total_absorbed_Wm2", "Absorbed longwave diagnostic"),
-        ("measured_lw_surface_absorbed_proxy_wm2",
-         "lw_surface_total_absorbed_Wm2", "Surface-longwave proxy"),
+        ("measured_swin_wm2", "sensor_shortwave_down_Wm2",
+         "Downwelling shortwave"),
+        ("measured_swout_wm2", "sensor_shortwave_up_Wm2",
+         "Upwelling shortwave"),
+        ("measured_lwin_wm2", "sensor_longwave_down_Wm2",
+         "Downwelling longwave"),
+        ("measured_lwout_wm2", "sensor_longwave_up_Wm2",
+         "Upwelling longwave"),
     ]
+    available = [item for item in specifications
+                 if item[0] in frame.columns and item[1] in frame.columns]
+    if not available:
+        return
     day = frame[frame["period"].eq("day")]
     for (route_id, route_name), route in day.groupby(
             ["route_id", "route_name"], sort=True):
         route = route.sort_values("seq")
         distance = route["distance_along_route_m"].to_numpy(float)
-        fig, axes = plt.subplots(4, 1, figsize=(11, 11), sharex=True)
-        for ax, (measured_column, model_column, title) in zip(axes, specifications):
-            ax.plot(distance, route[measured_column], color="black", lw=1.35,
-                    label="Four-component measurement diagnostic")
-            ax.plot(distance, route[model_column], color="#d62728", lw=1.25,
-                    label="TREC-Route")
-            residual = route[model_column].to_numpy(float) \
-                - route[measured_column].to_numpy(float)
-            ax.set_ylabel("Absorbed flux\n(W m$^{-2}$)")
-            ax.set_title(f"{title}; mean bias {residual.mean():+.1f} W m$^{{-2}}",
-                         fontsize=9.5)
+        fig, axes = plt.subplots(len(available), 1,
+                                 figsize=(11, 2.8 * len(available)), sharex=True)
+        axes = np.atleast_1d(axes)
+        for ax, (measured_column, model_column, title) in zip(axes, available):
+            measured = route[measured_column].to_numpy(float)
+            modelled = route[model_column].to_numpy(float)
+            ax.plot(distance, measured, color="black", lw=1.35,
+                    label="Measured (four-component radiometer)")
+            ax.plot(distance, modelled, color="#d62728", lw=1.25,
+                    label="TREC-Route (emulated radiometer)")
+            residual = modelled - measured
+            valid = np.isfinite(measured) & np.isfinite(modelled)
+            correlation = (float(stats.pearsonr(measured[valid],
+                                                modelled[valid]).statistic)
+                           if valid.sum() > 2 and np.std(measured[valid]) > 0
+                           and np.std(modelled[valid]) > 0 else float("nan"))
+            ax.set_ylabel("Irradiance\n(W m$^{-2}$)")
+            ax.set_title(
+                f"{title}; mean bias {residual[valid].mean():+.1f} W m$^{{-2}}$, "
+                f"r = {correlation:.2f}", fontsize=9.5)
             ax.grid(alpha=0.25)
         axes[0].legend(fontsize=8)
         axes[-1].set_xlabel("Distance along measured route (m)")
         fig.suptitle(
             f"{frame['case_id'].iloc[0]}, Route {int(route_id)} ({route_name}): "
-            "absorbed-flux diagnostics", y=1.002)
+            "radiometer channels along the route (like-for-like)", y=1.002)
         save_figure(
             fig, output / (f"route_{int(route_id)}_{safe_filename(route_name)}_"
-                           "absorbed_flux_along_route_comparison"), dpi)
+                           "radiometer_along_route_comparison"), dpi)
 
 
-def plot_absorbed_flux_scatter(frame: pd.DataFrame, output: Path,
-                               dpi: int) -> None:
-    specifications = [
-        ("shortwave_total_diagnostic", "Shortwave"),
-        ("longwave_sky_proxy", "Sky longwave proxy"),
-        ("longwave_surface_proxy", "Surface longwave proxy"),
-        ("longwave_total_diagnostic", "Total longwave"),
-        ("total_absorbed_diagnostic", "Total absorbed"),
-    ]
-    fig, axes = plt.subplots(2, 3, figsize=(13, 8.5))
-    for ax, (component, title) in zip(axes.flat, specifications):
-        measured_column, predicted_column = FLUX_COMPONENTS[component]
-        for (route_id, route_name), route in frame.groupby(
-                ["route_id", "route_name"], sort=True):
-            ax.scatter(route[measured_column], route[predicted_column],
-                       s=12, alpha=0.45, label=f"Route {route_id}: {route_name}")
-        values = np.r_[frame[measured_column], frame[predicted_column]]
-        limits = [float(np.nanmin(values) - 5), float(np.nanmax(values) + 5)]
-        ax.plot(limits, limits, "k--", lw=0.9)
-        ax.set(xlim=limits, ylim=limits, title=title,
-               xlabel="Measurement diagnostic (W m$^{-2}$)",
-               ylabel="TREC-Route (W m$^{-2}$)")
-        ax.grid(alpha=0.25)
-    axes.flat[0].legend(fontsize=7)
-    axes.flat[-1].axis("off")
-    fig.suptitle(
-        f"{frame['case_id'].iloc[0]}: absorbed radiant-flux comparison\n"
-        "(two-hemisphere diagnostic; not a six-directional human measurement)")
-    save_figure(fig, output / "absorbed_flux_measured_vs_trec_route_scatter", dpi)
+GLOBE_MODEL_COLUMN = "globe_transient_temperature_C"
+
+
+def has_globe_columns(frame: pd.DataFrame) -> bool:
+    return ("measured_black_globe_temperature_c" in frame.columns
+            and GLOBE_MODEL_COLUMN in frame.columns)
+
+
+def plot_black_globe_along_route(frame: pd.DataFrame, output: Path,
+                                 dpi: int) -> None:
+    """Measured versus emulated BLACK GLOBE temperature along each day route.
+
+    This is the like-for-like answer to the globe measurement. The campaign
+    logged a Campbell Scientific BLACKGLOBE-L; TREC-Route now solves that same
+    sphere's energy balance in the same traced scene, so the comparison is a
+    globe temperature against a globe temperature.
+
+    Three traces are drawn because the difference between them IS the physics:
+
+      * measured globe -- what the instrument on the cart actually read;
+      * modelled globe (transient) -- the same sphere carried along the same
+        route at the same pace, with its thermal inertia integrated;
+      * modelled globe (steady state) -- what the sphere would read if it had
+        time to settle at every point.
+
+    The steady-state trace swings wildly across sun/shade edges while the other
+    two do not. That gap is not model error: a 150 mm copper globe needs
+    20-30 minutes to equilibrate (ISO 7726) and a walker crosses a shadow in
+    seconds, so a real mobile globe low-pass filters the radiation field it
+    moves through. Plotting the steady trace alongside makes the size of that
+    instrument artefact visible instead of hiding it.
+
+    Note also what the sphere-weighted radiative equilibrium is NOT: it is the
+    globe's own mean radiant temperature, not the pedestrian's. A sphere takes
+    the beam through a constant 0.25 projected-area factor; a standing body's
+    runs from ~0.31 at the horizon to ~0.08 overhead. The two diverge most at
+    midday, which is exactly when route stress matters.
+    """
+    if not has_globe_columns(frame):
+        return
+    day = frame[frame["period"].eq("day")]
+    for (route_id, route_name), route in day.groupby(
+            ["route_id", "route_name"], sort=True):
+        route = route.sort_values("seq")
+        distance = route["distance_along_route_m"].to_numpy(float)
+        measured = route["measured_black_globe_temperature_c"].to_numpy(float)
+        modelled = route[GLOBE_MODEL_COLUMN].to_numpy(float)
+        fig, axes = plt.subplots(2, 1, figsize=(11, 7.0), sharex=True,
+                                 height_ratios=[2.0, 1.0])
+        top = axes[0]
+        top.plot(distance, measured, color="black", lw=1.5,
+                 label="Measured globe (BLACKGLOBE-L)")
+        top.plot(distance, modelled, color="#d62728", lw=1.4,
+                 label="TREC-Route globe (transient, with thermal inertia)")
+        if "globe_steady_temperature_C" in route.columns:
+            top.plot(distance, route["globe_steady_temperature_C"].to_numpy(float),
+                     color="#1f77b4", lw=0.9, alpha=0.55,
+                     label="TREC-Route globe (steady state, no inertia)")
+        if "measured_air_temperature_c" in route.columns:
+            top.plot(distance, route["measured_air_temperature_c"].to_numpy(float),
+                     color="#7f7f7f", lw=0.9, ls="--", label="Measured air temperature")
+        spinup = (route["globe_spinup_affected"].to_numpy(bool)
+                  if "globe_spinup_affected" in route.columns
+                  else np.zeros(len(route), dtype=bool))
+        if spinup.any():
+            # The globe has no memory of the walk before its first sample, so
+            # this stretch is still relaxing off an assumed initial condition.
+            top.axvspan(distance[0], distance[spinup].max(), color="#cccccc",
+                        alpha=0.35, zorder=0,
+                        label="Model spin-up (initial condition still decaying)")
+        valid = np.isfinite(measured) & np.isfinite(modelled) & ~spinup
+        residual = modelled - measured
+        correlation = (float(stats.pearsonr(measured[valid],
+                                            modelled[valid]).statistic)
+                       if valid.sum() > 2 and np.std(measured[valid]) > 0
+                       and np.std(modelled[valid]) > 0 else float("nan"))
+        top.set_ylabel("Temperature (°C)")
+        top.set_title(
+            f"Black-globe temperature; post-spin-up mean bias "
+            f"{residual[valid].mean():+.2f} °C, RMSE "
+            f"{np.sqrt(np.mean(residual[valid] ** 2)):.2f} °C, r = {correlation:.2f}",
+            fontsize=9.5)
+        top.grid(alpha=0.25)
+        top.legend(fontsize=7.5, ncol=2)
+
+        bottom = axes[1]
+        bottom.axhline(0.0, color="black", lw=0.8)
+        bottom.plot(distance, residual, color="#d62728", lw=1.0)
+        if spinup.any():
+            bottom.axvspan(distance[0], distance[spinup].max(), color="#cccccc",
+                           alpha=0.35, zorder=0)
+        bottom.set_ylabel("Model − measured (°C)")
+        bottom.set_xlabel("Distance along measured route (m)")
+        bottom.grid(alpha=0.25)
+        fig.suptitle(
+            f"{frame['case_id'].iloc[0]}, Route {int(route_id)} ({route_name}): "
+            "black-globe thermometer, measured vs emulated", y=1.002)
+        save_figure(
+            fig, output / (f"route_{int(route_id)}_{safe_filename(route_name)}_"
+                           "black_globe_along_route_comparison"), dpi)
+
+
+def plot_black_globe_scatter(frame: pd.DataFrame, output: Path,
+                             dpi: int) -> None:
+    """Pooled measured-vs-modelled globe temperature against the 1:1 line."""
+    if not has_globe_columns(frame):
+        return
+    spinup = (frame["globe_spinup_affected"].to_numpy(bool)
+              if "globe_spinup_affected" in frame.columns
+              else np.zeros(len(frame), dtype=bool))
+    usable = frame[~spinup]
+    if usable.empty:
+        return
+    fig, ax = plt.subplots(figsize=(6.0, 6.0))
+    for period, color in (("day", "#d62728"), ("night", "#1f77b4")):
+        block = usable[usable["period"].eq(period)]
+        if block.empty:
+            continue
+        ax.scatter(block["measured_black_globe_temperature_c"],
+                   block[GLOBE_MODEL_COLUMN], s=9, alpha=0.55,
+                   color=color, label=f"{period} (n={len(block)})")
+    values = np.concatenate([
+        usable["measured_black_globe_temperature_c"].to_numpy(float),
+        usable[GLOBE_MODEL_COLUMN].to_numpy(float)])
+    values = values[np.isfinite(values)]
+    if values.size:
+        span = [values.min() - 1.0, values.max() + 1.0]
+        ax.plot(span, span, color="black", lw=1.0, ls="--", label="1:1")
+        ax.set_xlim(span)
+        ax.set_ylim(span)
+    ax.set_xlabel("Measured black-globe temperature (°C)")
+    ax.set_ylabel("TREC-Route emulated globe temperature (°C)")
+    ax.set_title(f"{frame['case_id'].iloc[0]}: black globe, like-for-like")
+    ax.grid(alpha=0.25)
+    ax.legend(fontsize=8)
+    save_figure(fig, output / "black_globe_measured_vs_trec_route", dpi)
+
+
+def calculate_globe_metrics(frame: pd.DataFrame, case_id: str) -> pd.DataFrame:
+    """Error statistics for the globe comparison, excluding the spin-up window."""
+    if not has_globe_columns(frame):
+        return pd.DataFrame()
+    spinup = (frame["globe_spinup_affected"].to_numpy(bool)
+              if "globe_spinup_affected" in frame.columns
+              else np.zeros(len(frame), dtype=bool))
+    records = []
+    for scope, block in (("all", frame[~spinup]),
+                         *(((f"period_{period}",
+                             frame[~spinup & frame["period"].eq(period).to_numpy()])
+                            for period in sorted(frame["period"].unique())))):
+        measured = block["measured_black_globe_temperature_c"].to_numpy(float)
+        modelled = block[GLOBE_MODEL_COLUMN].to_numpy(float)
+        valid = np.isfinite(measured) & np.isfinite(modelled)
+        if valid.sum() < 3:
+            continue
+        measured, modelled = measured[valid], modelled[valid]
+        residual = modelled - measured
+        correlation = (float(stats.pearsonr(measured, modelled).statistic)
+                       if np.std(measured) > 0 and np.std(modelled) > 0
+                       else float("nan"))
+        records.append({
+            "case_id": case_id,
+            "quantity": "black_globe_temperature_c",
+            "scope": scope,
+            "n": int(valid.sum()),
+            "measured_mean": float(measured.mean()),
+            "trec_route_mean": float(modelled.mean()),
+            "measured_sd": float(measured.std()),
+            "trec_route_sd": float(modelled.std()),
+            "mbe": float(residual.mean()),
+            "mae": float(np.abs(residual).mean()),
+            "rmse": float(np.sqrt(np.mean(residual ** 2))),
+            "pearson_r": correlation,
+        })
+    return pd.DataFrame(records)
 
 
 def plot_flux_residual_diagnostics(frame: pd.DataFrame, output: Path,
                                    dpi: int) -> None:
-    fig, axes = plt.subplots(1, 3, figsize=(14, 4.2))
-    components = [
-        ("sw_total_absorbed_Wm2", "measured_sw_absorbed_diagnostic_wm2", "Shortwave"),
-        ("lw_total_absorbed_Wm2", "measured_lw_absorbed_diagnostic_wm2", "Longwave"),
-        ("total_absorbed_radiant_flux_Wm2", "measured_total_absorbed_diagnostic_wm2",
-         "Total"),
-    ]
-    for ax, (model, measured, title) in zip(axes, components):
+    components = [(measured, model, title) for title, (measured, model) in
+                  (("Downwelling shortwave", FLUX_COMPONENTS["shortwave_down"]),
+                   ("Downwelling longwave", FLUX_COMPONENTS["longwave_down"]),
+                   ("Upwelling longwave", FLUX_COMPONENTS["longwave_up"]))
+                  if measured in frame.columns and model in frame.columns]
+    if not components:
+        return
+    fig, axes = plt.subplots(1, len(components), figsize=(4.7 * len(components), 4.2))
+    axes = np.atleast_1d(axes)
+    for ax, (measured, model, title) in zip(axes, components):
         residual = frame[model] - frame[measured]
         ax.scatter(frame["measured_swin_wm2"], residual, s=12, alpha=0.45)
         ax.axhline(0, color="black", lw=0.9, ls="--")
         ax.set_title(title)
         ax.set_xlabel("Measured incoming shortwave (W m$^{-2}$)")
-        ax.set_ylabel("TREC-Route − diagnostic (W m$^{-2}$)")
+        ax.set_ylabel("TREC-Route − measured (W m$^{-2}$)")
         ax.grid(alpha=0.25)
-    fig.suptitle(f"{frame['case_id'].iloc[0]}: absorbed-flux residuals")
-    save_figure(fig, output / "absorbed_flux_residual_diagnostics", dpi)
+    fig.suptitle(f"{frame['case_id'].iloc[0]}: radiometer-channel residuals "
+                 f"versus sun exposure")
+    save_figure(fig, output / "radiometer_residual_diagnostics", dpi)
 
 
 def write_case_summary(audit: dict, metrics: pd.DataFrame,
                        flux_metrics: pd.DataFrame,
                        solar_envelope: pd.DataFrame, output: Path) -> None:
-    overall = metrics[(metrics["scope"] == "overall") & (metrics["group"] == "all")].iloc[0]
-    route_metrics = metrics[metrics["scope"] == "route"]
+    has_mrt = len(metrics) > 0
     lines = [
-        f"# {audit['case_id']} experimental MRT comparison", "",
+        f"# {audit['case_id']} experimental radiometer comparison", "",
         "This standalone comparison does not modify or calibrate TREC-Route.",
-        "Residual and MBE are defined as **TREC-Route minus measured MRT**.", "",
+        "Bias is defined as **TREC-Route minus measured**.", "",
+        "The primary comparison is LIKE FOR LIKE: each channel below is the",
+        "same physical quantity on the same horizontal, cosine-weighted",
+        "angular convention on both sides. TREC-Route emits an emulated",
+        "four-component net radiometer alongside its body-absorbed flux; the",
+        "body-absorbed flux itself is NOT compared against a horizontal",
+        "sensor, because that mixes two different angular weightings.", "",
+        "Measured-versus-modelled **MRT is not reported by default**: the",
+        "reference MRT is globe-derived (sphere-weighted and thermally",
+        "damped) while TREC-Route reports an instantaneous standing-cylinder",
+        "MRT. Use `--include-globe-mrt-comparison` for context only.", "",
         "## Pairing audit", "",
         f"- Exact route/sequence pairs: **{audit['n_pairs']}**",
         f"- Maximum coordinate discrepancy: **{audit['maximum_coordinate_pairing_error_m']:.6f} m**",
@@ -891,31 +1094,34 @@ def write_case_summary(audit: dict, metrics: pd.DataFrame,
         f"- Observation dates: **{', '.join(audit['observation_dates'])}**",
         f"- Date-aligned pairs: **{audit['date_aligned_pairs']}**",
         f"- Date-mismatched pairs: **{audit['date_mismatched_pairs']}**", "",
-        "## Overall statistics", "",
-        "| n | MBE (°C) | MAE (°C) | RMSE (°C) | R² | Pearson r | Willmott d |",
-        "|---:|---:|---:|---:|---:|---:|---:|",
-        (f"| {int(overall['n'])} | {overall['mean_bias_error_c']:.3f} | "
-         f"{overall['mae_c']:.3f} | {overall['rmse_c']:.3f} | "
-         f"{overall['r2_coefficient_of_determination']:.3f} | "
-         f"{overall['pearson_r']:.3f} | "
-         f"{overall['willmott_agreement_index']:.3f} |"), "",
-        "## Route statistics", "",
-        "| Route | n | measured mean (°C) | TREC-Route mean (°C) | MBE (°C) | MAE (°C) | RMSE (°C) |",
-        "|---|---:|---:|---:|---:|---:|---:|",
     ]
-    for row in route_metrics.itertuples():
-        lines.append(
-            f"| {row.group} | {row.n} | {row.mean_measured_mrt_c:.3f} | "
-            f"{row.mean_trec_route_mrt_c:.3f} | {row.mean_bias_error_c:.3f} | "
-            f"{row.mae_c:.3f} | {row.rmse_c:.3f} |")
+    if has_mrt:
+        overall = metrics[(metrics["scope"] == "overall")
+                          & (metrics["group"] == "all")].iloc[0]
+        lines.extend([
+            "## Globe-versus-cylinder MRT (context only, not a validation claim)", "",
+            "| n | MBE (°C) | MAE (°C) | RMSE (°C) | R² | Pearson r | Willmott d |",
+            "|---:|---:|---:|---:|---:|---:|---:|",
+            (f"| {int(overall['n'])} | {overall['mean_bias_error_c']:.3f} | "
+             f"{overall['mae_c']:.3f} | {overall['rmse_c']:.3f} | "
+             f"{overall['r2_coefficient_of_determination']:.3f} | "
+             f"{overall['pearson_r']:.3f} | "
+             f"{overall['willmott_agreement_index']:.3f} |"), "",
+            "## Route statistics", "",
+            "| Route | n | measured mean (°C) | TREC-Route mean (°C) | MBE (°C) | MAE (°C) | RMSE (°C) |",
+            "|---|---:|---:|---:|---:|---:|---:|",
+        ])
+        for row in metrics[metrics["scope"] == "route"].itertuples():
+            lines.append(
+                f"| {row.group} | {row.n} | {row.mean_measured_mrt_c:.3f} | "
+                f"{row.mean_trec_route_mrt_c:.3f} | {row.mean_bias_error_c:.3f} | "
+                f"{row.mae_c:.3f} | {row.rmse_c:.3f} |")
     flux_overall = flux_metrics[
         (flux_metrics["scope"] == "overall") & (flux_metrics["group"] == "all")]
     lines.extend([
-        "", "## Absorbed radiant-flux diagnostics", "",
-        "The measurement comparison below uses a two-hemisphere approximation:",
-        "`SWabs = 0.70 × 0.25 × (SWin + SWout)` and",
-        "`LWabs = 0.97 × 0.5 × (LWin + LWout)`. It diagnoses mechanism bias",
-        "but is not an exact six-directional standing-person absorbed-flux measurement.", "",
+        "", "## Radiometer channels (like-for-like)", "",
+        "Sensor height: see `sensor_height_m` in the stage-05 radiant-flux",
+        "metadata. Both sides are horizontal, cosine-weighted irradiance.", "",
         "| Component | measured mean (W m⁻²) | TREC-Route mean (W m⁻²) | MBE (W m⁻²) | RMSE (W m⁻²) | r |",
         "|---|---:|---:|---:|---:|---:|",
     ])
@@ -959,25 +1165,118 @@ def write_case_summary(audit: dict, metrics: pd.DataFrame,
     (output / "VALIDATION_SUMMARY.md").write_text("\n".join(lines), encoding="utf-8")
 
 
+SENSOR_PANEL_LABELS = {
+    "shortwave_down": "Downwelling shortwave (W m$^{-2}$)",
+    "shortwave_up": "Upwelling shortwave (W m$^{-2}$)",
+    "longwave_down": "Downwelling longwave (W m$^{-2}$)",
+    "longwave_up": "Upwelling longwave (W m$^{-2}$)",
+}
+
+
+def plot_sensor_flux_scatter(frame: pd.DataFrame, output: Path, dpi: int) -> None:
+    """Measured versus modelled radiometer channels, one panel per channel.
+
+    Both axes are the same quantity on the same horizontal, cosine-weighted
+    angular convention, so the 1:1 line is meaningful here in a way it is not
+    for body-absorbed flux against a horizontal sensor.
+    """
+    available = [name for name, (measured, predicted) in FLUX_COMPONENTS.items()
+                 if measured in frame.columns and predicted in frame.columns]
+    if not available:
+        return
+    fig, axes = plt.subplots(1, len(available),
+                             figsize=(4.6 * len(available), 4.6))
+    axes = np.atleast_1d(axes)
+    for ax, component in zip(axes, available):
+        measured_column, predicted_column = FLUX_COMPONENTS[component]
+        for route_name, route in frame.groupby("route_name", sort=True):
+            ax.scatter(route[measured_column], route[predicted_column],
+                       s=12, alpha=0.45, label=str(route_name))
+        values = np.r_[frame[measured_column].to_numpy(float),
+                       frame[predicted_column].to_numpy(float)]
+        values = values[np.isfinite(values)]
+        if len(values):
+            limits = [float(values.min()) - 10.0, float(values.max()) + 10.0]
+            ax.plot(limits, limits, "k--", lw=1.1)
+            ax.set(xlim=limits, ylim=limits)
+        ax.set(xlabel=f"Measured {SENSOR_PANEL_LABELS[component]}",
+               ylabel=f"TREC-Route {SENSOR_PANEL_LABELS[component]}",
+               title=component.replace("_", " "))
+        ax.set_aspect("equal", adjustable="box")
+        ax.grid(alpha=0.25)
+    axes[0].legend(fontsize=7, loc="upper left")
+    fig.suptitle("Like-for-like radiometer comparison "
+                 "(horizontal cosine-weighted sensor convention, both sides)")
+    fig.tight_layout()
+    save_figure(fig, output / "sensor_radiometer_measured_vs_trec_route", dpi)
+
+
 def save_case_outputs(frame: pd.DataFrame, audit: dict, metrics: pd.DataFrame,
                       flux_metrics: pd.DataFrame, solar_envelope: pd.DataFrame,
-                      output: Path, dpi: int) -> None:
+                      output: Path, dpi: int,
+                      include_mrt: bool = False) -> None:
     output.mkdir(parents=True, exist_ok=True)
-    frame.to_csv(output / "mrt_experiment_comparison_points.csv", index=False)
-    metrics.to_csv(output / "mrt_experiment_validation_metrics.csv", index=False)
     frame.to_csv(output / "radiant_flux_comparison_points.csv", index=False)
     flux_metrics.to_csv(output / "radiant_flux_validation_metrics.csv", index=False)
     solar_envelope.to_csv(
         output / "solar_forcing_upper_envelope_diagnostics.csv", index=False)
     (output / "pairing_audit.json").write_text(
         json.dumps(audit, indent=2) + "\n", encoding="utf-8")
-    plot_case_timeseries(frame, output, dpi)
-    plot_day_mrt_along_route(frame, output, dpi)
-    plot_case_scatter(frame, output, dpi)
-    plot_case_residuals(frame, output, dpi)
-    plot_day_absorbed_flux_along_route(frame, output, dpi)
-    plot_absorbed_flux_scatter(frame, output, dpi)
+    plot_sensor_flux_scatter(frame, output, dpi)
+    plot_day_radiometer_along_route(frame, output, dpi)
     plot_flux_residual_diagnostics(frame, output, dpi)
+    # Black-globe comparison. Unlike the MRT products below this needs no
+    # opt-in, because it IS like-for-like: a modelled globe against a measured
+    # globe. It is skipped silently when the run predates the emulation.
+    globe_metrics = calculate_globe_metrics(frame, audit["case_id"])
+    if len(globe_metrics):
+        globe_metrics.to_csv(output / "black_globe_validation_metrics.csv",
+                             index=False)
+        plot_black_globe_along_route(frame, output, dpi)
+        plot_black_globe_scatter(frame, output, dpi)
+    # Remove artifacts of a comparison this run did NOT make. A previous run
+    # of this script may have left MRT or two-hemisphere-proxy outputs here;
+    # leaving them beside today's results would present a retired validation
+    # claim as current. Only this script's own regenerable outputs are touched.
+    retired = [] if include_mrt else [
+        "mrt_experiment_comparison_points.csv",
+        "mrt_experiment_validation_metrics.csv",
+        "mrt_measured_vs_trec_route_scatter.pdf",
+        "mrt_measured_vs_trec_route_scatter.png",
+        "mrt_residual_diagnostics.pdf", "mrt_residual_diagnostics.png",
+        "mrt_timeseries_comparison.pdf", "mrt_timeseries_comparison.png",
+    ]
+    for stale in list(output.glob("*_mrt_along_route_comparison.*")) if not include_mrt else []:
+        retired.append(stale.name)
+    # The two-hemisphere absorbed-flux comparison is gone entirely: its
+    # along-route figure, its scatter and its residual plot all set
+    # body-absorbed flux against a horizontal sensor. Delete any left from an
+    # earlier run so the retired convention cannot be mistaken for current.
+    retired += ["absorbed_flux_measured_vs_trec_route_scatter.pdf",
+                "absorbed_flux_measured_vs_trec_route_scatter.png",
+                "absorbed_flux_residual_diagnostics.pdf",
+                "absorbed_flux_residual_diagnostics.png"]
+    retired += [stale.name for stale in
+                output.glob("*_absorbed_flux_along_route_comparison.*")]
+    removed = []
+    for name in retired:
+        path = output / name
+        if path.is_file():
+            path.unlink()
+            removed.append(name)
+    if removed:
+        print(f"  removed {len(removed)} stale artifact(s) of retired "
+              f"comparisons in {output.name}")
+
+    # MRT products are opt-in: the reference is globe-derived and is not a
+    # comparable quantity (see --include-globe-mrt-comparison).
+    if include_mrt and len(metrics):
+        frame.to_csv(output / "mrt_experiment_comparison_points.csv", index=False)
+        metrics.to_csv(output / "mrt_experiment_validation_metrics.csv", index=False)
+        plot_case_timeseries(frame, output, dpi)
+        plot_day_mrt_along_route(frame, output, dpi)
+        plot_case_scatter(frame, output, dpi)
+        plot_case_residuals(frame, output, dpi)
     write_case_summary(audit, metrics, flux_metrics, solar_envelope, output)
 
 
@@ -1052,29 +1351,37 @@ def main() -> int:
             args.coordinate_tolerance_m, args.clock_tolerance_s,
             args.sunlit_threshold_wm2,
         )
-        metrics = calculate_metrics(frame, case_name, args.minimum_subgroup_n)
+        metrics = (calculate_metrics(frame, case_name, args.minimum_subgroup_n)
+                   if args.include_globe_mrt_comparison else pd.DataFrame())
         flux_metrics = calculate_flux_metrics(
             frame, case_name, args.minimum_subgroup_n)
         solar_envelope = solar_forcing_envelope_summary(frame, case_name)
         case_output = output_root / case_name / CASE_OUTPUT_RELATIVE
         save_case_outputs(
             frame, audit, metrics, flux_metrics, solar_envelope,
-            case_output, args.dpi)
-        overall = metrics[(metrics["scope"] == "overall") & (metrics["group"] == "all")].iloc[0]
-        print(
-            f"  paired={len(frame)}, MBE={overall['mean_bias_error_c']:+.3f} C, "
-            f"MAE={overall['mae_c']:.3f} C, RMSE={overall['rmse_c']:.3f} C, "
-            f"r={overall['pearson_r']:.3f}")
+            case_output, args.dpi,
+            include_mrt=args.include_globe_mrt_comparison)
+        print(f"  paired={len(frame)}")
+        if args.include_globe_mrt_comparison and len(metrics):
+            overall = metrics[(metrics["scope"] == "overall")
+                              & (metrics["group"] == "all")].iloc[0]
+            print(
+                f"  [context only, globe-vs-cylinder] "
+                f"MBE={overall['mean_bias_error_c']:+.3f} C, "
+                f"MAE={overall['mae_c']:.3f} C, RMSE={overall['rmse_c']:.3f} C, "
+                f"r={overall['pearson_r']:.3f}")
         print(
             f"  coordinate error <= {audit['maximum_coordinate_pairing_error_m']:.6f} m; "
             f"clock error <= {audit['maximum_clock_pairing_error_s']:.3f} s")
-        total_flux = flux_metrics[
-            (flux_metrics["scope"] == "overall")
-            & (flux_metrics["group"] == "all")
-            & (flux_metrics["component"] == "total_absorbed_diagnostic")].iloc[0]
-        print(
-            f"  absorbed-flux diagnostic: MBE={total_flux['mean_bias_error_wm2']:+.2f} "
-            f"W/m2, RMSE={total_flux['rmse_wm2']:.2f} W/m2")
+        for component in FLUX_COMPONENTS:
+            rows = flux_metrics[
+                (flux_metrics["scope"] == "overall")
+                & (flux_metrics["group"] == "all")
+                & (flux_metrics["component"] == component)]
+            if len(rows):
+                row = rows.iloc[0]
+                print(f"  {component:16s} MBE={row['mean_bias_error_wm2']:+8.2f} "
+                      f"RMSE={row['rmse_wm2']:7.2f} W/m2  r={row['pearson_r']:.3f}")
         if audit["date_mismatched_pairs"]:
             print(
                 f"  WARNING: {audit['date_mismatched_pairs']} night-route pairs use a "
@@ -1094,26 +1401,30 @@ def main() -> int:
         aggregate_output = args.aggregate_output_dir.resolve()
         aggregate_output.mkdir(parents=True, exist_ok=True)
         pooled = pd.concat(all_frames, ignore_index=True)
-        per_case_metrics = pd.concat(all_metrics, ignore_index=True)
-        pooled_metrics = calculate_metrics(
-            pooled, "ALL_AVAILABLE_CASES", args.minimum_subgroup_n)
+        metric_frames = [f for f in all_metrics if len(f)]
+        per_case_metrics = (pd.concat(metric_frames, ignore_index=True)
+                            if metric_frames else pd.DataFrame())
+        pooled_metrics = (
+            calculate_metrics(pooled, "ALL_AVAILABLE_CASES",
+                              args.minimum_subgroup_n)
+            if args.include_globe_mrt_comparison else pd.DataFrame())
         # Explicit opt-in diagnostic only; it is not the primary route result.
         case_records = []
-        for case_name, subset in pooled.groupby("case_id", sort=True):
-            record = metric_record(
-                "ALL_AVAILABLE_CASES", "case", case_name, subset,
-                args.minimum_subgroup_n)
-            if record:
-                case_records.append(record)
-        combined_metrics = pd.concat([
-            per_case_metrics,
-            pooled_metrics,
-            pd.DataFrame(case_records),
-        ], ignore_index=True)
+        if args.include_globe_mrt_comparison:
+            for case_name, subset in pooled.groupby("case_id", sort=True):
+                record = metric_record(
+                    "ALL_AVAILABLE_CASES", "case", case_name, subset,
+                    args.minimum_subgroup_n)
+                if record:
+                    case_records.append(record)
         pooled.to_csv(
             aggregate_output / "all_available_cases_comparison_points.csv", index=False)
-        combined_metrics.to_csv(
-            aggregate_output / "all_available_cases_validation_metrics.csv", index=False)
+        frames = [f for f in (per_case_metrics, pooled_metrics,
+                              pd.DataFrame(case_records)) if len(f)]
+        if frames:
+            pd.concat(frames, ignore_index=True).to_csv(
+                aggregate_output / "all_available_cases_validation_metrics.csv",
+                index=False)
         pd.concat(all_flux_metrics, ignore_index=True).to_csv(
             aggregate_output / "all_available_cases_flux_validation_metrics.csv",
             index=False)
@@ -1138,7 +1449,8 @@ def main() -> int:
         }]).to_csv(
             aggregate_output / "solar_forcing_upper_envelope_cross_case_summary.csv",
             index=False)
-        plot_pooled_scatter(pooled, aggregate_output, args.dpi)
+        if args.include_globe_mrt_comparison:
+            plot_pooled_scatter(pooled, aggregate_output, args.dpi)
         write_run_manifest(args, audits, skipped, aggregate_output)
         print(f"\nOptional aggregate diagnostic outputs: {aggregate_output}")
     else:

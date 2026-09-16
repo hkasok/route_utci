@@ -77,6 +77,9 @@ from thermal_common import (CLASS_GROUND, CLASS_NAMES, CLASS_ROOF, CLASS_WALL,
                             vegetation_transmission_from_intersections)
 from osm_ground_materials import GROUND_MATERIAL_CATALOG
 from microclimate_field import MicroclimateField, add_microclimate_argument
+from pedestrian_flow_field import (PedestrianFlowField,
+                                   add_pedestrian_flow_argument,
+                                   facet_wind_speed_matrix)
 
 # Per-class material / model defaults now live in thermal_common.py so that
 # 05 (pedestrian-side reflected shortwave) and 05b (facet absorption) cannot
@@ -95,6 +98,7 @@ def parse_args():
                    help="Output dir of 05 (needs times.csv)")
     p.add_argument("--output-dir", required=True)
     add_microclimate_argument(p)
+    add_pedestrian_flow_argument(p)
     p.add_argument("--ground-material-dir", default=None,
                    help="Optional OSM ground-material output directory. Its "
                         "catalog supplies the same per-material properties "
@@ -110,15 +114,42 @@ def parse_args():
         "--convection-model",
         choices=["mcadams", "watmuff", "legacy_subtracted", "combined", "convective"],
         default="mcadams",
-        help=("Exterior convective coefficient: mcadams=5.7+3.8U (default), "
-              "watmuff=2.8+3.0U, or legacy_subtracted for the former ad-hoc "
-              "radiative-film subtraction. combined and convective remain aliases "
-              "for backward-compatible command lines."),
+        help=("Exterior surface film coefficient. mcadams=5.7+3.8U (default) "
+              "is a COMBINED coefficient, so the radiative film it already "
+              "contains is removed automatically (4*eps*sigma*T_air^3) before "
+              "use -- this stage computes eps*sigma*T^4 explicitly and would "
+              "otherwise count radiation twice. watmuff=2.8+3.0U was proposed "
+              "as the convective-only alternative for exactly that reason and "
+              "is used as-is. legacy_subtracted uses the older fixed "
+              "--radiative-film-wm2k constant instead. combined and convective "
+              "remain aliases for backward-compatible command lines. Set "
+              "--no-radiative-film-removal to reproduce pre-fix runs."),
     )
+    p.add_argument("--convection-reference-wind",
+                   choices=["free_stream", "facet_local"],
+                   default="free_stream",
+                   help="Which velocity drives the a+b*U film coefficient. "
+                        "'free_stream' (default) uses the experiment-derived "
+                        "wind_freestream_ms from times.csv -- the cart wind "
+                        "lifted through the urban canopy profile to above the "
+                        "roughness sublayer, which is the UNDISTURBED approach "
+                        "velocity these correlations were calibrated against. "
+                        "'facet_local' uses the sheltered potential-flow wind "
+                        "at each facet, which preserves spatial variation but "
+                        "feeds the correlation a velocity roughly 3x smaller "
+                        "than its calibration basis. Falls back to facet_local "
+                        "when the CSV has no free-stream column.")
     p.add_argument("--h-conv-a", type=float, default=5.7,
                    help="Intercept of the McAdams film coefficient a + b*U (default 5.7)")
     p.add_argument("--h-conv-b", type=float, default=3.8,
                    help="Wind slope of the McAdams film coefficient a + b*U (default 3.8)")
+    p.add_argument("--no-radiative-film-removal", action="store_true",
+                   help="Keep the COMBINED film coefficient as if it were "
+                        "purely convective, reproducing runs made before the "
+                        "radiative double-count was fixed. Physically "
+                        "inconsistent: it counts longwave exchange twice, once "
+                        "inside the correlation's intercept and once in the "
+                        "explicit eps*sigma*T^4 term.")
     p.add_argument("--radiative-film-wm2k", type=float, default=6.0,
                    help="Radiative part of the combined film coefficient to remove under "
                         "--convection-model=convective, W/m2K (~4*eps*sigma*T^3 at ~305 K; "
@@ -381,6 +412,16 @@ def main():
             if name not in materials:
                 raise ValueError(f"unknown ground material in catalog: {name}")
             materials[name].update(values)
+        # An explicit --material-json is a deliberate CLI override and must win.
+        # Applying the catalog on top of it silently discarded every ground-class
+        # override the user asked for, which is the normal pipeline path (the
+        # catalog is always present once stage 2 has run) -- so the flag looked
+        # like it worked while changing nothing.
+        if args.material_json:
+            with open(args.material_json, encoding="utf-8") as stream:
+                explicit = json.load(stream)
+            for name, values in explicit.items():
+                materials[name].update(values)
     if args.wall_insulation_r is not None:
         materials["wall"]["insulation_R_m2K_W"] = args.wall_insulation_r
     if args.roof_insulation_r is not None:
@@ -487,6 +528,13 @@ def main():
     # the historical spatially uniform calculation exactly.
     microclimate = (MicroclimateField(args.microclimate_dir)
                     if args.microclimate_dir else None)
+    pedestrian_flow = None
+    if args.pedestrian_flow_dir and microclimate is not None:
+        print("  NOTE: both --microclimate-dir and --pedestrian-flow-dir "
+              "given; the solved 3-D microclimate field takes precedence "
+              "for facet Ta and wind.")
+    elif args.pedestrian_flow_dir:
+        pedestrian_flow = PedestrianFlowField(args.pedestrian_flow_dir)
     if microclimate is not None:
         field_times = pd.to_datetime(times_df["time"])
         field_hours = np.array([
@@ -508,12 +556,79 @@ def main():
         print(f"  Microclimate coupling: local facet Ta "
               f"{air_C_facet.min():.1f}..{air_C_facet.max():.1f} C, "
               f"speed {wind_facet.min():.2f}..{wind_facet.max():.2f} m/s")
+    elif pedestrian_flow is not None:
+        # Step-3 pedestrian-level potential flow supplies only a local wind
+        # MAGNITUDE for the existing parameterized convection coefficient.
+        # Air temperature stays spatially uniform, the convection
+        # correlation is unchanged, and the radiation calculation is
+        # untouched.  Linearity of the Laplace solve lets the one solved
+        # unit-normalized field scale with the shared time-varying wind.
+        air_C_facet = np.broadcast_to(air_C[:, None], (nt, nf))
+        # Scale the field by the INLET (free-stream) series when stage 05
+        # carried one: the potential-flow solution is linear in the boundary
+        # speed, so a time-varying inlet gives a time-varying domain field from
+        # the single solve. wind_ms is the wind a PERSON feels and is not the
+        # boundary condition; using it to scale the field double-counts the
+        # local sheltering the field already represents.
+        if "wind_inlet_ms" in times_df.columns:
+            inlet_ms = times_df["wind_inlet_ms"].to_numpy(float)
+            if not np.isfinite(inlet_ms).all() or np.any(inlet_ms < 0):
+                raise ValueError("times.csv wind_inlet_ms must be finite and "
+                                 "non-negative")
+            scaling_source = (f"times.csv wind_inlet_ms "
+                              f"({inlet_ms.min():.2f}..{inlet_ms.max():.2f} m/s)")
+        else:
+            inlet_ms = wind_ms
+            scaling_source = f"{wind_source} (no separate inlet series)"
+        wind_facet = facet_wind_speed_matrix(
+            pedestrian_flow, centroids[:, :2], inlet_ms).astype(np.float32)
+        if not (np.isfinite(wind_facet).all() and np.all(wind_facet >= 0)):
+            raise ValueError("sampled pedestrian-flow facet wind is invalid")
+        wind_source = (f"pedestrian potential-flow field "
+                       f"{args.pedestrian_flow_dir} scaled by {scaling_source}")
+        print(f"  Pedestrian-flow coupling: {pedestrian_flow.describe()}")
+        print(f"  Local facet wind speed "
+              f"{wind_facet.min():.2f}..{wind_facet.max():.2f} m/s "
+              f"(uniform Ta retained)")
     else:
         air_C_facet = np.broadcast_to(air_C[:, None], (nt, nf))
         wind_facet = np.broadcast_to(wind_ms[:, None], (nt, nf))
     air_K_facet = air_C_facet + 273.15
+    # ------------------------------------------------------------------
+    # WHICH VELOCITY DRIVES CONVECTION
+    #
+    # McAdams-type a + b*U correlations were measured on flat plates in a
+    # uniform wind-tunnel stream, so U is the UNDISTURBED APPROACH velocity.
+    # Feeding them the sheltered in-canopy wind at a facet is a category error:
+    # on lisbon1 the free stream is ~3x the cart-measured wind, which is most of
+    # the gap between the h ~ 10 this stage produced and the 15-30 that urban
+    # schemes report. wind_freestream_ms is the measured wind lifted through the
+    # canopy profile (wind_profile.py) -- an experiment-derived boundary
+    # condition, never taken from the flow solution it goes on to drive.
+    #
+    # The trade-off is explicit: the free stream is spatially uniform, so it
+    # buys correct magnitude at the cost of the local variation the
+    # potential-flow field provides. Genuine spatial variation of the
+    # convective coefficient needs a CHTC model, not a rescaled correlation.
+    # ------------------------------------------------------------------
+    convection_wind = wind_facet
+    convection_wind_source = "facet-local potential-flow wind"
+    if args.convection_reference_wind == "free_stream":
+        if "wind_freestream_ms" in times_df.columns:
+            free_stream = times_df["wind_freestream_ms"].to_numpy(float)
+            convection_wind = np.broadcast_to(free_stream[:, None], (nt, nf))
+            convection_wind_source = (
+                "experiment-derived free stream (wind_freestream_ms, cart wind "
+                "lifted through the urban canopy profile)")
+        else:
+            convection_wind_source = (
+                "facet-local potential-flow wind (no wind_freestream_ms in "
+                "times.csv; run weather_from_sensors.py to generate it)")
+    print(f"  Convection reference wind: {convection_wind_source}; "
+          f"{convection_wind.mean():.2f} m/s mean "
+          f"(facet-local mean {wind_facet.mean():.2f} m/s)")
     h_conv_facet = convection_coefficient(
-        wind_facet, args.convection_model, a=args.h_conv_a, b=args.h_conv_b,
+        convection_wind, args.convection_model, a=args.h_conv_a, b=args.h_conv_b,
         radiative_film=args.radiative_film_wm2k, floor=args.h_conv_floor)
     # Time step from times.csv. IMPORTANT: computed via total_seconds(),
     # which is correct for ANY datetime64 resolution. (An earlier version
@@ -618,6 +733,52 @@ def main():
     for name in active_materials:
         eps_facet[members[name]] = materials[name]["emissivity"]
         alb_facet[members[name]] = materials[name]["albedo"]
+    # ------------------------------------------------------------------
+    # RADIATIVE DOUBLE-COUNT REMOVAL
+    #
+    # McAdams' 5.7 + 3.8U is a COMBINED surface film coefficient: its intercept
+    # already contains the radiative exchange of a surface sitting near ambient.
+    # This stage ALSO computes longwave emission explicitly as eps*sigma*T^4,
+    # linearised in the solver as 4*eps*sigma*Ts^3. Using the combined
+    # coefficient as if it were purely convective therefore counts radiation
+    # twice, roughly 6 W/m2K out of a total surface conductance near 30 -- about
+    # a fifth of everything carrying heat away from the surface.
+    #
+    # The removal subtracts the model's OWN radiative film rather than a
+    # hard-coded constant, so the two halves cannot drift apart:
+    #
+    #     h_c = max(a + b*U - 4*eps*sigma*T_air^3, floor)
+    #
+    # Evaluated at AIR temperature, not surface temperature, because that is
+    # the condition under which the combined correlation was measured: the
+    # radiative part embedded in the intercept is the one a near-ambient
+    # surface has. Subtracting 4*eps*sigma*Ts^3 at a 50 C surface would remove
+    # more than was ever included.
+    #
+    # NOTE ON DIRECTION: this removes dissipation, so surfaces get HOTTER. It
+    # is nonetheless the physically consistent choice -- the previous behaviour
+    # was masking part of a genuine convective deficit rather than correcting
+    # it. See MATERIAL/README notes and verify_thermal_pipeline.
+    # ------------------------------------------------------------------
+    # Watmuff et al. (1977) proposed 2.8 + 3.0U precisely BECAUSE they argued
+    # McAdams' 5.7 + 3.8U already contains radiation. So 'watmuff' is already a
+    # convective-only correlation and must NOT have a radiative film removed
+    # from it a second time -- only the combined forms are corrected here.
+    if (args.convection_model in ("mcadams", "combined")
+            and not args.no_radiative_film_removal):
+        embedded_radiative_film = (4.0 * eps_facet[None, :] * SIGMA
+                                   * air_K_facet ** 3)
+        h_conv_raw_mean = float(h_conv_facet.mean())
+        h_conv_facet = np.maximum(h_conv_facet - embedded_radiative_film,
+                                  float(args.h_conv_floor))
+        print(f"  Radiative double-count removed from the combined film "
+              f"coefficient: h_conv {h_conv_raw_mean:.1f} -> "
+              f"{h_conv_facet.mean():.1f} W/m2K "
+              f"(embedded radiative film "
+              f"{float(embedded_radiative_film.mean()):.1f}, floor "
+              f"{args.h_conv_floor:.1f}); explicit eps*sigma*T^4 now carries "
+              "the radiative exchange alone")
+
     evaporation_facet = np.zeros(nf)
     for name in active_materials:
         evaporation_facet[members[name]] = float(
@@ -710,6 +871,33 @@ def main():
             air_temperature_C=air_C_facet,
             wind_speed_ms=wind_facet,
             h_conv_Wm2K=np.asarray(h_conv_facet, dtype=np.float32))
+    if pedestrian_flow is not None:
+        np.savez_compressed(
+            out_dir / "facet_pedestrian_wind_forcing.npz",
+            wind_speed_ms=wind_facet,
+            h_conv_Wm2K=np.asarray(h_conv_facet, dtype=np.float32))
+    # Record which convection-wind source actually drove this run so
+    # downstream comparisons can prove no silent forcing switch occurred.
+    (out_dir / "surface_wind_provenance.json").write_text(json.dumps({
+        "wind_source": wind_source,
+        "convection_reference_wind": args.convection_reference_wind,
+        "convection_wind_source": convection_wind_source,
+        "convection_wind_mean_ms": float(convection_wind.mean()),
+        "facet_local_wind_mean_ms": float(wind_facet.mean()),
+        "h_conv_mean_Wm2K": float(h_conv_facet.mean()),
+        "radiative_film_removed": bool(
+            args.convection_model in ("mcadams", "combined")
+            and not args.no_radiative_film_removal),
+        "inlet_series_used": bool(
+            pedestrian_flow is not None
+            and "wind_inlet_ms" in times_df.columns),
+        "convection_model": args.convection_model,
+        "microclimate_dir": args.microclimate_dir,
+        "pedestrian_flow_dir": (args.pedestrian_flow_dir
+                                if pedestrian_flow is not None else None),
+        "uniform_fallback": (microclimate is None
+                            and pedestrian_flow is None),
+    }, indent=2), encoding="utf-8")
 
     radiosity_report = [
         f"Longwave radiosity model: {args.longwave_radiosity_model}",

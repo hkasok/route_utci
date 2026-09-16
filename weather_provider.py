@@ -114,6 +114,35 @@ class WeatherProvider:
             self._ta = col("air_temp_c", "air_temp", "tdb_c", "tdb", "ta_c", "ta")
             self._rh = col("rh_pct", "rh", "relative_humidity_pct", "relative_humidity")
             self._wind = col("wind_ms", "wind", "v_ms", "wind_speed_ms", "v")
+            # OPTIONAL time-varying INLET (free-stream) wind for the step-3
+            # potential-flow field. It is a different quantity from wind_ms:
+            # wind_ms is the wind a person experiences, while this is the
+            # boundary speed the flow field is scaled by. Absent = the
+            # historical behaviour, where wind_ms serves as both.
+            self._wind_inlet = col("wind_inlet_ms", "inlet_wind_ms",
+                                   "reference_wind_ms")
+            # FREE-STREAM reference wind: the measured cart wind lifted through
+            # the urban canopy profile to a height above the roughness
+            # sublayer. This is what an "a + b*U" convection correlation was
+            # calibrated against -- an undisturbed approach velocity, not the
+            # sheltered in-canopy value. Distinct from wind_inlet_ms, which is
+            # a pedestrian-height boundary speed for the 2-D flow solve.
+            self._wind_freestream = col("wind_freestream_ms",
+                                        "free_stream_wind_ms")
+            if self._wind_freestream is not None:
+                if not np.isfinite(self._wind_freestream).all() \
+                        or np.any(self._wind_freestream < 0):
+                    raise ValueError(
+                        "weather CSV column 'wind_freestream_ms' must be "
+                        f"finite and non-negative: {csv_path}")
+                self.columns_from_csv.append("wind_freestream_ms")
+            if self._wind_inlet is not None:
+                if not np.isfinite(self._wind_inlet).all() \
+                        or np.any(self._wind_inlet < 0):
+                    raise ValueError(
+                        f"weather CSV column 'wind_inlet_ms' must be finite and "
+                        f"non-negative: {csv_path}")
+                self.columns_from_csv.append("wind_inlet_ms")
             # Validate UNITS and physical range at the source, so a bad CSV
             # fails here once instead of silently corrupting every stage
             # (RH as a 0-1 fraction is the classic one -- see physical_checks).
@@ -168,6 +197,34 @@ class WeatherProvider:
             return self._interp(hour, self._wind)
         return np.full(np.shape(hour), self.const_wind, dtype=float) \
             if np.ndim(hour) else self.const_wind
+
+    def has_free_stream_wind(self):
+        """True when the CSV supplies a canopy-lifted free-stream series."""
+        return self.have_csv and self._wind_freestream is not None
+
+    def free_stream_wind_ms(self, hour):
+        """Free-stream reference wind for convection correlations.
+
+        Falls back to :meth:`wind_ms` when absent, which reproduces the
+        historical behaviour of driving convection with the sheltered wind.
+        """
+        if self.has_free_stream_wind():
+            return self._interp(hour, self._wind_freestream)
+        return self.wind_ms(hour)
+
+    def has_inlet_wind(self):
+        """True when the CSV supplies a separate inlet (free-stream) series."""
+        return self.have_csv and self._wind_inlet is not None
+
+    def inlet_wind_ms(self, hour):
+        """Time-varying inlet wind for the potential-flow field.
+
+        Falls back to :meth:`wind_ms` when the CSV has no inlet column, which
+        reproduces the historical single-series behaviour exactly.
+        """
+        if self.has_inlet_wind():
+            return self._interp(hour, self._wind_inlet)
+        return self.wind_ms(hour)
 
     def describe(self):
         if not self.have_csv:

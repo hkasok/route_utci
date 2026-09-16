@@ -19,6 +19,7 @@ import json
 
 import numpy as np
 
+import material_library
 from osm_ground_materials import DEFAULT_CONFIG as OSM_GROUND_DEFAULT_CONFIG
 
 SIGMA = 5.670374419e-8  # Stefan-Boltzmann, W m^-2 K^-4
@@ -55,28 +56,12 @@ GROUND_ALBEDO = 0.18
 # exterior wall gets dragged several degrees BELOW ambient at midday (observed:
 # wall mean 27.8 C vs 32.5 C air), which then collapses pedestrian Tmrt in
 # street canyons. R=0 reproduces the old bare-mass-wall-to-AC behaviour.
-DEFAULT_MATERIALS = {
-    "ground": {"k": 1.00, "C": 2.0e6, "depth": 0.50, "n_layers": 8,
-               "albedo": GROUND_ALBEDO, "emissivity": 0.95,
-               "evaporative_efficiency": 0.05,
-               "bottom_bc": "fixed"},     # fixed T_deep at depth
-    "wall":   {"k": 1.40, "C": 1.8e6, "depth": 0.25, "n_layers": 6,
-               "albedo": 0.30, "emissivity": 0.90,
-               "evaporative_efficiency": 0.0,
-               "bottom_bc": "interior",   # conditioned interior behind insulation
-               "insulation_R_m2K_W": 1.5},   # ~U 0.5 incl. film: modestly insulated wall
-    "roof":   {"k": 1.00, "C": 1.6e6, "depth": 0.25, "n_layers": 6,
-               "albedo": 0.15, "emissivity": 0.92,
-               "evaporative_efficiency": 0.0,
-               "bottom_bc": "interior",
-               "insulation_R_m2K_W": 2.5},   # roofs are usually better insulated
-}
-
-# Ground subclasses share their single source of truth with the OSM
-# classification/configuration module. ``ground`` remains the exact legacy
-# uniform class used when the surface branch is disabled.
-for _ground_name, _ground_values in OSM_GROUND_DEFAULT_CONFIG["materials"].items():
-    DEFAULT_MATERIALS[_ground_name] = dict(_ground_values)
+# Every property below now resolves from material_library.py, the single
+# authoritative database. Ground, water, facade and roof classes all come from
+# the same table, so a surface cannot be one material to the radiation code and
+# a different one to the energy balance. The historical keys "ground", "wall"
+# and "roof" are preserved with their exact former values.
+DEFAULT_MATERIALS = material_library.legacy_material_table()
 
 # Filename written by 05b into its output directory and read back by 05, so
 # the two stages can be checked against each other rather than trusted.

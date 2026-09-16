@@ -54,6 +54,10 @@ def parse_args():
     p.add_argument("--veg-connect-radius", type=int, default=1,
                     help="Vegetation clustering dilation radius, grid cells (default: 1)")
     p.add_argument("--veg-min-hull-points", type=int, default=10)
+    # Named explicitly so a run records which crown model built its geometry.
+    p.add_argument("--crown-model", choices=["field", "reconstruct", "radial", "hemisphere"],
+                   default="field",
+                   help="Crown geometry model for the vegetation stage (default: field)")
 
     p.add_argument("--bld-cell-size", type=float, default=0.5,
                     help="Building clustering grid cell size, meters (default: 0.5)")
@@ -161,8 +165,9 @@ def main():
          "--ground-npy", str(split_dir / "ground_and_water_points.npy"),
          "--cell-size", str(args.veg_cell_size),
          "--connect-radius", str(args.veg_connect_radius),
-         "--min-hull-points", str(args.veg_min_hull_points)],
-        log_file, "Stage 1: vegetation -> per-crown hemisphere domes"
+         "--min-hull-points", str(args.veg_min_hull_points),
+         "--crown-model", args.crown_model],
+        log_file, f"Stage 1: vegetation -> per-crown {args.crown_model} crowns"
     )
 
     # ---- Stage 2: buildings (footprint extrusion) ----

@@ -84,6 +84,55 @@ TOTAL_COLUMNS = [
     "total_absorbed_radiant_flux_Wm2",
 ]
 
+# Instrument-equivalent channels: what a four-component net radiometer with a
+# horizontal up- and down-facing pair would read at the sensor height, rather
+# than what a human body absorbs. They exist so a measured radiometer series
+# can be compared LIKE FOR LIKE, and they are deliberately handled apart from
+# the body-absorbed record:
+#
+#   * they are NOT part of any absorbed-flux closure identity (they are a
+#     different quantity, on a different angular weighting, and summing them
+#     with body-absorbed terms would be meaningless);
+#   * they are NEVER touched by the route MRT closure rescaling, because that
+#     scale exists to reconcile body-absorbed flux with the authoritative MRT
+#     and applying it to an instrument reading would corrupt it.
+SENSOR_COLUMNS = [
+    "sensor_shortwave_down_Wm2",
+    "sensor_shortwave_up_Wm2",
+    "sensor_longwave_down_Wm2",
+    "sensor_longwave_up_Wm2",
+]
+
+# Black-globe thermometer emulation, on the SPHERE angular weighting (constant
+# 0.25 beam projected-area factor) rather than the standing body's. Same
+# handling rule as SENSOR_COLUMNS and for the same reason: a globe is a
+# different receptor, so these must never enter a body-absorbed closure or be
+# touched by the body MRT rescaling.
+#
+#   globe_absorbed_flux_Wm2        sphere-weighted absorbed radiation
+#   globe_radiative_equilibrium_C  sphere-weighted MRT (radiation only)
+#   globe_steady_temperature_C     what a globe reads once settled, wind included
+#
+# The transient (lagged) globe temperature is NOT here: it depends on the order
+# and timing in which a walker visits points, so it can only be formed along a
+# route. See black_globe.integrate_globe_temperature_C.
+GLOBE_COLUMNS = [
+    "globe_absorbed_flux_Wm2",
+    "globe_radiative_equilibrium_C",
+    "globe_steady_temperature_C",
+]
+
+# Everything that emulates an instrument rather than the human body.
+INSTRUMENT_COLUMNS = SENSOR_COLUMNS + GLOBE_COLUMNS
+
+# Channels carried in degrees Celsius rather than W/m2. They are exempt from the
+# non-negativity check that guards the absorbed-flux record, because a globe on
+# a clear winter night genuinely reads below zero.
+TEMPERATURE_COLUMNS = {
+    "globe_radiative_equilibrium_C",
+    "globe_steady_temperature_C",
+}
+
 DEFAULT_CONFIG: dict[str, Any] = {
     "enabled": True,
     "record_primary_mechanisms": True,
@@ -368,7 +417,9 @@ def validate_contribution_arrays(contributions: Mapping[str, Any],
             raise ValueError(f"contribution {key} has shape {value.shape}, expected {shape}")
         if not np.isfinite(value).all():
             raise ValueError(f"contribution {key} contains non-finite values")
-        if np.any(value < -absolute_tolerance):
+        # Temperature channels are legitimately negative on a cold night; only
+        # the flux channels are sign-constrained.
+        if key not in TEMPERATURE_COLUMNS and np.any(value < -absolute_tolerance):
             raise ValueError(f"contribution {key} contains negative absorbed flux")
     sw = arrays[PRIMARY_COLUMNS[0]] + arrays[PRIMARY_COLUMNS[1]] + arrays[PRIMARY_COLUMNS[2]]
     lw = arrays[PRIMARY_COLUMNS[3]] + arrays[PRIMARY_COLUMNS[4]]
@@ -474,6 +525,13 @@ def sample_route_contribution_matrices(
         raise ValueError("route flux closure requires positive total radiant flux")
     scale = target_total / raw_total
     for key in sampled:
+        # Instrument-equivalent channels are a different quantity on a
+        # different angular weighting; the body-absorbed MRT closure must not
+        # touch them (see SENSOR_COLUMNS / GLOBE_COLUMNS). Scaling a globe
+        # TEMPERATURE by a flux ratio would be doubly wrong -- wrong receptor
+        # and wrong units.
+        if key in INSTRUMENT_COLUMNS:
+            continue
         sampled[key] = sampled[key] * scale
     validate_contribution_arrays(
         sampled,

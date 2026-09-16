@@ -146,6 +146,41 @@ check("time-resolved McAdams convection", np.allclose(
 check("legacy convection remains reproducible", np.allclose(
     eb.convection_coefficient(wind, "legacy_subtracted"),
     np.maximum(5.7 + 3.8 * wind - 6.0, 2.0)))
+
+# RADIATIVE DOUBLE-COUNT. 5.7 + 3.8U is a COMBINED film coefficient: its
+# intercept already carries the radiative exchange of a near-ambient surface,
+# and this stage also emits eps*sigma*T^4 explicitly. Using the raw combined
+# value as if it were purely convective counts longwave twice.
+source_05b = (HERE / "05b_facet_energy_balance.py").read_text(encoding="utf-8")
+check("the combined film coefficient has its radiative part removed",
+      "embedded_radiative_film" in source_05b
+      and "4.0 * eps_facet[None, :] * SIGMA" in source_05b)
+check("the removal uses the model's OWN emissivity, not a hard-coded constant",
+      "eps_facet" in source_05b.split("embedded_radiative_film")[1][:200])
+check("the removal is evaluated at AIR temperature, which is the condition the "
+      "combined correlation was measured under",
+      "air_K_facet ** 3" in source_05b)
+check("a floor keeps the convective coefficient positive",
+      "float(args.h_conv_floor)" in source_05b)
+check("pre-fix behaviour stays reachable for reproducibility",
+      "--no-radiative-film-removal" in source_05b)
+# Watmuff 2.8+3.0U was proposed as the CONVECTIVE-only alternative precisely
+# because McAdams was argued to include radiation. Removing a film from it too
+# would subtract radiation twice.
+check("watmuff is NOT double-corrected -- it is already convective-only",
+      'args.convection_model in ("mcadams", "combined")' in source_05b)
+check("watmuff remains the plain 2.8+3.0U", np.allclose(
+    eb.convection_coefficient(wind, "watmuff"), 2.8 + 3.0 * wind))
+# Magnitude: the embedded film must be the ~6 W/m2K the old constant assumed,
+# which is what makes the fixed 6.0 defensible as an approximation and the
+# temperature-dependent form exact.
+embedded = 4.0 * 0.946 * 5.670374419e-8 * (30.0 + 273.15) ** 3
+check("the embedded radiative film is close to the historical 6.0 constant",
+      abs(embedded - 6.0) < 0.5, f"{embedded:.2f} W/m2K at 30 C, eps 0.946")
+# And it is a large fraction of the total surface conductance, so removing it
+# is not a rounding change.
+check("removing it is material: it is a fifth of a ~30 W/m2K total",
+      embedded / 30.0 > 0.15, f"{embedded / 30.0:.0%} of the total")
 net_radiation = np.array([0.0, 200.0, 600.0])
 latent_dry = eb.equilibrium_latent_heat_flux(
     net_radiation, 30.0, np.zeros(3))

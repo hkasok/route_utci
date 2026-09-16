@@ -40,6 +40,7 @@ Run:
 """
 
 import argparse
+import copy
 import hashlib
 import json
 import pickle
@@ -55,10 +56,15 @@ from thermal_common import (MATERIALS_MANIFEST, RADIOSITY_ENVIRONMENT,
                             RADIOSITY_MATRIX, resolve_ground_albedo,
                             sky_longwave_down)
 from radiant_flux_contributions import (
-    CONTRIBUTION_ARCHIVE, CONTRIBUTION_METADATA, LW_SOURCE_COLUMNS,
+    CONTRIBUTION_ARCHIVE, CONTRIBUTION_METADATA, GLOBE_COLUMNS,
+    LW_SOURCE_COLUMNS, SENSOR_COLUMNS,
     PRIMARY_COLUMNS, SW_SOURCE_COLUMNS, TOTAL_COLUMNS, canonical_lw_source,
     canonical_sw_source, load_contribution_config,
     validate_contribution_arrays, write_contribution_metadata)
+from black_globe import (GLOBE_PRESETS, describe as describe_globe,
+                         radiative_equilibrium_temperature_C,
+                         resolve_globe_spec, sphere_projected_area_factor,
+                         steady_globe_temperature_C)
 from weather_provider import add_weather_args, provider_from_args
 from microclimate_field import EnvironmentField, add_microclimate_argument
 from radiation_forcing import resolve_radiation_forcing
@@ -162,6 +168,56 @@ def parse_args():
                     help="Same override file passed to 05b; used only to "
                          "resolve the ground albedo when no facet-thermal "
                          "manifest is available.")
+    p.add_argument("--wall-reflected-shortwave", choices=["on", "off"], default="on",
+                    help="Include shortwave reflected off route-visible WALLS and "
+                         "ROOFS (default on). Sunlit facades are a real shortwave "
+                         "source for a pedestrian in a street canyon and were "
+                         "previously omitted, leaving only ground reflection. Uses "
+                         "the same 05a directional view weights and 05b per-facet "
+                         "sun/sky exposure and albedo as the longwave surround, so "
+                         "no new ray tracing is required. Requires "
+                         "--facet-thermal-dir; without it the legacy ground-only "
+                         "reflection is unchanged.")
+    p.add_argument("--sensor-equivalent-outputs", choices=["on", "off"], default="on",
+                    help="Also record what a four-component net radiometer would "
+                         "read at --sensor-height-m (horizontal up/down shortwave "
+                         "and longwave). These are instrument-equivalent "
+                         "diagnostics for like-for-like comparison against field "
+                         "measurements; they are never mixed into the "
+                         "body-absorbed flux or MRT.")
+    p.add_argument("--sensor-height-m", type=float, default=1.0,
+                    help="Height above local ground of the emulated radiometer "
+                         "(default 1.0 m). The receptor ray tracing is performed "
+                         "at --z-height; when the two differ the sky-view and "
+                         "shading state of the receptor are reused and the "
+                         "difference is recorded in the metadata.")
+    p.add_argument("--black-globe-outputs", choices=["on", "off"], default="on",
+                    help="Also record what a BLACK-GLOBE THERMOMETER would read "
+                         "at --sensor-height-m. A globe is a sphere, so its "
+                         "direct-beam projected-area factor is a constant 0.25 "
+                         "instead of the standing body's altitude-dependent one, "
+                         "and it is a thermometer rather than a radiometer -- "
+                         "wind pulls it toward air temperature. Both are handled "
+                         "here. Like the radiometer channels this is an "
+                         "instrument emulator: it is never mixed into the "
+                         "body-absorbed flux, the pedestrian MRT, UTCI or JOS-3. "
+                         "Requires --facet-thermal-dir.")
+    p.add_argument("--globe-preset", default="campbell_blackglobe_l",
+                    choices=sorted(GLOBE_PRESETS),
+                    help="Which globe to emulate (default the Campbell "
+                         "Scientific BLACKGLOBE-L used by the Lisbon campaigns: "
+                         "152 mm copper sphere, emittance 0.957).")
+    p.add_argument("--globe-diameter-m", type=float, default=None,
+                    help="Override the emulated globe diameter [m].")
+    p.add_argument("--globe-emissivity", type=float, default=None,
+                    help="Override the emulated globe longwave emissivity.")
+    p.add_argument("--globe-sw-absorptivity", type=float, default=None,
+                    help="Override the emulated globe shortwave absorptivity.")
+    p.add_argument("--globe-areal-heat-capacity", type=float, default=None,
+                    help="Override the globe heat capacity per unit of its own "
+                         "surface area [J m-2 K-1]. This sets the response lag, "
+                         "which dominates a walking measurement -- see "
+                         "README_black_globe.md before changing it.")
     p.add_argument("--reflected-model", choices=["local", "global"], default="local",
                     help="How ground-reflected shortwave is estimated. 'local' (default, "
                          "CORRECT) scales it by the sunlight actually reaching the ground at "
@@ -679,6 +735,8 @@ def estimate_mrt_from_radiation(dni, dhi, ghi, elevation_deg, tau_direct,
                                  reflected_source_fractions=None,
                                  L_surround_components=None,
                                  L_sky_override=None,
+                                 wall_reflected_incident=None,
+                                 wall_reflected_parts=None,
                                  return_contributions=False):
     # lw_sky_frac: FULL-SPHERE sky fraction for the LONGWAVE blend (from 05a's
     #   cylinder view, ground-inclusive). When None the blend falls back to the
@@ -783,9 +841,25 @@ def estimate_mrt_from_radiation(dni, dhi, ghi, elevation_deg, tau_direct,
     if (not np.isfinite(reflecting_albedo).all()
             or np.any((reflecting_albedo < 0) | (reflecting_albedo > 1))):
         raise ValueError("local ground albedo must be finite and in [0,1]")
-    K_reflected_abs = (args.person_sw_absorptivity * args.f_ground_reflected
-                       * reflecting_albedo * k_global_local)
+    K_ground_reflected_abs = (args.person_sw_absorptivity * args.f_ground_reflected
+                              * reflecting_albedo * k_global_local)
 
+    # Wall/roof reflected shortwave. Sunlit facades are a genuine shortwave
+    # source in a street canyon; omitting them (the previous behaviour) leaves
+    # only ground reflection and under-states pedestrian shortwave where the
+    # sky view is small and the wall view large -- exactly the canyon case.
+    # The view weighting is 05a's, so no extra ray tracing is needed.
+    if wall_reflected_incident is None:
+        K_wall_reflected_abs = np.zeros_like(np.asarray(K_ground_reflected_abs,
+                                                        dtype=float))
+    else:
+        K_wall_reflected_abs = (args.person_sw_absorptivity
+                                * np.asarray(wall_reflected_incident, dtype=float))
+        if not np.isfinite(K_wall_reflected_abs).all() \
+                or np.any(K_wall_reflected_abs < 0):
+            raise ValueError("wall-reflected shortwave must be finite and non-negative")
+
+    K_reflected_abs = K_ground_reflected_abs + K_wall_reflected_abs
     K_shortwave_abs = K_direct_abs + K_diffuse_abs + K_reflected_abs
     # Longwave sky/surround blend. Use the FULL-SPHERE sky fraction when given
     # (facet-thermal path) so the ground below an open point is counted; the
@@ -812,16 +886,27 @@ def estimate_mrt_from_radiation(dni, dhi, ghi, elevation_deg, tau_direct,
         "total_absorbed_radiant_flux_Wm2": np.asarray(R_abs, dtype=float),
     }
 
-    # The current reflected-SW model is a local ground-reflection model. Its
-    # material attribution therefore uses the same route-visible ground-facet
-    # albedo weights that produced ``local_ground_albedo``. No unsupported
-    # wall/roof reflection is invented.
+    # Material attribution of reflected shortwave. The GROUND part is split by
+    # the same route-visible ground-facet albedo weights that produced
+    # ``local_ground_albedo``; the WALL/ROOF part is attributed directly from
+    # the 05a view weights of those facets. Together they close exactly onto
+    # sw_reflected_total_absorbed_Wm2.
+    ground_template = np.asarray(K_ground_reflected_abs, dtype=float)
     sw_fractions = reflected_source_fractions or {
-        "sw_reflected_generic_ground_absorbed_Wm2": np.ones_like(template)
+        "sw_reflected_generic_ground_absorbed_Wm2": np.ones_like(ground_template)
     }
     for key in SW_SOURCE_COLUMNS:
-        fraction = np.asarray(sw_fractions.get(key, np.zeros_like(template)), dtype=float)
-        contributions[key] = template * fraction
+        fraction = np.asarray(sw_fractions.get(key, np.zeros_like(ground_template)),
+                              dtype=float)
+        contributions[key] = ground_template * fraction
+    if wall_reflected_parts is not None:
+        absorptivity = args.person_sw_absorptivity
+        contributions["sw_reflected_building_wall_absorbed_Wm2"] = (
+            contributions.get("sw_reflected_building_wall_absorbed_Wm2", 0.0)
+            + absorptivity * np.asarray(wall_reflected_parts["wall"], dtype=float))
+        contributions["sw_reflected_roof_absorbed_Wm2"] = (
+            contributions.get("sw_reflected_roof_absorbed_Wm2", 0.0)
+            + absorptivity * np.asarray(wall_reflected_parts["roof"], dtype=float))
 
     if L_surround_components:
         for key in LW_SOURCE_COLUMNS:
@@ -837,6 +922,113 @@ def estimate_mrt_from_radiation(dni, dhi, ghi, elevation_deg, tau_direct,
         contributions["lw_other_surface_absorbed_Wm2"] = np.asarray(
             L_surface_abs, dtype=float)
     return tmrt_K - 273.15, R_abs, K_shortwave_abs, L_longwave_abs, contributions
+
+
+def sensor_radiometer_quantities(dni, dhi, elevation_deg, tau_direct,
+                                 svf_planar, L_sky, L_surround,
+                                 ground_albedo, ground_emitted_Wm2,
+                                 ground_emissivity, surround_sw_radiance,
+                                 args):
+    """Emulate a four-component net radiometer at the sensor height.
+
+    Returns the four channels such an instrument reports, on ITS OWN angular
+    weighting -- a horizontal, cosine-weighted upward and downward pair --
+    not the human-body weighting used for MRT:
+
+        shortwave_down = beam on the horizontal + sky diffuse + surround
+                         reflected sunlight arriving from above the horizon
+        shortwave_up   = footprint ground albedo * shortwave_down
+        longwave_down  = sky share of the upper hemisphere + the surround
+                         radiosity filling the rest of it
+        longwave_up    = footprint ground emission + reflected downwelling
+                         longwave
+
+    The two UPWELLING channels use the instrument's own downward footprint
+    (``FacetLongwave.build_sensor_ground_footprint``), which is a few metres
+    across at a 1 m sensor height -- not the body's cylinder view of the ground
+    out to the culling distance.
+
+    Documented approximations (they are why this is a diagnostic, not a
+    second authoritative product):
+
+    * The sky/surface split of each hemisphere uses the PLANAR sky-view
+      factor, which is the correct cosine weighting for a horizontal sensor.
+      The radiance filling the non-sky part is taken from the cylinder-
+      weighted facet mean already computed for the longwave surround, i.e.
+      the surround's mean radiosity is reused while only the SPLIT is planar.
+      A fully rigorous version would need a second, planar-weighted view
+      matrix from 05a.
+    * The ray tracing is performed once, at ``--z-height``. When
+      ``--sensor-height-m`` differs, the receptor's shading and sky view are
+      reused; over the ~0.1 m offsets involved this is negligible in the open
+      and small beside a facade, and both heights are recorded in metadata.
+    """
+    sin_el = np.sin(np.deg2rad(np.maximum(elevation_deg, 0.0)))
+    svf_planar = np.asarray(svf_planar, dtype=float)
+    beam_horizontal = np.asarray(tau_direct, dtype=float) * float(dni) * sin_el
+    diffuse_sky = svf_planar * float(dhi)
+    if surround_sw_radiance is None:
+        surround_sw = np.zeros_like(svf_planar)
+    else:
+        surround_sw = (1.0 - svf_planar) * np.asarray(surround_sw_radiance,
+                                                      dtype=float)
+    shortwave_down = beam_horizontal + diffuse_sky + surround_sw
+
+    albedo = (np.full_like(svf_planar, float(args.ground_albedo or 0.18))
+              if ground_albedo is None
+              else np.asarray(ground_albedo, dtype=float))
+    shortwave_up = albedo * shortwave_down
+
+    longwave_down = (svf_planar * np.asarray(L_sky, dtype=float)
+                     + (1.0 - svf_planar) * np.asarray(L_surround, dtype=float))
+
+    if ground_emitted_Wm2 is None:
+        # No resolved ground footprint: the surround radiosity is the best
+        # available estimate of what the downward sensor would see.
+        longwave_up = np.asarray(L_surround, dtype=float) * np.ones_like(svf_planar)
+    else:
+        eps_g = (np.full_like(svf_planar, 0.95) if ground_emissivity is None
+                 else np.asarray(ground_emissivity, dtype=float))
+        # Already footprint-weighted RADIOSITY (eps*sigma*T^4 averaged over the
+        # instrument's own downward kernel), not a temperature to be raised to
+        # the fourth power here -- see FacetLongwave.sensor_ground_emitted.
+        emitted = np.asarray(ground_emitted_Wm2, dtype=float)
+        fallback = np.asarray(L_surround, dtype=float) * np.ones_like(svf_planar)
+        eps_g = np.where(np.isfinite(eps_g), eps_g, 0.95)
+        longwave_up = np.where(np.isfinite(emitted),
+                               emitted + (1.0 - eps_g) * longwave_down,
+                               fallback)
+    return {
+        "sensor_shortwave_down_Wm2": shortwave_down,
+        "sensor_shortwave_up_Wm2": shortwave_up,
+        "sensor_longwave_down_Wm2": longwave_down,
+        "sensor_longwave_up_Wm2": longwave_up,
+    }
+
+
+def globe_radiation_args(args, spec):
+    """An args view that makes ``estimate_mrt_from_radiation`` describe a SPHERE.
+
+    Reusing that function rather than reimplementing the radiation load is
+    deliberate: the globe must see exactly the same traced shading, sky view,
+    facet longwave surround and wall-reflected shortwave as the pedestrian does,
+    or any model-versus-instrument difference would be contaminated by the two
+    receptors having been given different scenes. Only three things change --
+    the beam projected-area factor becomes the sphere's constant 0.25, and the
+    absorptivity/emissivity become the globe's paint rather than human skin and
+    clothing. Diffuse, reflected and longwave angular factors are ~0.5/0.5/
+    isotropic for a sphere and a standing cylinder alike (VDI 3787), so they are
+    correctly left untouched.
+
+    This costs no extra ray tracing: it is a second pass over already-traced
+    per-point quantities.
+    """
+    shim = copy.copy(args)
+    shim.projected_area_model = "sphere"
+    shim.f_projected_direct = sphere_projected_area_factor()
+    shim.person_sw_absorptivity = spec.sw_absorptivity
+    shim.person_emissivity = spec.emissivity
+    return shim
 
 
 class FacetLongwave:
@@ -918,6 +1110,70 @@ class FacetLongwave:
                 fractions.setdefault(generic, np.zeros(n_points, dtype=float))
                 fractions[generic][~nonzero[self.point_map]] = 1.0
                 self.reflected_source_fractions = fractions
+        # ---- shortwave reflection off walls/roofs, and the local ground state
+        # a downward-facing radiometer would see. Both reuse the SAME 05a
+        # directional view weights as the longwave surround, so a facade that
+        # already contributes longwave to this pedestrian now also contributes
+        # its reflected sunlight, with no additional ray tracing.
+        self.wall_reflect_mask = None
+        self.facet_albedo = None
+        self.facet_cos_theta = None
+        self.facet_tau_dir = None
+        self.facet_f_sky = None
+        # Downward-radiometer footprint state. These are the SENSOR's view of
+        # the ground and are kept strictly apart from local_ground_albedo, which
+        # is the BODY's cylinder-weighted view and feeds the pedestrian's
+        # reflected shortwave. Two receptors, two weightings; conflating them is
+        # exactly the mistake this footprint exists to undo.
+        self._footprint = None
+        self._footprint_total = None
+        self._footprint_ground_index = None
+        self.sensor_ground_albedo = None
+        self.sensor_ground_emissivity = None
+        self.sensor_footprint_coverage = 0.0
+        self.sensor_footprint_radius_m = None
+        self._facet_centroid = None
+        self._facet_area = None
+        self._facet_normal_ground = None
+        if facets_path.is_file():
+            facet_meta = np.load(facets_path)
+            if {"centroid", "area", "normal"} <= set(facet_meta.files):
+                self._facet_centroid = facet_meta["centroid"].astype(float)
+                self._facet_area = facet_meta["area"].astype(float)
+                ground_normals = facet_meta["normal"].astype(float)
+                if facet_class is not None:
+                    # Stored as-wound; build_sensor_ground_footprint orients
+                    # them upward at the point of use.
+                    self._facet_normal_ground = ground_normals[facet_class == 0]
+        if facet_class is not None and facet_albedo_path.is_file():
+            albedo_all = np.load(facet_albedo_path).astype(float)
+            self.facet_albedo = albedo_all
+            self.wall_reflect_mask = facet_class != 0        # walls + roofs
+            tau_path = d / "tau_dir_facet.npy"
+            fsky_path = d / "f_sky_facet.npy"
+            if tau_path.is_file() and fsky_path.is_file():
+                self.facet_tau_dir = np.load(tau_path, mmap_mode="r")
+                self.facet_f_sky = np.load(fsky_path).astype(float)
+                if self.facet_tau_dir.shape != (n_times, self.W.shape[1]):
+                    raise ValueError(
+                        "tau_dir_facet does not match this run's times/facets; "
+                        "re-run 05b for this thermal folder")
+                normals = facet_meta["normal"].astype(float)
+                self.facet_normal = normals
+            # Local ground state beneath the receptor, view-weighted over the
+            # same route-visible ground facets that set local_ground_albedo.
+            ground_mask = facet_class == 0
+            if ground_mask.any():
+                gw = np.asarray(self.W[:, ground_mask].sum(axis=1)).ravel()
+                self._ground_mask = ground_mask
+                self._ground_weight = gw
+                eps_ground = np.load(d / "facet_eps.npy").astype(float)
+                weighted_eps = np.asarray(
+                    self.W[:, ground_mask] @ eps_ground[ground_mask]).ravel()
+                coarse_eps = np.where(gw > 1e-12,
+                                      weighted_eps / np.maximum(gw, 1e-12), 0.95)
+                self.local_ground_emissivity = coarse_eps[self.point_map]
+
         self.facet_J = None
         self.environment_J = None
         radiosity_model = "legacy"
@@ -973,6 +1229,190 @@ class FacetLongwave:
             print(f"  Local route-visible ground albedo: "
                   f"{self.local_ground_albedo.min():.3f}.."
                   f"{self.local_ground_albedo.max():.3f}")
+
+    def facet_incident_shortwave(self, it, dni, dhi, sun_vec):
+        """Global shortwave incident on every route-visible facet, W m^-2.
+
+        Same construction 05b uses to heat those facets: attenuated direct
+        beam on the facet's own tilt, plus its sky-view share of the diffuse.
+        The second-bounce (environment-reflected) term 05b adds is deliberately
+        omitted here, so this stays a single-bounce reflection to the
+        pedestrian rather than an unbounded inter-reflection series.
+        """
+        if self.facet_tau_dir is None:
+            return None
+        incident = self.facet_f_sky * float(dhi)
+        if sun_vec is not None and dni > 0.0:
+            cos_theta = np.clip(self.facet_normal @ np.asarray(sun_vec, float),
+                                0.0, None)
+            incident = incident + (np.asarray(self.facet_tau_dir[it], dtype=float)
+                                   * float(dni) * cos_theta)
+        return incident
+
+    def wall_reflected_shortwave(self, it, dni, dhi, sun_vec):
+        """Shortwave reflected off walls/roofs onto each route point, W m^-2.
+
+        Mirrors the longwave surround exactly: the 05a view weight of a facet
+        multiplies what that facet sends toward the pedestrian. For longwave
+        that is its radiosity; here it is its reflected sunlight,
+        ``albedo * incident``. Returns ``(total, {'wall': .., 'roof': ..})``
+        as incident radiance at the body (absorptivity is applied by the
+        caller, as for the ground term).
+        """
+        incident = self.facet_incident_shortwave(it, dni, dhi, sun_vec)
+        if incident is None or self.wall_reflect_mask is None:
+            return None, None
+        reflected = self.facet_albedo * incident
+        parts = {}
+        totals = np.zeros(len(self.point_map), dtype=float)
+        for label, mask in (("wall", self.wall_reflect_mask
+                             & (self.facet_material_name != "roof")),
+                            ("roof", self.wall_reflect_mask
+                             & (self.facet_material_name == "roof"))):
+            if not mask.any():
+                parts[label] = np.zeros(len(self.point_map), dtype=float)
+                continue
+            coarse = np.asarray(self.W[:, mask] @ reflected[mask]).ravel()
+            fine = coarse[self.point_map]
+            parts[label] = fine
+            totals = totals + fine
+        return totals, parts
+
+    def build_sensor_ground_footprint(self, path_xyz, sensor_height_m,
+                                      receptor_height_m,
+                                      maximum_radius_m=20.0):
+        """Build the view a DOWNWARD-FACING radiometer actually has.
+
+        The previous implementation reused the standing-cylinder view matrix
+        from 05a, weighted out to the 300 m culling distance. That is the wrong
+        instrument. A cylinder's longwave weighting emphasises the horizon,
+        so the "ground below the receptor" it produced was in truth a wide-area
+        average dominated by DISTANT ground -- it would report sunlit plaza a
+        hundred metres away as if it were under the sensor's feet.
+
+        A downward pyrgeometer at height h sees a compact footprint. For a
+        ground element of area dA at slant distance d, the contribution is
+        ``L * cos(theta_sensor) * cos(theta_ground) * dA / d^2``, and over flat
+        ground that reduces to ``h^2 / (r^2 + h^2)^2 dA``: 50% of the signal
+        comes from within r = h, 90% from within 3h, 99% from within 10h. At the
+        1.0 m sensor height that is a few metres across, not a few hundred.
+
+        The full 3-D form is used here rather than the flat-ground reduction, so
+        sloping terrain and tilted facets are handled correctly:
+
+            w_i = max(cos_s, 0) * max(cos_g, 0) * A_i / d_i^2
+
+        Documented approximations:
+
+        * Each facet is sampled at its centroid. Ground facets along a route are
+          small relative to the footprint, and the kernel is bounded at r = 0,
+          so this cannot blow up -- but a very large facet close to the sensor
+          has its weight placed at its centre rather than spread.
+        * No occlusion test. Within the few metres that carry the weight, a
+          receptor standing on the ground has unobstructed sight of it; the
+          weight that leaks past a wall at 10 m+ is under 1%.
+
+        Built only when the sensor channels are requested, since it is pure
+        overhead for a run that does not emit them.
+        """
+        import scipy.sparse as sp
+        from scipy.spatial import cKDTree
+
+        if getattr(self, "_ground_mask", None) is None:
+            return False
+        ground_index = np.flatnonzero(self._ground_mask)
+        if ground_index.size == 0 or self._facet_centroid is None:
+            return False
+        centroids = self._facet_centroid[ground_index]
+        areas = self._facet_area[ground_index]
+        # Orient every ground normal upward at the point of use. A terrain mesh
+        # can carry either winding, and a downward-wound facet would fail the
+        # cos_ground > 0 test and silently drop out of the footprint.
+        normals = np.array(self._facet_normal_ground, dtype=float, copy=True)
+        normals[normals[:, 2] < 0.0] *= -1.0
+
+        sensor_xyz = np.asarray(path_xyz, dtype=float).copy()
+        # path_xyz sits at the pedestrian receptor height; the instrument sits
+        # at its own height above the same local ground.
+        sensor_xyz[:, 2] += float(sensor_height_m) - float(receptor_height_m)
+
+        tree = cKDTree(centroids[:, :2])
+        neighbourhoods = tree.query_ball_point(sensor_xyz[:, :2],
+                                               float(maximum_radius_m))
+        rows, cols, data = [], [], []
+        for point, (position, neighbours) in enumerate(
+                zip(sensor_xyz, neighbourhoods)):
+            if not neighbours:
+                continue
+            neighbours = np.asarray(neighbours, dtype=int)
+            offset = position - centroids[neighbours]          # facet -> sensor
+            distance_sq = np.einsum("ij,ij->i", offset, offset)
+            distance_sq = np.maximum(distance_sq, 1e-6)
+            distance = np.sqrt(distance_sq)
+            cos_sensor = offset[:, 2] / distance               # facet below = +
+            cos_ground = np.einsum("ij,ij->i",
+                                   normals[neighbours], offset) / distance
+            weight = (np.maximum(cos_sensor, 0.0) * np.maximum(cos_ground, 0.0)
+                      * areas[neighbours] / distance_sq)
+            keep = weight > 0.0
+            if not keep.any():
+                continue
+            rows.append(np.full(keep.sum(), point, dtype=np.int32))
+            cols.append(neighbours[keep].astype(np.int32))
+            data.append(weight[keep])
+        if not rows:
+            return False
+        footprint = sp.csr_matrix(
+            (np.concatenate(data), (np.concatenate(rows), np.concatenate(cols))),
+            shape=(sensor_xyz.shape[0], ground_index.size))
+        total = np.asarray(footprint.sum(axis=1)).ravel()
+        self._footprint = footprint
+        self._footprint_total = total
+        self._footprint_ground_index = ground_index
+        covered = total > 1e-12
+        # Where no ground facet is resolved the SHORTWAVE-up channel still has
+        # to produce a finite number, so it falls back to the body's view of the
+        # ground albedo. Only the longwave-up channel is left NaN, because it has
+        # its own documented fallback to the surround radiosity.
+        albedo_fallback = (self.local_ground_albedo
+                           if self.local_ground_albedo is not None
+                           else np.full(total.shape,
+                                        getattr(self.args, "ground_albedo", 0.18)))
+        self.sensor_ground_albedo = np.where(
+            covered,
+            np.asarray(footprint @ self.facet_albedo[ground_index]).ravel()
+            / np.maximum(total, 1e-12),
+            albedo_fallback)
+        self.sensor_ground_emissivity = np.where(
+            covered,
+            np.asarray(footprint @ self.facet_eps[ground_index]).ravel()
+            / np.maximum(total, 1e-12),
+            0.95)
+        self.sensor_footprint_coverage = float(np.mean(covered))
+        # Radius holding half the weight -- the honest statement of what the
+        # emulated instrument is averaging over.
+        self.sensor_footprint_radius_m = float(sensor_height_m)
+        return True
+
+    def sensor_ground_emitted(self, it):
+        """Footprint-weighted EMITTED longwave from the ground, W/m2.
+
+        Note this averages radiosity, not temperature. The previous code
+        averaged T over its view and only then raised the mean to the fourth
+        power. A radiometer integrates radiance: because ``sigma*T^4`` is
+        convex, ``<T>^4`` sits below ``<T^4>``, so temperature-averaging
+        understated a spatially varying surface. Small next to the view error
+        it accompanied, but wrong in its own right.
+        """
+        if getattr(self, "_footprint", None) is None:
+            return None
+        index = self._footprint_ground_index
+        temps = np.asarray(self.facet_T[it], dtype=float)[index]
+        emitted = self.facet_eps[index] * SIGMA * temps ** 4
+        weighted = np.asarray(self._footprint @ emitted).ravel()
+        return np.where(self._footprint_total > 1e-12,
+                        weighted / np.maximum(self._footprint_total, 1e-12),
+                        np.nan)
 
     def surround_at(self, it, air_temp_C, elevation_deg,
                     sky_longwave_Wm2=None, return_components=False):
@@ -1253,6 +1693,21 @@ def main():
         "LWin_Wm2": lwin_time,
         "radiation_source": radiation_source,
     })
+    # Optional separate INLET (free-stream) wind series. 05b scales the
+    # step-3 potential-flow field by this when present, so the convective
+    # boundary condition varies through the day instead of using one constant.
+    # Without it, wind_ms continues to serve as both, exactly as before.
+    if weather.has_free_stream_wind():
+        # Carried into times.csv so 05b can drive convection with the
+        # experiment-derived free stream instead of the sheltered wind.
+        times_df["wind_freestream_ms"] = weather.free_stream_wind_ms(
+            np.asarray(hour_of_day, dtype=float))
+    if weather.has_inlet_wind():
+        times_df["wind_inlet_ms"] = weather.inlet_wind_ms(
+            np.asarray(hour_of_day, dtype=float))
+        print(f"    inlet wind        <- csv wind_inlet_ms "
+              f"({times_df['wind_inlet_ms'].min():.2f}.."
+              f"{times_df['wind_inlet_ms'].max():.2f} m/s, carried to times.csv)")
     times_df.to_csv(out_dir / "times.csv", index=False)
 
     if args.prep_only:
@@ -1280,11 +1735,60 @@ def main():
     local_air_max = np.zeros(nt, dtype=float)
     local_wind_mean = np.zeros(nt, dtype=float)
     local_wind_max = np.zeros(nt, dtype=float)
+    # Instrument-equivalent channels need the resolved surround and the ground
+    # surface temperature below the receptor, so they are recorded only on the
+    # facet-thermal path. Emitting zeros without that data would be worse than
+    # emitting nothing.
+    record_sensor = (args.sensor_equivalent_outputs == "on"
+                     and facet_lw is not None)
+    if args.sensor_equivalent_outputs == "on" and facet_lw is None:
+        print("  NOTE: sensor-equivalent radiometer channels need "
+              "--facet-thermal-dir (resolved surround + ground temperature); "
+              "skipping them for this run.")
+    if record_sensor:
+        print(f"  Sensor-equivalent radiometer channels at "
+              f"{args.sensor_height_m:.2f} m"
+              + ("" if abs(args.sensor_height_m - args.z_height) < 1e-9 else
+                 f" (receptor ray tracing at {args.z_height:.2f} m; "
+                 f"shading/sky view reused)"))
+        # The downward-facing channels need the instrument's OWN footprint, not
+        # the body's cylinder view of the ground out to the culling distance.
+        if facet_lw.build_sensor_ground_footprint(
+                path_xyz, args.sensor_height_m, args.z_height):
+            print(f"    downward footprint: half the weight within "
+                  f"{args.sensor_height_m:.2f} m of the sensor, "
+                  f"{facet_lw.sensor_footprint_coverage:.1%} of route points "
+                  f"covered by resolved ground facets")
+        else:
+            print("    NOTE: no resolved ground facets for the downward "
+                  "footprint; the upwelling channels will fall back to the "
+                  "surround radiosity.")
+    # The black globe needs the same resolved surround the radiometer does, so
+    # it rides on the same precondition.
+    record_globe = (args.black_globe_outputs == "on" and facet_lw is not None)
+    globe_spec = None
+    globe_args = None
+    if record_globe:
+        globe_spec = resolve_globe_spec(
+            args.globe_preset,
+            diameter_m=args.globe_diameter_m,
+            emissivity=args.globe_emissivity,
+            sw_absorptivity=args.globe_sw_absorptivity,
+            areal_heat_capacity_J_m2K=args.globe_areal_heat_capacity)
+        globe_args = globe_radiation_args(args, globe_spec)
+        print(f"  Black-globe emulation: {describe_globe(globe_spec)}")
+    elif args.black_globe_outputs == "on" and facet_lw is None:
+        print("  NOTE: black-globe emulation needs --facet-thermal-dir "
+              "(resolved surround); skipping it for this run.")
     contribution_matrices = None
     if record_contributions:
         stored_keys = PRIMARY_COLUMNS + TOTAL_COLUMNS
         if contribution_config["record_material_resolved_sources"]:
             stored_keys = stored_keys + SW_SOURCE_COLUMNS + LW_SOURCE_COLUMNS
+        if record_sensor:
+            stored_keys = stored_keys + SENSOR_COLUMNS
+        if record_globe:
+            stored_keys = stored_keys + GLOBE_COLUMNS
         contribution_matrices = {
             key: np.zeros((nt, n_points), dtype=np.float32)
             for key in stored_keys
@@ -1315,6 +1819,9 @@ def main():
         lw_sky_frac = None
         local_ground_albedo = None
         reflected_source_fractions = None
+        wall_reflected_incident = None
+        wall_reflected_parts = None
+        sun_vec_now = sun_vector_enu(az, el) if el > 0.0 else None
         if facet_lw is not None:
             sky_lw_current = (float(lwin_time[it]) if np.isfinite(lwin_time[it])
                               else float(sky_longwave_down(
@@ -1333,6 +1840,10 @@ def main():
                 lw_sky_frac = facet_lw.sky_frac
             local_ground_albedo = facet_lw.local_ground_albedo
             reflected_source_fractions = facet_lw.reflected_source_fractions
+            if args.wall_reflected_shortwave == "on":
+                wall_reflected_incident, wall_reflected_parts = (
+                    facet_lw.wall_reflected_shortwave(
+                        it, dni[it], dhi[it], sun_vec_now))
 
         radiation_result = estimate_mrt_from_radiation(
             dni[it], dhi[it], ghi[it], el, tau_direct, svf_person, svf_ground,
@@ -1342,6 +1853,8 @@ def main():
             reflected_source_fractions=reflected_source_fractions,
             L_surround_components=L_surround_components,
             L_sky_override=lwin_time[it],
+            wall_reflected_incident=wall_reflected_incident,
+            wall_reflected_parts=wall_reflected_parts,
             return_contributions=record_contributions,
         )
         if record_contributions:
@@ -1355,6 +1868,53 @@ def main():
                 sigma=SIGMA,
                 mrt_tolerance_c=float(validation_cfg["mrt_absolute_tolerance_C"]),
             )
+            if record_sensor:
+                # Mean reflected-shortwave radiance of the surround, reused by
+                # the horizontal sensor for the part of its hemisphere that is
+                # not sky. Derived from the same wall/roof reflection already
+                # computed for the body.
+                surround_sw_radiance = None
+                if wall_reflected_incident is not None:
+                    non_sky = np.maximum(1.0 - facet_lw.sky_frac, 1e-6)
+                    surround_sw_radiance = wall_reflected_incident / non_sky
+                # The upwelling pair uses the INSTRUMENT's footprint view of the
+                # ground; the downwelling pair and the body keep their own.
+                sensor_albedo = (facet_lw.sensor_ground_albedo
+                                 if facet_lw.sensor_ground_albedo is not None
+                                 else local_ground_albedo)
+                sensor = sensor_radiometer_quantities(
+                    dni[it], dhi[it], el, tau_direct, svf_planar,
+                    sky_lw_current, L_surround_override,
+                    sensor_albedo,
+                    facet_lw.sensor_ground_emitted(it),
+                    facet_lw.sensor_ground_emissivity,
+                    surround_sw_radiance, args)
+                contributions.update(sensor)
+            if record_globe:
+                # Second pass over the SAME traced scene with sphere weighting
+                # and globe optics -- no extra rays are cast.
+                _, globe_flux, _, _ = estimate_mrt_from_radiation(
+                    dni[it], dhi[it], ghi[it], el, tau_direct,
+                    svf_person, svf_ground,
+                    local_air_c, rh_pct_time[it], cloud_fraction_time[it],
+                    globe_args,
+                    L_surround_override=L_surround_override,
+                    lw_sky_frac=lw_sky_frac,
+                    local_ground_albedo=local_ground_albedo,
+                    reflected_source_fractions=None,
+                    L_surround_components=None,
+                    L_sky_override=lwin_time[it],
+                    wall_reflected_incident=wall_reflected_incident,
+                    wall_reflected_parts=None,
+                    return_contributions=False,
+                )
+                contributions["globe_absorbed_flux_Wm2"] = globe_flux
+                contributions["globe_radiative_equilibrium_C"] = (
+                    radiative_equilibrium_temperature_C(
+                        globe_flux, globe_spec.emissivity))
+                contributions["globe_steady_temperature_C"] = (
+                    steady_globe_temperature_C(
+                        globe_flux, local_air_c, local_wind_ms, globe_spec))
             for key, matrix in contribution_matrices.items():
                 matrix[it, :] = contributions[key]
         else:
@@ -1399,6 +1959,13 @@ def main():
             "longwave_source_attribution": (
                 "stage-05a first-hit facet material, canopy weight, or unresolved enclosure weight"),
             "mrt_equation": "Tmrt_K=(total_absorbed_flux/(person_emissivity*sigma))**0.25",
+            "sensor_columns": SENSOR_COLUMNS if record_sensor else [],
+            "sensor_height_m": args.sensor_height_m if record_sensor else None,
+            "globe_columns": GLOBE_COLUMNS if record_globe else [],
+            # Downstream stages need the exact globe to integrate the transient
+            # response along a route, so the spec travels with the archive
+            # rather than being re-guessed from CLI defaults.
+            "black_globe": globe_spec.as_metadata() if record_globe else None,
             "closure": closure,
             "configuration": contribution_config,
         })

@@ -52,7 +52,26 @@ from radiant_flux_contributions import (
     plot_ranked_radiant_flux_contributions,
     plot_surface_longwave_classifications, route_contribution_summary,
     sample_route_contribution_matrices)
+from black_globe import (GlobeSpec, integrate_globe_temperature_C,
+                         receptor_velocity, ventilation_speed)
 from thermal_common import SIGMA
+
+
+def globe_spec_from_metadata(metadata):
+    """Rebuild the emulated globe stage 05 actually used.
+
+    Reading it back rather than re-deriving it from CLI defaults means the
+    transient integration can never silently run against a different sphere
+    than the one whose absorbed flux it is integrating.
+    """
+    if not metadata:
+        return None
+    record = metadata.get("black_globe")
+    if not record:
+        return None
+    fields = ("name", "diameter_m", "emissivity", "sw_absorptivity",
+              "areal_heat_capacity_J_m2K", "reference")
+    return GlobeSpec(**{key: record[key] for key in fields if key in record})
 
 
 # UTCI thermal-stress category boundaries (deg C) for reporting a route's
@@ -250,6 +269,14 @@ def parse_args():
                          "(default EPSG:6346 = NAD83(2011) UTM 17N, Miami). "
                          "Routes are exported in this CRS AND in lat/lon.")
 
+    p.add_argument("--globe-self-motion", choices=["on", "off"], default="on",
+                   help="Ventilate the emulated black globe with the air speed "
+                        "RELATIVE to the moving walker rather than the ambient "
+                        "wind alone (default on). The globe rides with the "
+                        "walker, so its own ~1 m/s of motion is real "
+                        "ventilation; omitting it leaves the modelled globe "
+                        "several K too far above air temperature. Set to 'off' "
+                        "to emulate a globe on a fixed mast.")
     p.add_argument("--walking-speed-ms", type=float, default=1.3,
                     help="Average adult walking pace (default: 1.3 m/s ~= 4.7 km/h). "
                          "UTCI's reference activity is ~1.1 m/s; 1.3 better matches "
@@ -378,6 +405,37 @@ def main():
                 contribution_matrices, time_hours, arrival_hour, nearest_idx,
                 tmrt_trace, person_emissivity=person_emissivity, sigma=SIGMA,
                 validation=contribution_config["validation"])
+            # Black-globe transient response. This CANNOT be done in stage 05:
+            # the globe's reading at a point depends on where the walker has
+            # just been and how long ago, so it only exists once a route and a
+            # pace are fixed. A 150 mm globe lags by ~5 minutes while a walker
+            # crosses a sun/shade edge in seconds, so the steady-state column is
+            # a poor model of a real mobile globe -- this is the honest one.
+            globe_spec = globe_spec_from_metadata(contribution_metadata)
+            if globe_spec is not None and "globe_absorbed_flux_Wm2" in sampled_flux:
+                elapsed_s = (arrival_hour - arrival_hour[0]) * 3600.0
+                # The globe travels WITH the walker, so what ventilates it is
+                # the air speed relative to a moving sphere, not the ambient
+                # wind. Omitting the walker's own ~1 m/s under-ventilates the
+                # globe and leaves it sitting several K too far above air
+                # temperature. Vector difference, because walking into the wind
+                # and walking with it are not the same ventilation.
+                if args.globe_self_motion == "on":
+                    walker_u, walker_v = receptor_velocity(
+                        xy[:, 0], xy[:, 1], elapsed_s)
+                    globe_wind = ventilation_speed(
+                        local_wind_trace, np.hypot(walker_u, walker_v),
+                        air_u_ms=wind_u_trace, air_v_ms=wind_v_trace,
+                        receptor_u_ms=walker_u, receptor_v_ms=walker_v)
+                else:
+                    globe_wind = local_wind_trace
+                globe_transient, globe_spinup = integrate_globe_temperature_C(
+                    elapsed_s, sampled_flux["globe_absorbed_flux_Wm2"],
+                    ta_trace, globe_wind, globe_spec)
+                sampled_flux = dict(sampled_flux)
+                sampled_flux["globe_transient_temperature_C"] = globe_transient
+                sampled_flux["globe_ventilation_ms"] = globe_wind
+                sampled_flux["globe_spinup_affected"] = globe_spinup
             timestamps = (
                 pd.Timestamp(times_df["time"].iloc[0]).normalize()
                 + pd.to_timedelta(arrival_hour, unit="h"))

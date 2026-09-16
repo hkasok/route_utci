@@ -8,20 +8,21 @@
 #  N  STEP                              PRODUCES
 #  1  Problem selection (browser UI)    input/<case> -> run_output/<case>
 #  2  OSM data + ground materials      optional graph + classified terrain
-#  3  Facet-thermal MRT (merged)        prep -> 05a -> 05b -> improved MRT
-#  4  Optional radiation/microclimate   full surfaces -> 3-D Ta/velocity/MRT
+#  3  Pedestrian potential-flow wind    2-D pedestrian-level velocity field
+#  4  Facet-thermal MRT (merged)        prep -> 05a -> 05b -> improved MRT
 #  5  Visualizations (stages 06, 07)    MRT + UTCI maps / animations
 #  6  Route thermal stress (08-10)      UTCI + JOS-3 + optional comparison
 #
 #  Examples:
 #     ./start.sh          # start at step 2 (OSM) -- assumes STL already built
 #     INPUT_CASE_DIR=input/MMC OUTPUT_CASE_DIR=run_output/MMC ./start.sh 2
-#     ./start.sh 3        # re-run facet-thermal MRT and everything after it
-#     WITH_MICROCLIMATE=1 ./start.sh 4  # solve 3-D air fields + later stages
+#     ./start.sh 3        # re-solve the pedestrian wind field and later steps
+#     WIND_DIRECTION_DEG=90 ./start.sh 3  # easterly background wind
+#     ./start.sh 4        # re-run facet-thermal MRT and everything after it
 #     ./start.sh 5        # only (re)build visualizations and route stress
 #     ./start.sh 6        # only re-run route stress (08, 09, optional compare)
 #     ./start.sh 8        # legacy alias for current route-stress step 6
-#     WITH_BASELINE=1 ./start.sh 3  # also compute legacy-surround MRT
+#     WITH_BASELINE=1 ./start.sh 4  # also compute legacy-surround MRT
 #
 #  Starting at step N runs N, N+1, ... to the end. Steps before N are assumed
 #  already done; the script checks their outputs exist and stops with a clear
@@ -29,10 +30,17 @@
 #  UI, not an executable shell stage. Geometry and route preparation remain
 #  separate project utilities and are never launched by this workflow.
 #
+#  Step 3 solves a terrain-referenced pedestrian-level potential-flow wind
+#  field (stage 05e); step 4's surface-energy balance (05b) automatically
+#  consumes it for its convective heat-transfer coefficient when present
+#  (USE_PEDESTRIAN_WIND=auto), or falls back to the uniform weather wind.
+#  The former optional 3-D microclimate/urban-radiation step (05c/05d) was
+#  replaced by step 3; those scripts remain available for manual/legacy runs
+#  and previously solved 3-D fields are still reused downstream when valid.
+#
 #  You can still force-skip an individual stage with SKIP_<NAME>=1
-#  (OSM/OSM_MATERIALS/05/05A/05B/05FACET/MICROCLIMATE/
-#  URBAN_RADIATION/MICROCLIMATE_05B/MICROCLIMATE_05FACET/06/07/08/09/10), e.g.
-#  SKIP_07=1 ./start.sh 5. Stage 05 is preparation-only unless
+#  (OSM/OSM_MATERIALS/PEDESTRIAN_WIND/05/05A/05B/05FACET/06/07/08/09/10),
+#  e.g. SKIP_07=1 ./start.sh 5. Stage 05 is preparation-only unless
 #  WITH_BASELINE=1 requests the legacy-surround MRT result as well.
 # ============================================================================
 
@@ -47,26 +55,40 @@ Run STEP and every later TREC-Route pipeline step (default: STEP=2).
 Step 1 is input/output problem-case selection in the browser UI.
 Geometry and route generation are external case-preparation utilities.
   2  OSM data and ground materials (pedestrian graph only when case requires it)
-  3  Facet-thermal MRT (05 --prep-only -> 05a -> 05b -> facet MRT)
-  4  OPTIONAL full-surface radiation, 3-D air fields, and thermal recoupling
+  3  Pedestrian-level potential-flow wind field (stage 05e)
+  4  Facet-thermal MRT (05 --prep-only -> 05a -> 05b -> facet MRT)
   5  MRT and UTCI visualizations (06, 07)
   6  Route stress and optional comparison (08, 09, 10)
 
 Important controls:
   INPUT_CASE_DIR=DIR      self-contained input case (default: input/MMC)
   OUTPUT_CASE_DIR=DIR     selected result case (default: run_output/MMC)
+  WIND_DIRECTION_DEG=D   background wind FROM-direction for step 3 (default 270)
+  PEDESTRIAN_WIND_HEIGHT=H  step-3 sampling height above local ground
+                         (default: Z_HEIGHT, the shared receptor height)
+  PEDESTRIAN_WIND_SPACING=DX  step-3 Cartesian grid spacing, m (default 2.0)
+  USE_PEDESTRIAN_WIND=auto|0|1  let 05b use the solved step-3 wind field for
+                         its convection coefficient (auto = when present)
+  CLOTHING=auto|NAME|CLO  clothing for the JOS-3 walker (stage 09): auto picks
+                         an ensemble per walk from its temperature, day/night
+                         and wind; or name one (summer_light, cool_layer,
+                         winter_heavy, nude, ...); or give a clo number
+  CLOTHING_CLIMATE=C     habituated climate for auto selection
+                         (tropical|subtropical|temperate|continental|cold)
+  CLOTHING_CONFIG=F      JSON overriding clothing thresholds or ensembles
+  WALL_REFLECTED_SHORTWAVE=on|off  count sunlit facades as a pedestrian
+                         shortwave source (default on; facet path only)
+  SENSOR_EQUIVALENT_OUTPUTS=on|off  emit emulated four-component radiometer
+                         channels for like-for-like field comparison
+  SENSOR_HEIGHT_M=H      height of that emulated radiometer (default 1.0)
   WITH_BASELINE=1        additionally compute legacy-surround MRT in mrt_out
-  WITH_MICROCLIMATE=1    run optional full-surface radiation + 3-D Ta/velocity
-  WITH_URBAN_RADIATION=0 disable full-surface radiation within that optional step
-  URBAN_RADIATION_CONFIG=F  full-surface radiation configuration JSON
-  MICROCLIMATE_CONFIG=F  diagnostic solver configuration JSON
-  USE_MICROCLIMATE_FIELDS=auto|0|1  reuse an existing solved field downstream
+  USE_MICROCLIMATE_FIELDS=auto|0|1  reuse a previously solved legacy 3-D field
+                         downstream (05c/05d themselves are no longer run here)
   ROUTES_DIR=DIR          override the selected case's routes/ directory
   SVF_CACHE_DIR=DIR      exact-match static sky-view cache directory
   FORCE_SVF=1            rebuild the preparation SVF cache
-  SKIP_<FLAG>=1          skip OSM, OSM_MATERIALS, 05, 05A, 05B,
-                         05FACET, MICROCLIMATE, URBAN_RADIATION, MICROCLIMATE_05B,
-                         MICROCLIMATE_05FACET, 06, 07, 08, 09, or 10
+  SKIP_<FLAG>=1          skip OSM, OSM_MATERIALS, PEDESTRIAN_WIND, 05, 05A,
+                         05B, 05FACET, 06, 07, 08, 09, or 10
 
 All existing model/environment overrides remain supported, including DATE,
 DEPARTURE_HOUR, WALKING_SPEED_MS, WEATHER_CSV, SUBJECT_PROFILE,
@@ -126,6 +148,14 @@ case "$ROUTING_NETWORK_REQUIRED" in 0|1) ;; *)
 # elderly_male, elderly_female, obese_adult, acclimatized_adult.
 # Empty = JOS-3 default healthy adult.
 SUBJECT_PROFILE="${SUBJECT_PROFILE:-$CASE_SUBJECT_PROFILE}"
+# Clothing worn by the JOS-3 walker (stage 09). "auto" selects an ensemble per
+# route from that walk's own mean air temperature, day/night (solar elevation)
+# and wind; a named ensemble or a plain clo number forces one outfit. See
+# clothing_profiles.py. CLOTHING_CLIMATE shifts the automatic choice for
+# heat-acclimatized (tropical) or cold-climate habits.
+CLOTHING="${CLOTHING:-${CASE_CLOTHING:-auto}}"
+CLOTHING_CLIMATE="${CLOTHING_CLIMATE:-${CASE_CLOTHING_CLIMATE:-temperate}}"
+CLOTHING_CONFIG="${CLOTHING_CONFIG:-}"
 
 # ---- WHERE: site location (used for sun position) --------------------------
 LAT="${LAT:-$CASE_LAT}"
@@ -186,29 +216,35 @@ RADIATION_FORCING_CONFIG="${RADIATION_FORCING_CONFIG:-$CASE_RADIATION_FORCING_CO
 MRT_DIR="${MRT_DIR:-$OUT_ROOT/mrt_out}"                   # prep + optional legacy MRT
 THERMAL_DIR="${THERMAL_DIR:-$OUT_ROOT/thermal_out}"       # 05a + 05b outputs
 MRT_FACET_DIR="${MRT_FACET_DIR:-$OUT_ROOT/mrt_facet_out}" # facet-thermal MRT
+# Step 3: pedestrian-level potential-flow wind field (stage 05e).
+PEDESTRIAN_WIND_DIR="${PEDESTRIAN_WIND_DIR:-$OUT_ROOT/pedestrian_wind}"
+WIND_DIRECTION_DEG="${WIND_DIRECTION_DEG:-270.0}"   # meteorological FROM deg
+PEDESTRIAN_WIND_SPACING="${PEDESTRIAN_WIND_SPACING:-2.0}"
+PEDESTRIAN_WIND_BUFFER="${PEDESTRIAN_WIND_BUFFER:-100.0}"
+USE_PEDESTRIAN_WIND="${USE_PEDESTRIAN_WIND:-auto}"
+# Legacy 3-D microclimate/urban-radiation paths: the pipeline no longer runs
+# 05c/05d (replaced by step 3), but a previously solved valid field is still
+# reused by the downstream stages exactly as before.
 MICROCLIMATE_DIR="${MICROCLIMATE_DIR:-$OUT_ROOT/microclimate}"
 MICROCLIMATE_CONFIG="${MICROCLIMATE_CONFIG:-${CASE_MICROCLIMATE_CONFIG:-$PWD/microclimate_config.json}}"
-WITH_MICROCLIMATE="${WITH_MICROCLIMATE:-0}"
 URBAN_RADIATION_DIR="${URBAN_RADIATION_DIR:-$OUT_ROOT/urban_radiation}"
-URBAN_RADIATION_CONFIG="${URBAN_RADIATION_CONFIG:-${CASE_URBAN_RADIATION_CONFIG:-$PWD/urban_radiation_config.json}}"
-WITH_URBAN_RADIATION="${WITH_URBAN_RADIATION:-$WITH_MICROCLIMATE}"
 USE_MICROCLIMATE_FIELDS="${USE_MICROCLIMATE_FIELDS:-auto}"
-MICROCLIMATE_COUPLING_ITERATIONS="${MICROCLIMATE_COUPLING_ITERATIONS:-1}"
 VIS_DIR="${VIS_DIR:-$OUT_ROOT/viz}"
 SVF_CACHE_DIR="${SVF_CACHE_DIR:-$OUT_ROOT/svf_cache}"
 WITH_BASELINE="${WITH_BASELINE:-0}"
 SOLWEIG_COMPARE="${SOLWEIG_COMPARE:-0}"
 SOLWEIG_COMPARE_OUTPUT_DIR="${SOLWEIG_COMPARE_OUTPUT_DIR:-$VIS_DIR/compare_solweig}"
 
-case "$WITH_MICROCLIMATE" in 0|1) ;; *)
-    echo "ERROR: WITH_MICROCLIMATE must be 0 or 1" >&2; exit 1 ;; esac
-case "$WITH_URBAN_RADIATION" in 0|1) ;; *)
-    echo "ERROR: WITH_URBAN_RADIATION must be 0 or 1" >&2; exit 1 ;; esac
 case "$USE_MICROCLIMATE_FIELDS" in auto|0|1) ;; *)
     echo "ERROR: USE_MICROCLIMATE_FIELDS must be auto, 0, or 1" >&2; exit 1 ;; esac
-case "$MICROCLIMATE_COUPLING_ITERATIONS" in
-    ''|*[!0-9]*|0) echo "ERROR: MICROCLIMATE_COUPLING_ITERATIONS must be a positive integer" >&2; exit 1 ;;
-esac
+case "$USE_PEDESTRIAN_WIND" in auto|0|1) ;; *)
+    echo "ERROR: USE_PEDESTRIAN_WIND must be auto, 0, or 1" >&2; exit 1 ;; esac
+if [ "${WITH_MICROCLIMATE:-0}" = "1" ]; then
+    echo "NOTE: WITH_MICROCLIMATE is retired -- the 3-D solver step was"
+    echo "      replaced by the step-3 pedestrian potential-flow wind."
+    echo "      Run 05c_microclimate_solver.py manually for a legacy field;"
+    echo "      a valid solved field is still reused downstream automatically."
+fi
 
 # Which MRT results the visualization / route stages consume
 # (default: the IMPROVED facet-thermal results; set to $MRT_DIR for legacy)
@@ -241,6 +277,9 @@ CLEAR_SKY_MODEL="${CLEAR_SKY_MODEL:-prata}"
 # reads, so this single value propagates through the whole pipeline.
 # 1.1 m = ISO 7726 / UTCI standing-adult center-of-gravity convention.
 Z_HEIGHT="${Z_HEIGHT:-1.1}"
+# Step-3 pedestrian wind samples the same terrain-following receptor height
+# unless explicitly overridden, so flow and MRT describe one pedestrian level.
+PEDESTRIAN_WIND_HEIGHT="${PEDESTRIAN_WIND_HEIGHT:-$Z_HEIGHT}"
 
 # Facet pipeline (05a / 05b)
 POINT_STRIDE="${POINT_STRIDE:-8}"
@@ -251,6 +290,16 @@ SPINUP_TOLERANCE_K="${SPINUP_TOLERANCE_K:-0.10}"
 WIND_SPEED="${WIND_SPEED:-1.5}"       # near-surface wind for 05b convection
 SURFACE_WIND_SOURCE="${SURFACE_WIND_SOURCE:-times_csv}"
 SURFACE_CONVECTION_MODEL="${SURFACE_CONVECTION_MODEL:-mcadams}"
+# Shortwave reflected off sunlit facades onto the pedestrian (facet path only).
+WALL_REFLECTED_SHORTWAVE="${WALL_REFLECTED_SHORTWAVE:-on}"
+# Emulated four-component net radiometer, for like-for-like comparison against
+# field instruments. Never mixed into the body-absorbed flux or MRT.
+SENSOR_EQUIVALENT_OUTPUTS="${SENSOR_EQUIVALENT_OUTPUTS:-on}"
+SENSOR_HEIGHT_M="${SENSOR_HEIGHT_M:-1.0}"
+case "$WALL_REFLECTED_SHORTWAVE" in on|off) ;; *)
+    echo "ERROR: WALL_REFLECTED_SHORTWAVE must be on or off" >&2; exit 1 ;; esac
+case "$SENSOR_EQUIVALENT_OUTPUTS" in on|off) ;; *)
+    echo "ERROR: SENSOR_EQUIVALENT_OUTPUTS must be on or off" >&2; exit 1 ;; esac
 SURFACE_LATENT_HEAT_MODEL="${SURFACE_LATENT_HEAT_MODEL:-equilibrium}"
 
 # Optional, case-specific atmospheric radiation forcing.  The numbered/UI
@@ -378,7 +427,10 @@ elif active 2 && ! skip OSM; then
 elif active 2; then
     progress_event 2 40 running "Routing-network work skipped"
 fi
-if active 3 && { ! skip 05 || ! skip 05FACET; }; then
+if active 3 && ! skip PEDESTRIAN_WIND; then
+    require_routes
+fi
+if active 4 && { ! skip 05 || ! skip 05FACET; }; then
     require_routes
 fi
 
@@ -447,6 +499,48 @@ if [ "$OSM_GROUND_MATERIALS_ENABLED" = "1" ]; then
 else
     echo "  OSM ground materials disabled: uniform-ground backward-compatible mode"
 fi
+# ---- STEP 2c -- HIERARCHICAL SURFACE-MATERIAL CLASSIFICATION ---------------
+# Upgrades material assignment from "ground from OSM, walls and roofs from
+# geometry" to a full hierarchy (manual > OSM direct > imagery > OSM inferred >
+# colour hint > default) applied to ground, facades and roofs alike, at
+# surface-GROUP level with provenance and confidence recorded per group.
+#
+# Preprocessing only: it runs once here and every later stage reads its cached
+# per-face assignment. Entirely optional -- SKIP_SURFACE_MATERIALS=1 leaves the
+# pipeline in its previous behaviour, and imagery/overrides are opt-in inputs.
+SURFACE_MATERIAL_DIR="${SURFACE_MATERIAL_DIR:-$OUT_ROOT/surface_materials}"
+SURFACE_MATERIAL_ARG=()
+if active 2 && ! skip SURFACE_MATERIALS; then
+    log "STEP 2c  Hierarchical surface-material classification"
+    SURFACE_MATERIAL_OPTIONAL=()
+    if [ -n "${MATERIAL_IMAGERY_RASTER:-}" ]; then
+        SURFACE_MATERIAL_OPTIONAL+=(--imagery-raster "$MATERIAL_IMAGERY_RASTER")
+        [ -n "${MATERIAL_IMAGERY_LEGEND:-}" ] && \
+            SURFACE_MATERIAL_OPTIONAL+=(--imagery-legend "$MATERIAL_IMAGERY_LEGEND")
+    fi
+    if [ -n "${MATERIAL_OVERRIDES:-}" ]; then
+        SURFACE_MATERIAL_OPTIONAL+=(--overrides "$MATERIAL_OVERRIDES")
+    fi
+    if [ -n "${OSM_COMPLETE_CACHE:-}" ] && [ -f "${OSM_COMPLETE_CACHE:-}" ]; then
+        SURFACE_MATERIAL_OPTIONAL+=(--osm-features "$OSM_COMPLETE_CACHE")
+    fi
+    "$PY" prepare_surface_materials.py \
+        --ground-stl "$GROUND_STL" \
+        --buildings-stl "$BUILDINGS_STL" \
+        --vegetation-stl "$VEGETATION_STL" \
+        --output-dir "$SURFACE_MATERIAL_DIR" \
+        "${GROUND_MATERIAL_ARG[@]}" \
+        --local-origin-x "$LOCAL_ORIGIN_X" \
+        --local-origin-y "$LOCAL_ORIGIN_Y" \
+        --project-crs "$PROJECT_CRS" \
+        "${SURFACE_MATERIAL_OPTIONAL[@]}"
+fi
+if [ -f "$SURFACE_MATERIAL_DIR/surface_material_assignment.npz" ]; then
+    SURFACE_MATERIAL_ARG=(--surface-material-dir "$SURFACE_MATERIAL_DIR")
+elif active 2 && skip SURFACE_MATERIALS; then
+    echo "  Surface-material classification skipped (SKIP_SURFACE_MATERIALS=1)"
+fi
+
 if active 2; then
     if skip OSM && skip OSM_MATERIALS; then
         progress_event 2 100 skipped "OSM network and material work skipped"
@@ -456,16 +550,60 @@ if active 2; then
 fi
 
 # ----------------------------------------------------------------------------
-# STEP 3 -- merged facet-thermal MRT workflow.
+# STEP 3 -- pedestrian-level potential-flow wind (stage 05e).
+# One 2-D terrain-referenced mass-conserving Laplace solve replaces the former
+# optional 3-D microclimate step and runs BEFORE the MRT/radiation step so the
+# surface-energy balance can use the local pedestrian-level wind speed for its
+# parameterized convection coefficient. Flow only: no heat/temperature solve.
+# ----------------------------------------------------------------------------
+if active 3 && ! skip PEDESTRIAN_WIND; then
+    progress_event 3 0 running "Solving pedestrian-level potential-flow wind"
+    log "STEP 3  Pedestrian-level potential-flow wind (stage 05e)"
+    "$PY" 05e_potential_flow.py \
+        --buildings-stl "$BUILDINGS_STL" \
+        --ground-stl "$GROUND_STL" \
+        --polylines-pkl "$ROUTE_POLYLINES" \
+        --output-dir "$PEDESTRIAN_WIND_DIR" \
+        --grid-spacing "$PEDESTRIAN_WIND_SPACING" \
+        --route-buffer-m "$PEDESTRIAN_WIND_BUFFER" \
+        --pedestrian-height "$PEDESTRIAN_WIND_HEIGHT" \
+        --wind-direction-deg "$WIND_DIRECTION_DEG" \
+        --weather-csv "$WEATHER_CSV" \
+        --project-crs "$PROJECT_CRS"
+    progress_event 3 100 done "Pedestrian-level wind field solved"
+elif active 3; then
+    progress_event 3 100 skipped "Pedestrian-level wind solve skipped"
+fi
+
+# Which convection wind the surface-energy balance (05b) uses.  A solved
+# step-3 field is preferred; the historical spatially uniform weather wind
+# remains the recorded fallback so step 4 always runs.
+SURFACE_WIND_ARG=()
+if [ "$USE_PEDESTRIAN_WIND" = "1" ] \
+        || { [ "$USE_PEDESTRIAN_WIND" = "auto" ] \
+             && [ -f "$PEDESTRIAN_WIND_DIR/potential_flow_metadata.json" ]; }; then
+    if [ ! -f "$PEDESTRIAN_WIND_DIR/potential_flow_metadata.json" ]; then
+        echo "ERROR: USE_PEDESTRIAN_WIND=1 but no solved field at $PEDESTRIAN_WIND_DIR" >&2
+        echo "       Run bash start.sh 3 first (or set USE_PEDESTRIAN_WIND=auto|0)." >&2
+        exit 1
+    fi
+    SURFACE_WIND_ARG=(--pedestrian-flow-dir "$PEDESTRIAN_WIND_DIR")
+    echo "Surface convection wind: step-3 pedestrian potential-flow field ($PEDESTRIAN_WIND_DIR)"
+else
+    echo "Surface convection wind: spatially uniform weather/reference fallback"
+fi
+
+# ----------------------------------------------------------------------------
+# STEP 4 -- merged facet-thermal MRT workflow.
 # Stage 05 first prepares only path_xyz, times.csv and static SVF. Stages 05a
 # and 05b consume those cheap byproducts, then the final stage-05 invocation
 # reuses the exact-match SVF cache while computing the authoritative MRT.
 # ----------------------------------------------------------------------------
 SVF_FORCE_ARG=()
 [ "${FORCE_SVF:-0}" = "1" ] && SVF_FORCE_ARG=(--force-svf)
-if active 3 && ! skip 05; then
-    progress_event 3 0 running "Loading MRT geometry and route receptors"
-    log "STEP 3  Facet-thermal MRT -- preparation (stage 05 --prep-only)"
+if active 4 && ! skip 05; then
+    progress_event 4 0 running "Loading MRT geometry and route receptors"
+    log "STEP 4  Facet-thermal MRT -- preparation (stage 05 --prep-only)"
     "$PY" 05_mrt_network_raytrace.py \
         --buildings-stl "$BUILDINGS_STL" \
         --vegetation-stl "$VEGETATION_STL" \
@@ -481,20 +619,20 @@ if active 3 && ! skip 05; then
         --clear-sky-emissivity "$CLEAR_SKY_MODEL" \
         "${RADIATION_FORCING_ARG[@]}" \
         "${WEATHER_ARG[@]}"
-    progress_event 3 20 running "Route, forcing, and sky-view preparation complete"
-elif active 3; then
-    progress_event 3 20 running "MRT preparation skipped; using existing products"
+    progress_event 4 20 running "Route, forcing, and sky-view preparation complete"
+elif active 4; then
+    progress_event 4 20 running "MRT preparation skipped; using existing products"
 fi
-if active 3 && ! skip 05A; then
-    require_file "$MRT_DIR/path_xyz.npy" 3
-    require_file "$MRT_DIR/times.csv" 3
+if active 4 && ! skip 05A; then
+    require_file "$MRT_DIR/path_xyz.npy" 4
+    require_file "$MRT_DIR/times.csv" 4
 fi
 
 # ----------------------------------------------------------------------------
-# STEP 3b -- Facet selection + LW view matrix (stage 05a)
+# STEP 4b -- Facet selection + LW view matrix (stage 05a)
 # ----------------------------------------------------------------------------
-if active 3 && ! skip 05A; then
-    log "STEP 3  Selecting route-visible thermal facets (stage 05a)"
+if active 4 && ! skip 05A; then
+    log "STEP 4  Selecting route-visible thermal facets (stage 05a)"
     "$PY" 05a_thermal_facets_select.py \
         --buildings-stl "$BUILDINGS_STL" \
         --vegetation-stl "$VEGETATION_STL" \
@@ -502,19 +640,22 @@ if active 3 && ! skip 05A; then
         --mrt-dir "$MRT_DIR" \
         --output-dir "$THERMAL_DIR" \
         "${GROUND_MATERIAL_ARG[@]}" \
+        "${SURFACE_MATERIAL_ARG[@]}" \
         --point-stride "$POINT_STRIDE" --max-distance "$MAX_DISTANCE"
-    progress_event 3 45 running "Route-visible facets and view matrix complete"
-elif active 3; then
-    progress_event 3 45 running "Facet selection skipped; using existing products"
+    progress_event 4 45 running "Route-visible facets and view matrix complete"
+elif active 4; then
+    progress_event 4 45 running "Facet selection skipped; using existing products"
 fi
-if active 3 && ! skip 05B; then require_file "$THERMAL_DIR/facets.npz" 3; fi
+if active 4 && ! skip 05B; then require_file "$THERMAL_DIR/facets.npz" 4; fi
 
 # ----------------------------------------------------------------------------
-# STEP 3c -- Facet 1D surface-energy balance (stage 05b).
+# STEP 4c -- Facet 1D surface-energy balance (stage 05b).
 # Same weather as preparation (reads times.csv); keep CLOUD equal.
+# The optional step-3 pedestrian potential-flow wind localizes the
+# parameterized convective coefficient; radiation terms are unchanged.
 # ----------------------------------------------------------------------------
-if active 3 && ! skip 05B; then
-    log "STEP 3  Facet 1D surface-energy balance (stage 05b)"
+if active 4 && ! skip 05B; then
+    log "STEP 4  Facet 1D surface-energy balance (stage 05b)"
     "$PY" 05b_facet_energy_balance.py \
         --buildings-stl "$BUILDINGS_STL" \
         --vegetation-stl "$VEGETATION_STL" \
@@ -523,6 +664,7 @@ if active 3 && ! skip 05B; then
         --mrt-dir "$MRT_DIR" \
         --output-dir "$THERMAL_DIR" \
         "${GROUND_MATERIAL_ARG[@]}" \
+        "${SURFACE_WIND_ARG[@]}" \
         --spinup-days "$SPINUP_DAYS" \
         --maximum-spinup-days "$MAXIMUM_SPINUP_DAYS" \
         --spinup-convergence-tolerance-k "$SPINUP_TOLERANCE_K" \
@@ -532,20 +674,20 @@ if active 3 && ! skip 05B; then
         --cloud-cover-fraction "$CLOUD" \
         --k-lad-direct "$K_LAD_DIRECT" --k-lad-diffuse "$K_LAD_DIFFUSE" \
         --clear-sky-emissivity "$CLEAR_SKY_MODEL"
-    progress_event 3 68 running "Surface temperatures and radiosity complete"
-elif active 3; then
-    progress_event 3 68 running "Facet energy balance skipped; using existing products"
+    progress_event 4 68 running "Surface temperatures and radiosity complete"
+elif active 4; then
+    progress_event 4 68 running "Facet energy balance skipped; using existing products"
 fi
-if active 3 && ! skip 05FACET; then
-    require_file "$THERMAL_DIR/facet_T_matrix_K.npy" 3
+if active 4 && ! skip 05FACET; then
+    require_file "$THERMAL_DIR/facet_T_matrix_K.npy" 4
 fi
 
 # ----------------------------------------------------------------------------
-# STEP 3d -- authoritative MRT consuming facet surface temperatures.
+# STEP 4d -- authoritative MRT consuming facet surface temperatures.
 # ----------------------------------------------------------------------------
-if active 3 && ! skip 05FACET; then
-    progress_event 3 68 running "Loading facet-thermal MRT calculation"
-    log "STEP 3  Facet-thermal MRT ray tracing (stage 05*)"
+if active 4 && ! skip 05FACET; then
+    progress_event 4 68 running "Loading facet-thermal MRT calculation"
+    log "STEP 4  Facet-thermal MRT ray tracing (stage 05*)"
     "$PY" 05_mrt_network_raytrace.py \
         --buildings-stl "$BUILDINGS_STL" \
         --vegetation-stl "$VEGETATION_STL" \
@@ -561,15 +703,18 @@ if active 3 && ! skip 05FACET; then
         --clear-sky-emissivity "$CLEAR_SKY_MODEL" \
         --facet-thermal-dir "$THERMAL_DIR" \
         --radiant-flux-config "$RADIANT_FLUX_CONFIG" \
+        --wall-reflected-shortwave "$WALL_REFLECTED_SHORTWAVE" \
+        --sensor-equivalent-outputs "$SENSOR_EQUIVALENT_OUTPUTS" \
+        --sensor-height-m "$SENSOR_HEIGHT_M" \
         "${RADIATION_FORCING_ARG[@]}" \
         "${WEATHER_ARG[@]}"
-    progress_event 3 95 running "Facet-thermal MRT complete; preparing diagnostics"
-elif active 3; then
-    progress_event 3 95 running "Facet-thermal MRT calculation skipped"
+    progress_event 4 95 running "Facet-thermal MRT complete; preparing diagnostics"
+elif active 4; then
+    progress_event 4 95 running "Facet-thermal MRT calculation skipped"
 fi
-if active 3 && ! skip 05FACET && [ "$OSM_GROUND_MATERIALS_ENABLED" = "1" ]; then
-    require_file "$MRT_FACET_DIR/radiant_flux_contributions.npz" 3
-    log "STEP 3  Route-point ground-material diagnostics"
+if active 4 && ! skip 05FACET && [ "$OSM_GROUND_MATERIALS_ENABLED" = "1" ]; then
+    require_file "$MRT_FACET_DIR/radiant_flux_contributions.npz" 4
+    log "STEP 4  Route-point ground-material diagnostics"
     "$PY" route_ground_material_diagnostics.py \
         --mrt-dir "$MRT_FACET_DIR" \
         --thermal-dir "$THERMAL_DIR" \
@@ -582,9 +727,9 @@ fi
 
 # Optional baseline: retain the old full legacy-surround product without
 # paying for it during normal runs. It shares the same static SVF cache.
-if active 3 && ! skip 05 && [ "$WITH_BASELINE" = "1" ]; then
-    progress_event 3 96 running "Computing opt-in legacy MRT baseline"
-    log "STEP 3  Optional legacy-surround MRT baseline (WITH_BASELINE=1)"
+if active 4 && ! skip 05 && [ "$WITH_BASELINE" = "1" ]; then
+    progress_event 4 96 running "Computing opt-in legacy MRT baseline"
+    log "STEP 4  Optional legacy-surround MRT baseline (WITH_BASELINE=1)"
     "$PY" 05_mrt_network_raytrace.py \
         --buildings-stl "$BUILDINGS_STL" \
         --vegetation-stl "$VEGETATION_STL" \
@@ -602,124 +747,22 @@ if active 3 && ! skip 05 && [ "$WITH_BASELINE" = "1" ]; then
         "${RADIATION_FORCING_ARG[@]}" \
         "${WEATHER_ARG[@]}"
 fi
-if active 3; then
-    if skip 05 && skip 05A && skip 05B && skip 05FACET; then
-        progress_event 3 100 skipped "Facet-thermal MRT workflow skipped"
-    else
-        progress_event 3 100 done "Facet-thermal MRT workflow complete"
-    fi
-fi
-# ----------------------------------------------------------------------------
-# STEP 4 -- OPTIONAL diagnostic microclimate enhancement.
-#
-# The baseline stage-3 solution remains the default. When enabled, each
-# staggered coupling iteration solves a 3-D temperature/vector-velocity field
-# from the current facet sensible heat, then reruns 05b with local facet Ta and
-# speed. When enabled, 05d first solves radiation and 3-to-5-node conduction on
-# every urban facet using an OSM-boundary-conforming ground mesh. The final MRT
-# pass uses local receptor Ta. This is deliberately a
-# separate UI step so the inexpensive established approximation remains usable.
-# ----------------------------------------------------------------------------
 if active 4; then
-    if [ "$WITH_MICROCLIMATE" != "1" ]; then
-        log "STEP 4  Optional microclimate enhancement -- not requested"
-        echo "  The 3-D field is not recomputed. Auto mode may reuse an exact-context cache;"
-        echo "  otherwise spatially uniform WeatherProvider Ta/wind remain active."
-        echo "  Run WITH_MICROCLIMATE=1 bash start.sh 4 or use the UI step-4 button."
-        progress_event 4 100 skipped "Optional microclimate enhancement not requested"
-    elif skip MICROCLIMATE; then
-        progress_event 4 100 skipped "Optional microclimate solver skipped"
+    if skip 05 && skip 05A && skip 05B && skip 05FACET; then
+        progress_event 4 100 skipped "Facet-thermal MRT workflow skipped"
     else
-        require_file "$MICROCLIMATE_CONFIG" 4
-        require_file "$THERMAL_DIR/facets.npz" 3
-        require_file "$THERMAL_DIR/facet_T_matrix_K.npy" 3
-        require_file "$MRT_DIR/path_xyz.npy" 3
-        require_file "$MRT_DIR/times.csv" 3
-        MICROCLIMATE_URBAN_ARG=()
-        if [ "$WITH_URBAN_RADIATION" = "1" ] && ! skip URBAN_RADIATION; then
-            require_file "$URBAN_RADIATION_CONFIG" 4
-            require_file "$OSM_GROUND_MATERIAL_DIR/osm_ground_materials.gpkg" 2
-            progress_event 4 2 running "Partitioning materials and solving full-surface radiation"
-            log "STEP 4  Full-surface urban radiation and conduction (stage 05d)"
-            "$PY" 05d_urban_radiation.py \
-                --buildings-stl "$BUILDINGS_STL" \
-                --vegetation-stl "$VEGETATION_STL" \
-                --ground-stl "$GROUND_STL" \
-                --ground-material-dir "$OSM_GROUND_MATERIAL_DIR" \
-                --mrt-dir "$MRT_DIR" \
-                --output-dir "$URBAN_RADIATION_DIR" \
-                --config "$URBAN_RADIATION_CONFIG"
-            MICROCLIMATE_URBAN_ARG=(--urban-radiation-dir "$URBAN_RADIATION_DIR")
-            progress_event 4 40 running "Full-surface radiation and conduction complete"
-        elif [ "$WITH_URBAN_RADIATION" = "1" ]; then
-            echo "  Full-surface urban radiation skipped (SKIP_URBAN_RADIATION=1); using 05b facets."
-        else
-            echo "  Full-surface urban radiation disabled; using established 05b route-visible facets."
-        fi
-        coupling_iteration=1
-        while [ "$coupling_iteration" -le "$MICROCLIMATE_COUPLING_ITERATIONS" ]; do
-            progress_base=$(( (coupling_iteration - 1) * 80 / MICROCLIMATE_COUPLING_ITERATIONS ))
-            progress_event 4 "$progress_base" running \
-                "Solving diagnostic air field iteration $coupling_iteration/$MICROCLIMATE_COUPLING_ITERATIONS"
-            log "STEP 4  Diagnostic 3-D microclimate iteration $coupling_iteration/$MICROCLIMATE_COUPLING_ITERATIONS"
-            "$PY" 05c_microclimate_solver.py \
-                --buildings-stl "$BUILDINGS_STL" \
-                --ground-stl "$GROUND_STL" \
-                --facets-dir "$THERMAL_DIR" \
-                --mrt-dir "$MRT_DIR" \
-                --output-dir "$MICROCLIMATE_DIR" \
-                --config "$MICROCLIMATE_CONFIG" \
-                "${MICROCLIMATE_URBAN_ARG[@]}"
-
-            if ! skip MICROCLIMATE_05B; then
-                log "STEP 4  Recoupling facet surface energy to local Ta/velocity"
-                "$PY" 05b_facet_energy_balance.py \
-                    --buildings-stl "$BUILDINGS_STL" \
-                    --vegetation-stl "$VEGETATION_STL" \
-                    --ground-stl "$GROUND_STL" \
-                    --facets-dir "$THERMAL_DIR" --mrt-dir "$MRT_DIR" \
-                    --output-dir "$THERMAL_DIR" \
-                    --microclimate-dir "$MICROCLIMATE_DIR" \
-                    "${GROUND_MATERIAL_ARG[@]}" \
-                    --spinup-days "$SPINUP_DAYS" \
-                    --maximum-spinup-days "$MAXIMUM_SPINUP_DAYS" \
-                    --spinup-convergence-tolerance-k "$SPINUP_TOLERANCE_K" \
-                    --wind-speed "$WIND_SPEED" --wind-source "$SURFACE_WIND_SOURCE" \
-                    --convection-model "$SURFACE_CONVECTION_MODEL" \
-                    --latent-heat-model "$SURFACE_LATENT_HEAT_MODEL" \
-                    --cloud-cover-fraction "$CLOUD" \
-                    --k-lad-direct "$K_LAD_DIRECT" --k-lad-diffuse "$K_LAD_DIFFUSE" \
-                    --clear-sky-emissivity "$CLEAR_SKY_MODEL"
-            fi
-            coupling_iteration=$((coupling_iteration + 1))
-        done
-
-        if ! skip MICROCLIMATE_05FACET; then
-            progress_event 4 82 running "Regenerating MRT with solved local air field"
-            log "STEP 4  Regenerating authoritative MRT with solved Ta/velocity"
-            "$PY" 05_mrt_network_raytrace.py \
-                --buildings-stl "$BUILDINGS_STL" \
-                --vegetation-stl "$VEGETATION_STL" \
-                --ground-stl "$GROUND_STL" \
-                --polylines-pkl "$ROUTE_POLYLINES" \
-                --output-dir "$MRT_FACET_DIR" \
-                --svf-cache "$SVF_CACHE_DIR" \
-                --ds-path "$DS_PATH" --dt-min "$DT_MIN" --date "$DATE" \
-                --z-height "$Z_HEIGHT" \
-                --latitude "$LAT" --longitude "$LON" --timezone "$TZ" \
-                --cloud-cover-fraction "$CLOUD" \
-                --k-lad-direct "$K_LAD_DIRECT" --k-lad-diffuse "$K_LAD_DIFFUSE" \
-                --clear-sky-emissivity "$CLEAR_SKY_MODEL" \
-                --facet-thermal-dir "$THERMAL_DIR" \
-                --microclimate-dir "$MICROCLIMATE_DIR" \
-                --microclimate-receptor-height-m "$Z_HEIGHT" \
-                --radiant-flux-config "$RADIANT_FLUX_CONFIG" \
-                "${RADIATION_FORCING_ARG[@]}" "${WEATHER_ARG[@]}"
-        fi
-        progress_event 4 100 done "Solved microclimate field coupled to surfaces and MRT"
+        progress_event 4 100 done "Facet-thermal MRT workflow complete"
     fi
 fi
 
+# ----------------------------------------------------------------------------
+# The former OPTIONAL step-4 3-D microclimate enhancement (05d full-surface
+# radiation + 05c air-field solve + 05b/MRT recoupling loop) was replaced by
+# the step-3 pedestrian potential-flow wind.  05c/05d remain runnable
+# manually, and a previously solved, still-valid 3-D field found below is
+# reused by the downstream stages exactly as before (never silently: the
+# active air-field source is printed either way).
+# ----------------------------------------------------------------------------
 DOWNSTREAM_MICROCLIMATE_ARG=()
 DOWNSTREAM_URBAN_VALIDATION_ARG=()
 if [ -f "$URBAN_RADIATION_DIR/urban_radiation_metadata.json" ]; then
@@ -748,7 +791,7 @@ fi
 
 if active 5 && { ! skip 06 || ! skip 07 || ! skip 08 || ! skip 09 \
         || { ! skip 10 && [ "$SOLWEIG_COMPARE" != "0" ]; }; }; then
-    require_file "$VIS_MRT_DIR/tmrt_matrix_C.npy" 3
+    require_file "$VIS_MRT_DIR/tmrt_matrix_C.npy" 4
     echo
     echo "Visualization / route-stress stages consume: $VIS_MRT_DIR"
     echo "(set VIS_MRT_DIR=$MRT_DIR to use the legacy-surround results instead)"
@@ -797,7 +840,7 @@ if active 6 && { ! skip 08 || ! skip 09 \
     require_routes
 fi
 if active 6 && { ! skip 08 || ! skip 09; }; then
-    require_file "$VIS_MRT_DIR/tmrt_matrix_C.npy" 3
+    require_file "$VIS_MRT_DIR/tmrt_matrix_C.npy" 4
 fi
 if active 6; then
     progress_event 6 0 running "Preparing route-level UTCI analysis"
@@ -828,6 +871,11 @@ if active 6 && ! skip 09; then
     log "STEP 6  Route thermal stress -- JOS-3 core temperature (stage 09)"
     SUBJECT_ARG=()
     [ -n "$SUBJECT_PROFILE" ] && SUBJECT_ARG=(--subject-profile "$SUBJECT_PROFILE")
+    CLOTHING_ARG=(--clothing "$CLOTHING" --clothing-climate "$CLOTHING_CLIMATE")
+    if [ -n "$CLOTHING_CONFIG" ]; then
+        require_file "$CLOTHING_CONFIG" 6
+        CLOTHING_ARG+=(--clothing-config "$CLOTHING_CONFIG")
+    fi
     "$PY" 09_route_thermal_stress_jos3.py \
         --routes-dir "$ROUTES_DIR" \
         --mrt-results-dir "$VIS_MRT_DIR" \
@@ -840,7 +888,7 @@ if active 6 && ! skip 09; then
         --project-crs "$PROJECT_CRS" \
         --microclimate-receptor-height-m "$Z_HEIGHT" \
         "${DOWNSTREAM_MICROCLIMATE_ARG[@]}" \
-        "${SUBJECT_ARG[@]}" "${WEATHER_ARG[@]}"
+        "${SUBJECT_ARG[@]}" "${CLOTHING_ARG[@]}" "${WEATHER_ARG[@]}"
 fi
 if active 6 && ! skip 10 && [ "$SOLWEIG_COMPARE" != "0" ]; then
     require_file "$VIS_DIR/route_utci/routes_points.csv" 6
@@ -862,11 +910,13 @@ fi
 
 log "Pipeline complete (started at step $START_STEP)"
 echo "  MRT prep/baseline: $MRT_DIR (baseline enabled=$WITH_BASELINE)"
-echo "  Route inputs      : $ROUTES_DIR"
+echo "  Route inputs      : $ROUTES_DIR
+  JOS-3 clothing   : $CLOTHING (climate: $CLOTHING_CLIMATE)"
+echo "  Pedestrian wind  : $PEDESTRIAN_WIND_DIR (use=$USE_PEDESTRIAN_WIND; from=$WIND_DIRECTION_DEG deg)"
 echo "  Facets + temps   : $THERMAL_DIR"
-echo "  Microclimate     : $MICROCLIMATE_DIR (requested=$WITH_MICROCLIMATE; use=$USE_MICROCLIMATE_FIELDS)"
-echo "  Urban radiation  : $URBAN_RADIATION_DIR (requested=$WITH_URBAN_RADIATION)"
-echo "  Ground materials : $OSM_GROUND_MATERIAL_DIR (enabled=$OSM_GROUND_MATERIALS_ENABLED)"
+echo "  Microclimate     : $MICROCLIMATE_DIR (legacy 3-D reuse=$USE_MICROCLIMATE_FIELDS)"
+echo "  Ground materials : $OSM_GROUND_MATERIAL_DIR (enabled=$OSM_GROUND_MATERIALS_ENABLED)
+  Surface materials: $SURFACE_MATERIAL_DIR"
 echo "  MRT (facet therm): $MRT_FACET_DIR"
 echo "  Radiant flux      : $VIS_DIR/route_utci/radiant_flux_contributions"
 echo "  Visualizations   : $VIS_DIR"

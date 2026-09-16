@@ -66,9 +66,10 @@ import numpy as np
 import scipy.sparse as sp
 import trimesh
 
+from material_classification import SURFACE_ASSIGNMENT_FILE
 from thermal_common import (CLASS_GROUND, CLASS_ROOF, CLASS_WALL,
-                            get_intersector, make_sphere_directions,
-                            nearest_hit_multi)
+                            DEFAULT_MATERIALS, get_intersector,
+                            make_sphere_directions, nearest_hit_multi)
 from osm_ground_materials import (GROUND_FACE_MATERIAL_MAP,
                                   GROUND_MATERIAL_CATALOG)
 
@@ -87,6 +88,12 @@ def parse_args():
                    help="Output dir of 05_mrt_network_raytrace.py "
                         "(needs path_xyz.npy)")
     p.add_argument("--output-dir", required=True)
+    p.add_argument("--surface-material-dir", default=None,
+                   help="Directory written by prepare_surface_materials.py. "
+                        "When given, its hierarchical per-face assignment "
+                        "supersedes the geometry-derived wall/roof classes AND "
+                        "the ground material map, for every facet. Optional: "
+                        "without it the previous behaviour is unchanged.")
     p.add_argument("--ground-material-dir", default=None,
                    help="Optional output of prepare_osm_ground_materials.py. "
                         "This assigns materials to ground face IDs only and "
@@ -286,9 +293,67 @@ def main():
             ground_material_id[face_id[ground_sel]]]
         material_source[ground_sel] = "osm_ground_material_map"
 
+    # ------------------------------------------------------------------
+    # HIERARCHICAL SURFACE-MATERIAL ASSIGNMENT (optional, additive)
+    #
+    # When prepare_surface_materials.py has run, its per-face assignment
+    # supersedes the block above for EVERY facet class -- ground, wall and roof
+    # alike. Without it nothing changes: ground keeps the OSM map it already
+    # had and buildings keep the two geometry-derived classes, so an existing
+    # case that has not been re-preprocessed is unaffected.
+    #
+    # The provenance and confidence travel WITH the facets so that every
+    # downstream product can say where a surface's optical properties came from
+    # without re-reading the manifest.
+    # ------------------------------------------------------------------
+    surface_group_id = np.full(n_facets, "", dtype="U80")
+    material_confidence = np.zeros(n_facets, dtype=np.float32)
+    if args.surface_material_dir:
+        assignment_path = Path(args.surface_material_dir) / SURFACE_ASSIGNMENT_FILE
+        if not assignment_path.is_file():
+            raise FileNotFoundError(
+                f"--surface-material-dir must contain {SURFACE_ASSIGNMENT_FILE}; "
+                "run prepare_surface_materials.py for this case first")
+        assignment = np.load(assignment_path, allow_pickle=False)
+        material_name = material_name.astype("U64")
+        for role, mesh_key in (("ground", MESH_GROUND),
+                               ("buildings", MESH_BUILDINGS)):
+            index_key = f"{role}_group_index"
+            if index_key not in assignment.files:
+                continue
+            group_index = assignment[index_key]
+            expected = len(meshes[mesh_key].faces)
+            if len(group_index) != expected:
+                raise ValueError(
+                    f"surface-material assignment for {role} covers "
+                    f"{len(group_index)} faces but the mesh has {expected}; "
+                    "re-run prepare_surface_materials.py for this exact geometry")
+            names = assignment[f"{role}_material_names"].astype(str)
+            per_group_material = assignment[f"{role}_group_material_id"]
+            per_group_source = assignment[f"{role}_group_source"].astype(str)
+            per_group_confidence = assignment[f"{role}_group_confidence"]
+            per_group_id = assignment[f"{role}_group_id"].astype(str)
+            selection = mesh_id == mesh_key
+            groups_here = group_index[face_id[selection]]
+            material_name[selection] = names[per_group_material[groups_here]]
+            material_source[selection] = per_group_source[groups_here]
+            material_confidence[selection] = per_group_confidence[groups_here]
+            surface_group_id[selection] = per_group_id[groups_here]
+        unknown = sorted(set(material_name.tolist()) - set(DEFAULT_MATERIALS))
+        if unknown:
+            raise ValueError(
+                "surface-material assignment names materials the property "
+                f"library does not define: {unknown}")
+        print(f"  Hierarchical surface materials from {args.surface_material_dir}: "
+              f"{len(set(material_name.tolist()))} classes, "
+              f"area-weighted mean confidence "
+              f"{float(np.average(material_confidence, weights=np.maximum(areas, 1e-12))):.2f}")
+
     np.savez(out_dir / "facets.npz", mesh_id=mesh_id, face_id=face_id,
              centroid=centroids, normal=normals, area=areas, cls=classes,
-             material_name=material_name, material_source=material_source)
+             material_name=material_name, material_source=material_source,
+             surface_group_id=surface_group_id,
+             material_confidence=material_confidence)
     sp.save_npz(out_dir / "lw_view_matrix.npz", W)
     np.savez(out_dir / "lw_point_weights.npz", w_sky=w_sky, w_veg=w_veg,
              w_default=w_default)

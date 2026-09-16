@@ -14,10 +14,23 @@ changing boundary conditions -- confirmed by simulating 10 min of shade
 followed by 20 min of sun and observing core temperature continue
 evolving from the shade-stage endpoint rather than resetting. It also
 gives real per-body-segment output (17 segments: head, chest, arms,
-hands, thighs, feet, etc.) -- in testing, extremities (hands, feet)
-showed core temperature rises 5-10x larger than the torso under the
-same sun exposure, a genuine multi-node effect the single-compartment
-model could not represent at all.
+hands, thighs, feet, etc.) -- extremities (hands, feet) respond far
+more strongly than the torso to both sun and cold, a genuine
+multi-node effect the single-compartment model could not represent
+at all.
+
+EXTREMITY REPORTING -- LIKE FOR LIKE
+------------------------------------
+Extremity tissue sits several degrees below body core even in perfect
+thermal balance (about 0.4 C below when hot and vasodilated, about 4.5 C
+below when cool and vasoconstricted). Any metric that subtracts a body-core
+temperature from an extremity temperature therefore reports that standing
+offset as if it were strain, and its size changes with vasomotor state.
+Every extremity number here compares one quantity with itself:
+``*_change_c`` is end minus that same quantity's own start,
+``final_*_temp`` values are absolute, and the core-to-extremity gradient is
+taken at a single instant, where it is the meaningful physiological measure
+of peripheral vasoconstriction.
 
 WHY NOT pythermalcomfort's phs/two_nodes_gagge: both are steady-state
 predictors for a person who has equilibrated in ONE FIXED environment,
@@ -38,6 +51,7 @@ Run:
 """
 
 import argparse
+import json
 from pathlib import Path
 
 import numpy as np
@@ -49,6 +63,7 @@ from pythermalcomfort.models import JOS3
 from weather_provider import add_weather_args, provider_from_args
 from microclimate_field import EnvironmentField, add_microclimate_argument
 from subject_profiles import PROFILES, get_profile, apply_profile_to_model
+import clothing_profiles
 from generate_route import load_routes_directory, route_arrival_schedule
 from physical_checks import check_jos3_inputs
 
@@ -116,6 +131,7 @@ def parse_args():
                          "profile's printed caveat: for elderly/ill the "
                          "model captures only body geometry + perfusion, "
                          "which under-states real risk.")
+    clothing_profiles.add_clothing_arguments(p)
     p.add_argument("--person-height-m", type=float, default=None)
     p.add_argument("--person-weight-kg", type=float, default=None)
     p.add_argument("--person-age", type=int, default=None)
@@ -176,8 +192,44 @@ def main():
     # unwrap in case times cross midnight boundary at the array edges
     mrt_tree = cKDTree(mrt_xyz[:, :2])
 
+    # Clothing is chosen per route from that walk's own mean conditions, so a
+    # night walk and a noon walk over the same street are dressed differently.
+    clothing_config = clothing_profiles.load_config(args.clothing_config)
+    solar_elevation_deg = (times_df["elevation_deg"].to_numpy(float)
+                           if "elevation_deg" in times_df.columns else None)
+    if solar_elevation_deg is None:
+        print("  NOTE: times.csv has no elevation_deg column; day/night for "
+              "clothing selection falls back to 07:00-19:00 local hours.")
+
+    def walk_clothing(route_id, xy_route, nearest, hours):
+        """Resolve the clothing worn for one walk and why."""
+        sample_xyz = np.column_stack(
+            (xy_route[:, 0], xy_route[:, 1], mrt_xyz[nearest, 2]))
+        conditions = environment.sample(sample_xyz, hours % 24.0)
+        mean_ta = float(np.mean(conditions.air_temperature_c))
+        mean_wind = float(np.mean(conditions.wind_speed_ms))
+        mean_hour = float(np.mean(hours)) % 24.0
+        if solar_elevation_deg is not None:
+            elevation = float(np.interp(mean_hour, time_hours,
+                                        solar_elevation_deg, period=24.0))
+            daytime = elevation > 0.0
+        else:
+            elevation = float("nan")
+            daytime = 7.0 <= mean_hour < 19.0
+        segment_clo, provenance = clothing_profiles.resolve(
+            args.clothing, air_temp_c=mean_ta, is_daytime=daytime,
+            wind_ms=mean_wind, climate=args.clothing_climate,
+            config=clothing_config)
+        provenance.update({"route_id": route_id,
+                           "solar_elevation_deg": elevation,
+                           "mean_walk_hour": mean_hour,
+                           "requested": args.clothing,
+                           "segment_clo": [float(v) for v in segment_clo]})
+        return segment_clo, provenance
+
     print("\nSimulating the walk along each route with JOS-3 "
-          f"(activity par={args.activity_par}, equilibration={args.equilibration_min} min)...")
+          f"(activity par={args.activity_par}, equilibration={args.equilibration_min} min, "
+          f"clothing={args.clothing} [{args.clothing_climate}])...")
     results = []
     for i, route in enumerate(routes):
         route_id = route["route_id"]
@@ -196,9 +248,29 @@ def main():
         if subj_setpoint_shift:
             model.cr_set_point = model.cr_set_point + subj_setpoint_shift
         model.par = args.activity_par
+        # Clothing must be on the body BEFORE equilibration, otherwise the
+        # subject equilibrates naked and then dresses at the start line.
+        segment_clo, clothing_provenance = walk_clothing(
+            route_id, xy, nearest_idx, arrival_hour)
+        if list(getattr(model, "body_names", clothing_profiles.JOS3_SEGMENTS)) \
+                != list(clothing_profiles.JOS3_SEGMENTS):
+            raise RuntimeError(
+                "JOS-3 segment order differs from clothing_profiles."
+                "JOS3_SEGMENTS; refusing to apply clothing to the wrong parts")
+        model.clo = segment_clo
         # surface-area weights for a single scalar "whole-body mean core temp"
         # summary metric from the 17 segment values
         bsa_weights = model.bsa / model.bsa.sum()
+        clothing_provenance["whole_body_clo"] = clothing_profiles.whole_body_clo(
+            segment_clo, model.bsa)
+        print(f"  Route {route_id} clothing: "
+              f"{clothing_provenance['ensemble_label']} "
+              f"({clothing_provenance['whole_body_clo']:.2f} clo whole-body; "
+              f"{clothing_provenance['selection']}"
+              + (f", dressing temperature "
+                 f"{clothing_provenance['dressing_temperature_c']:.1f} C"
+                 if "dressing_temperature_c" in clothing_provenance else "")
+              + ")")
 
         def weighted_core_c(m):
             return float(np.sum(m.t_core * bsa_weights))
@@ -227,9 +299,24 @@ def main():
             model.simulate(times=int(args.equilibration_min), dtime=60, output=False)
         start_core_c = weighted_core_c(model)
 
+        # Extremity (hand/foot) state is tracked as its OWN quantity, at the
+        # same instants as the core trace, so every reported extremity number
+        # is a like-for-like comparison. Extremity tissue sits several degrees
+        # below body core even in perfect thermal balance -- differencing the
+        # two would report that permanent offset as if it were strain.
+        idx_extreme = [k for k, name in enumerate(model.body_names)
+                       if "hand" in name or "foot" in name]
+        if not idx_extreme:
+            raise RuntimeError("this JOS-3 build exposes no hand/foot segments")
+        extremity_core_c = lambda: float(np.mean(model.t_core[idx_extreme]))
+        extremity_skin_c = lambda: float(np.mean(model.t_skin[idx_extreme]))
+        start_extremity_core_c = extremity_core_c()
+        start_extremity_skin_c = extremity_skin_c()
+
         tcore_trace = np.zeros(n_pts)
         tmrt_trace = np.zeros(n_pts)
-        hand_foot_trace = np.zeros(n_pts)  # extremity segments, shown separately
+        hand_foot_trace = np.zeros(n_pts)        # extremity tissue temperature
+        hand_foot_skin_trace = np.zeros(n_pts)   # extremity skin temperature
 
         for j in range(n_pts):
             h = arrival_hour[j] % 24.0
@@ -253,11 +340,8 @@ def main():
 
             tcore_trace[j] = weighted_core_c(model)
             tmrt_trace[j] = tmrt_now
-            # JOS-3 body_names order includes hand/foot segments -- average them
-            # as a simple "extremity strain" indicator, shown alongside core.
-            idx_extreme = [k for k, name in enumerate(model.body_names)
-                            if "hand" in name or "foot" in name]
-            hand_foot_trace[j] = float(np.mean(model.t_core[idx_extreme])) if idx_extreme else np.nan
+            hand_foot_trace[j] = extremity_core_c()
+            hand_foot_skin_trace[j] = extremity_skin_c()
 
         walk_duration_min = (arrival_hour[-1] - arrival_hour[0]) * 60.0
         results.append({
@@ -270,18 +354,33 @@ def main():
             "tcore_trace_c": tcore_trace,
             "tmrt_trace_c": tmrt_trace,
             "hand_foot_trace_c": hand_foot_trace,
+            "hand_foot_skin_trace_c": hand_foot_skin_trace,
             "length_m": route["length_m"],
             "walk_duration_min": walk_duration_min,
             "final_tcore_rise_c": tcore_trace[-1] - start_core_c,
             "final_tcore_c": tcore_trace[-1],
             "mean_tmrt_c": float(np.mean(tmrt_trace)),
             "max_tmrt_c": float(np.max(tmrt_trace)),
-            "final_extremity_rise_c": hand_foot_trace[-1] - start_core_c,
+            # Extremity strain, all like-for-like:
+            #   *_change_c  = same quantity, end minus its own start
+            #   *_temp_c    = absolute end-of-walk temperature
+            #   gradient    = core minus extremity AT THE SAME INSTANT, the
+            #                 physiological core-to-periphery gradient that
+            #                 widens with vasoconstriction
+            "extremity_core_change_c": hand_foot_trace[-1] - start_extremity_core_c,
+            "extremity_skin_change_c": (hand_foot_skin_trace[-1]
+                                        - start_extremity_skin_c),
+            "final_extremity_core_c": hand_foot_trace[-1],
+            "final_extremity_skin_c": hand_foot_skin_trace[-1],
+            "final_core_to_extremity_gradient_c": (tcore_trace[-1]
+                                                   - hand_foot_trace[-1]),
+            "clothing": clothing_provenance,
         })
         print(f"  Route {route_id} ({route['name']}): {route['length_m']:.0f} m, "
               f"{walk_duration_min:.1f} min [{timing_source}], "
               f"final core temp rise = {results[-1]['final_tcore_rise_c']:+.3f} C "
-              f"(extremities {results[-1]['final_extremity_rise_c']:+.3f} C)")
+              f"(hand/foot skin {results[-1]['final_extremity_skin_c']:.1f} C, "
+              f"{results[-1]['extremity_skin_change_c']:+.2f} C over the walk)")
 
     # Rank routes by final core temp rise (lower = better/cooler)
     ranking = sorted(results, key=lambda r: r["final_tcore_rise_c"])
@@ -298,10 +397,28 @@ def main():
         "walk_duration_min": r["walk_duration_min"],
         "final_tcore_rise_c": r["final_tcore_rise_c"],
         "mean_tmrt_c": r["mean_tmrt_c"], "max_tmrt_c": r["max_tmrt_c"],
-        "final_extremity_rise_c": r["final_extremity_rise_c"],
+        "final_tcore_c": r["final_tcore_c"],
+        "final_extremity_skin_c": r["final_extremity_skin_c"],
+        "extremity_skin_change_c": r["extremity_skin_change_c"],
+        "final_extremity_core_c": r["final_extremity_core_c"],
+        "extremity_core_change_c": r["extremity_core_change_c"],
+        "final_core_to_extremity_gradient_c":
+            r["final_core_to_extremity_gradient_c"],
+        "clothing_ensemble": r["clothing"]["ensemble"],
+        "clothing_whole_body_clo": r["clothing"]["whole_body_clo"],
+        "clothing_selection": r["clothing"]["selection"],
     } for r in results]
     pd.DataFrame(summary_rows).sort_values("final_tcore_rise_c").to_csv(
         out_dir / "route_ranking_summary.csv", index=False)
+    # Full clothing provenance: which outfit each walk wore and every term
+    # that produced it, so a result is never silently re-clothed.
+    (out_dir / "clothing_provenance.json").write_text(json.dumps({
+        "requested": args.clothing,
+        "climate": args.clothing_climate,
+        "config_file": args.clothing_config,
+        "segments": list(clothing_profiles.JOS3_SEGMENTS),
+        "routes": [r["clothing"] for r in results],
+    }, indent=2), encoding="utf-8")
 
     # ---- Visualization 1: spatial map of all input routes ----
     building_segments = None

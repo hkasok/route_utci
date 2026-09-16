@@ -68,6 +68,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ground-point-spacing-m", type=float, default=1.5)
     parser.add_argument("--building-point-spacing-m", type=float, default=0.35)
     parser.add_argument("--vegetation-point-spacing-m", type=float, default=0.50)
+    # Named explicitly so a case records which crown model built it. "field"
+    # is the only model without a shape prior; "radial" is a star-shaped hull
+    # about a vertical axis, which reads as a field of circles from above.
+    parser.add_argument("--crown-model", choices=["field", "reconstruct", "radial", "hemisphere"],
+                        default="field",
+                        help="Crown geometry model passed to 02_vegetation_to_stl.py "
+                             "(default: field -- no shape prior)")
     parser.add_argument("--ground-raster-res-m", type=float, default=2.0)
     parser.add_argument("--allow-incomplete-coverage", action="store_true",
                         help="build clipped geometry despite missing LAZ coverage (not recommended)")
@@ -361,7 +368,45 @@ def write_case_metadata(case_dir: Path, area: int, frames, layers, scene_bbox, o
             "subject_profile": "",
         },
     }
-    (case_dir / "case.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    # PRESERVE DOWNSTREAM SETUP WHEN REBUILDING GEOMETRY.
+    #
+    # This function writes a fresh geometry-preparation manifest. Rebuilding
+    # geometry on a case that was already prepared would otherwise silently
+    # revert everything the later setup steps wrote: the manifest above hard-
+    # codes weather/weather.csv, omits radiation_forcing_config entirely, and
+    # sets simulation_defaults.date to "".
+    #
+    # That is not hypothetical. Re-running this script with --overwrite on the
+    # six prepared lisbon cases deactivated the sensor-derived solar forcing
+    # (weather_from_sensors.py --case, the UI's "build weather + solar from
+    # sensors (activate)") and blanked the campaign dates, and the pipeline
+    # then died in stage 05 with "0001-01-01 is a nonexistent time" -- after
+    # minutes of ray tracing, naming neither the case nor the field.
+    #
+    # Geometry owns the three STL paths, the scene location/coordinates and
+    # the source block. Everything else belongs to steps that run later, so it
+    # is carried across when a manifest already exists.
+    manifest_path = case_dir / "case.json"
+    if manifest_path.is_file():
+        try:
+            existing = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            existing = None
+        if isinstance(existing, dict):
+            geometry_owned = {"buildings_stl", "vegetation_stl", "ground_stl"}
+            for key, value in existing.get("files", {}).items():
+                if key not in geometry_owned:
+                    manifest["files"][key] = value
+            for key in ("simulation_defaults", "workflow", "description",
+                        "setup_status"):
+                if key in existing:
+                    manifest[key] = existing[key]
+            preserved = sorted(
+                set(existing.get("files", {})) - geometry_owned
+                - set(manifest["files"]))
+            print(f"  preserved existing case setup in case.json"
+                  + (f" (also kept {', '.join(preserved)})" if preserved else ""))
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     build = {
         "case_id": f"lisbon{area}",
         "status": status,
@@ -485,6 +530,7 @@ def build_case(area: int, gpkg: Path, tiles: list[dict], args) -> bool:
         "--input", str(split_dir / "vegetation_points.npy"),
         "--output", str(case_dir / "geometry" / "vegetation_final.stl"),
         "--ground-npy", str(split_dir / "ground_and_water_points.npy"),
+        "--crown-model", args.crown_model,
     ], "vegetation STL")
     run_checked([
         python, str(SCRIPT_DIR / "03_buildings_to_stl.py"),

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 from pathlib import Path
 import shlex
@@ -83,6 +84,28 @@ def load_case(case_dir: Path) -> dict:
     if not location.get("timezone") or not coordinates.get("project_crs"):
         raise ValueError(f"{manifest_path}: timezone and project_crs are required")
 
+    # simulation_defaults.date must be a real calendar date if the key is
+    # present at all. A PRESENT-BUT-EMPTY date is the dangerous case: dict.get
+    # returns "" rather than the fallback, start.sh passes --date "" to stage
+    # 05, and `pd.date_range(" 00:00", tz=...)` resolves to year 1 and dies
+    # with "0001-01-01 is a nonexistent time due to daylight savings time" --
+    # a message that names neither the case nor the date. All six lisbon cases
+    # shipped that way and failed only after minutes of SVF ray tracing.
+    if "date" in defaults:
+        date_value = str(defaults["date"]).strip()
+        if not date_value:
+            raise ValueError(
+                f"{manifest_path}: simulation_defaults.date is empty. Set a real "
+                "date (YYYY-MM-DD) or remove the key to accept the default. For a "
+                "measured campaign use the date its route CSVs record in "
+                "timestamp_local.")
+        try:
+            datetime.date.fromisoformat(date_value)
+        except ValueError as exc:
+            raise ValueError(
+                f"{manifest_path}: simulation_defaults.date {date_value!r} is not "
+                "a valid YYYY-MM-DD date") from exc
+
     return {
         "case_dir": case_dir,
         "manifest": manifest_path,
@@ -136,6 +159,10 @@ def shell_assignments(case: dict) -> str:
         "CASE_WIND_MS": defaults.get("wind_speed_ms", 3.1),
         "CASE_CLOUD": defaults.get("cloud_cover_fraction", 0.0),
         "CASE_SUBJECT_PROFILE": defaults.get("subject_profile", ""),
+        # Clothing for the JOS-3 walker: "auto" picks an ensemble from each
+        # walk's own temperature, day/night and wind (see clothing_profiles.py).
+        "CASE_CLOTHING": defaults.get("clothing", "auto"),
+        "CASE_CLOTHING_CLIMATE": defaults.get("clothing_climate", "temperate"),
         "CASE_TIMING_MODE": defaults.get("timing_mode", "distance_and_walking_speed"),
         "CASE_ROUTING_NETWORK_REQUIRED": (
             1 if case["routing_network_required"] else 0),
