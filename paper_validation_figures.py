@@ -84,10 +84,81 @@ def stats(model: np.ndarray, measured: np.ndarray) -> dict:
         "mbe": float(residual.mean()),
         "mae": float(np.abs(residual).mean()),
         "rmse": float(np.sqrt((residual ** 2).mean())),
+        # Centred (bias-removed) RMSE. Separates the systematic offset from the
+        # ability to track variation, which a pooled RMSE conflates.
+        "crmse": float(np.sqrt(((residual - residual.mean()) ** 2).mean())),
+        # Observed standard deviation: the signal the model is asked to resolve.
+        # crmse < sd_obs means the model beats predicting that walk's own mean.
+        "sd_obs": float(measured.std()),
         "r": float(np.corrcoef(model, measured)[0, 1]),
         "measured_mean": float(measured.mean()),
         "model_mean": float(model.mean()),
     }
+
+
+def within_case_r(frame: pd.DataFrame, model_col: str, meas_col: str) -> float:
+    """Correlation after removing each case's own mean from both series.
+
+    A correlation pooled over campaigns is inflated by between-campaign spread:
+    six walks at different air temperatures correlate well even if nothing is
+    resolved along any individual walk. Centring per case removes that and
+    reports only within-walk skill.
+    """
+    d = frame.dropna(subset=[model_col, meas_col])
+    if len(d) < 3 or d["case_id"].nunique() < 2:
+        return float("nan")
+    m = d[model_col] - d.groupby("case_id")[model_col].transform("mean")
+    o = d[meas_col] - d.groupby("case_id")[meas_col].transform("mean")
+    return float(np.corrcoef(m, o)[0, 1])
+
+
+def globe_flux_budget(points: pd.DataFrame) -> dict:
+    """Invert the measured globe's energy balance to locate the daytime bias.
+
+    The emulator solves C dTg/dt = R_abs - eps*sigma*Tg^4 - h_c*(Tg - Ta). Run
+    backwards on the MEASURED globe temperature, air temperature and wind, it
+    returns the absorbed flux the measurement implies. Differencing that against
+    the modelled absorbed flux separates a radiative error from a registration
+    one: registration is near-symmetric and cancels in the mean, so any surviving
+    mean offset in absorbed flux is radiative.
+    """
+    from black_globe import convection_coefficient
+
+    sigma, eps, diameter = 5.670374419e-8, 0.95, 0.152
+    d = points.copy()
+    if "globe_spinup_affected" in d:
+        d = d[~d["globe_spinup_affected"].astype(bool)]
+    need = ["measured_black_globe_temperature_c", "measured_air_temperature_c",
+            "measured_wind_ms", "globe_absorbed_flux_Wm2",
+            "globe_transient_temperature_C"]
+    d = d.dropna(subset=need)
+
+    out = {}
+    for period in ("day", "night"):
+        s = d[d["period"] == period]
+        if len(s) < 3:
+            continue
+        tg = s["measured_black_globe_temperature_c"].values
+        ta = s["measured_air_temperature_c"].values
+        h = convection_coefficient(tg, ta, s["measured_wind_ms"].values, diameter)
+        implied = eps * sigma * (tg + 273.15) ** 4 + h * (tg - ta)
+        excess = s["globe_absorbed_flux_Wm2"].values - implied
+        h_rad = 4.0 * eps * sigma * (tg.mean() + 273.15) ** 3
+        out[period] = {
+            "n": int(len(s)),
+            "model_absorbed_Wm2": float(s["globe_absorbed_flux_Wm2"].mean()),
+            "implied_absorbed_Wm2": float(implied.mean()),
+            "excess_Wm2": float(excess.mean()),
+            "h_total_Wm2K": float(h.mean() + h_rad),
+            "implied_bias_K": float(excess.mean() / (h.mean() + h_rad)),
+            "actual_bias_K": float((s["globe_transient_temperature_C"].values
+                                    - tg).mean()),
+            "lw_from_surfaces_Wm2": float(s["lw_surface_total_absorbed_Wm2"].mean())
+            if "lw_surface_total_absorbed_Wm2" in s else float("nan"),
+            "lw_from_sky_Wm2": float(s["lw_sky_absorbed_Wm2"].mean())
+            if "lw_sky_absorbed_Wm2" in s else float("nan"),
+        }
+    return out
 
 
 def _square(ax, lo, hi, xlabel, ylabel, title):
@@ -256,9 +327,13 @@ def table_globe(points: pd.DataFrame) -> str:
     d = d.dropna(subset=["measured_black_globe_temperature_c",
                          "globe_transient_temperature_C"])
     lines = [
-        r"\begin{tabular}{llrrrrrr}", r"\toprule",
-        r"Case & Period & $n$ & Measured & Emulated & MBE & RMSE & $r$ \\",
-        r" & & & (\si{\celsius}) & (\si{\celsius}) & (K) & (K) & \\",
+        # Nine columns overflow the elsarticle text block at default column
+        # separation; 4pt keeps it inside without shrinking the font further.
+        r"\setlength{\tabcolsep}{4pt}",
+        r"\begin{tabular}{llrrrrrrr}", r"\toprule",
+        r"Case & Period & $n$ & Measured & Emulated & MBE & RMSE & cRMSE & "
+        r"$\sigma_{\mathrm{obs}}$ \\",
+        r" & & & (\si{\celsius}) & (\si{\celsius}) & (K) & (K) & (K) & (K) \\",
         r"\midrule",
     ]
     for case in CASES:
@@ -272,7 +347,7 @@ def table_globe(points: pd.DataFrame) -> str:
             lines.append(
                 f"{shown} & {period} & {st['n']} & {st['measured_mean']:.1f} & "
                 f"{st['model_mean']:.1f} & {st['mbe']:+.2f} & {st['rmse']:.2f} & "
-                f"{st['r']:.2f} \\\\")
+                f"{st['crmse']:.2f} & {st['sd_obs']:.2f} \\\\")
     lines.append(r"\midrule")
     for period in ("day", "night"):
         s = d[d["period"] == period]
@@ -281,7 +356,7 @@ def table_globe(points: pd.DataFrame) -> str:
         lines.append(
             rf"\textbf{{Pooled}} & {period} & {st['n']} & {st['measured_mean']:.1f} & "
             f"{st['model_mean']:.1f} & {st['mbe']:+.2f} & {st['rmse']:.2f} & "
-            f"{st['r']:.2f} \\\\")
+            f"{st['crmse']:.2f} & {st['sd_obs']:.2f} \\\\")
     lines += [r"\bottomrule", r"\end{tabular}"]
     return "\n".join(lines)
 
@@ -303,6 +378,13 @@ def main() -> None:
     globe = figure_globe(points, out)
     radio = figure_radiometer(points, out)
     shadow = shadow_registration(points, out)
+    budget = globe_flux_budget(points)
+    spin = points[~points["globe_spinup_affected"].astype(bool)] \
+        if "globe_spinup_affected" in points else points
+    within_r = {p: within_case_r(spin[spin["period"] == p],
+                                 "globe_transient_temperature_C",
+                                 "measured_black_globe_temperature_c")
+                for p in ("day", "night")}
     (out / "table_radiometer.tex").write_text(table_radiometer(points) + "\n")
     (out / "table_globe.tex").write_text(table_globe(points) + "\n")
 
@@ -310,7 +392,9 @@ def main() -> None:
     for period, st in globe.items():
         print(f"  {period:5s} n={st['n']:5d}  measured {st['measured_mean']:5.2f}  "
               f"model {st['model_mean']:5.2f}  MBE {st['mbe']:+.2f}  "
-              f"RMSE {st['rmse']:.2f}  r={st['r']:.3f}")
+              f"RMSE {st['rmse']:.2f}  cRMSE {st['crmse']:.2f}  "
+              f"sd_obs {st['sd_obs']:.2f}  r={st['r']:.3f} "
+              f"(within-case r={within_r[period]:.3f})")
     print("\nRADIOMETER (pooled)")
     for label, st in radio.items():
         print(f"  {label[:26]:26s} n={st['n']:5d}  MBE {st['mbe']:+7.1f}  "
@@ -325,7 +409,15 @@ def main() -> None:
     print(f"  K-down RMSE  agree {shadow['rmse_agree']:.0f}  "
           f"disagree {shadow['rmse_disagree']:.0f}  all {shadow['rmse_all']:.0f} W/m2")
 
+    print("\nGLOBE FLUX BUDGET (absorbed flux inverted from the measurement)")
+    for period, b in budget.items():
+        print(f"  {period:5s} model {b['model_absorbed_Wm2']:6.1f}  "
+              f"implied {b['implied_absorbed_Wm2']:6.1f}  "
+              f"excess {b['excess_Wm2']:+6.1f} W/m2  -> "
+              f"dTg {b['implied_bias_K']:+.2f} K (actual {b['actual_bias_K']:+.2f} K)")
+
     summary = {"n_points": int(len(points)), "globe": globe, "shadow": shadow,
+               "globe_flux_budget": budget, "globe_within_case_r": within_r,
                "radiometer": {k: v for k, v in radio.items()},
                "date_aligned": int(aligned.sum()),
                "date_mismatched": int((~aligned).sum())}
