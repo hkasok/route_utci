@@ -29,6 +29,16 @@ columns ignored). The time column may be named 'hour' (0-24 decimal) OR
 
 Only the hours you provide are needed; values are interpolated between
 them and wrapped at 24 h, so a walk crossing any hour boundary is handled.
+
+WIND HEIGHT: the UTCI polynomial takes wind at 10 m above ground; the
+UTCI-Fiala model derives body-level wind internally, and the operational
+procedure (Broede et al. 2012, Eq. 3) converts a wind measured at height x
+with  va = va_x * log(10/0.01) / log(x/0.01).  Supplying pedestrian-level
+wind unconverted understates ventilation and overstates heat stress. An
+optional constant column ``wind_height_m`` records the height of
+``wind_ms``; it defaults to 10 m, the meteorological standard, so a CSV
+without it behaves exactly as before. Only UTCI uses the converted value;
+JOS-3 and the globe take the wind at the body.
 """
 
 from pathlib import Path
@@ -37,6 +47,21 @@ import numpy as np
 import pandas as pd
 
 from physical_checks import check_air_temp_c, check_rh_pct, check_wind_ms
+
+# UTCI reference height and the 0.01 m term of the height-conversion profile
+# prescribed by the UTCI operational procedure (Broede et al. 2012, Eq. 3).
+UTCI_REFERENCE_HEIGHT_M = 10.0
+UTCI_PROFILE_ROUGHNESS_M = 0.01
+
+
+def utci_reference_wind(speed_ms, height_m):
+    """Refer a wind measured at ``height_m`` to the UTCI 10 m reference."""
+    if not height_m > UTCI_PROFILE_ROUGHNESS_M:
+        raise ValueError(f"wind height {height_m} m must exceed the UTCI "
+                         f"profile roughness {UTCI_PROFILE_ROUGHNESS_M} m")
+    factor = (np.log(UTCI_REFERENCE_HEIGHT_M / UTCI_PROFILE_ROUGHNESS_M)
+              / np.log(height_m / UTCI_PROFILE_ROUGHNESS_M))
+    return np.asarray(speed_ms, dtype=float) * factor
 
 
 def _decimal_hours_from_time(series):
@@ -50,7 +75,8 @@ REQUIRED_VARS = ("air_temp_C", "rh_pct", "wind_ms")
 class WeatherProvider:
     def __init__(self, csv_path=None,
                  air_temp_mean_c=29.0, air_temp_amp_c=4.0, air_temp_peak_hour=15.0,
-                 rh_pct=70.0, wind_ms=3.1, strict=False):
+                 rh_pct=70.0, wind_ms=3.1, strict=False,
+                 wind_height_m=UTCI_REFERENCE_HEIGHT_M):
         # parametric fallbacks (also fill any column missing from the CSV)
         # Validate the parametric constants too -- they are used verbatim
         # whenever the CSV is absent or lacks a column, so a bad --relative-
@@ -66,6 +92,7 @@ class WeatherProvider:
         self.peak_hour = air_temp_peak_hour
         self.const_rh = rh_pct
         self.const_wind = wind_ms
+        self.wind_height_m = float(wind_height_m)
         self.strict = strict
         self.csv_path = str(csv_path) if csv_path is not None else None
 
@@ -114,6 +141,14 @@ class WeatherProvider:
             self._ta = col("air_temp_c", "air_temp", "tdb_c", "tdb", "ta_c", "ta")
             self._rh = col("rh_pct", "rh", "relative_humidity_pct", "relative_humidity")
             self._wind = col("wind_ms", "wind", "v_ms", "wind_speed_ms", "v")
+            heights = col("wind_height_m")
+            if heights is not None:
+                if not (np.isfinite(heights).all()
+                        and np.allclose(heights, heights[0])):
+                    raise ValueError(
+                        "weather CSV column 'wind_height_m' must be one "
+                        "constant finite height")
+                self.wind_height_m = float(heights[0])
             # OPTIONAL time-varying INLET (free-stream) wind for the step-3
             # potential-flow field. It is a different quantity from wind_ms:
             # wind_ms is the wind a person experiences, while this is the
@@ -198,6 +233,10 @@ class WeatherProvider:
         return np.full(np.shape(hour), self.const_wind, dtype=float) \
             if np.ndim(hour) else self.const_wind
 
+    def utci_wind_10m_ms(self, hour):
+        """``wind_ms`` referred to the UTCI 10 m reference height."""
+        return utci_reference_wind(self.wind_ms(hour), self.wind_height_m)
+
     def has_free_stream_wind(self):
         """True when the CSV supplies a canopy-lifted free-stream series."""
         return self.have_csv and self._wind_freestream is not None
@@ -259,6 +298,9 @@ class WeatherProvider:
             "parametric_air_temp_peak_hour": self.peak_hour,
             "parametric_rh_pct": self.const_rh,
             "parametric_wind_ms": self.const_wind,
+            "wind_height_m": self.wind_height_m,
+            "utci_wind_factor": float(utci_reference_wind(
+                1.0, self.wind_height_m)),
         }
 
     def forcing_at(self, hour):

@@ -250,7 +250,15 @@ class EnvironmentField:
             # local +X solely to complete the vector contract; UTCI/JOS-3 use
             # the unchanged magnitude.
             u, v, w = speed.copy(), np.zeros_like(speed), np.zeros_like(speed)
-            utci_speed = speed.copy()
+            # UTCI takes wind at 10 m; refer the recorded wind there through
+            # UTCI's own profile so its internal reduction returns the wind
+            # actually felt (identity when the CSV wind is already at 10 m).
+            if hasattr(self.weather, "utci_wind_10m_ms"):
+                utci_speed = np.broadcast_to(np.asarray(
+                    self.weather.utci_wind_10m_ms(query_h), dtype=float),
+                    (len(points),)).copy()
+            else:
+                utci_speed = speed.copy()
             source = "uniform_weather_fallback"
         else:
             ta, u, v, w = self.field.sample(points, query_h)

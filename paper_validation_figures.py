@@ -5,9 +5,13 @@ the TREC-Route manuscript.
 
 STANDALONE. This reads existing run_output/ artefacts and writes figures and
 table fragments into the paper directory. It does not import, modify or
-re-run any pipeline stage, and it computes no new physics: every number it
-reports is read from, or aggregated over, files that stage 05/08/10 already
-wrote.
+re-run any pipeline stage. With two stated exceptions it computes no new
+physics: every number it reports is read from, or aggregated over, files that
+stage 05/08/10 already wrote. The exceptions are the two inversions that locate
+the daytime bias -- the globe and surface energy balances run backwards on the
+MEASUREMENT -- and the solar-geometry check in ``solar_forcing_audit``, which
+compares measured irradiance against the extraterrestrial horizontal limit.
+Both act on the measured side only and change nothing on the modelled side.
 
 Why pooling matters here: each case's own scatter contains one daytime and one
 nighttime survey, so a single-case figure shows two clusters and conveys almost
@@ -42,6 +46,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import pvlib
 
 CASES = [f"lisbon{i}" for i in range(1, 7)]
 CHANNELS = [
@@ -71,6 +76,48 @@ def load_points(root: Path) -> pd.DataFrame:
     if not frames:
         raise SystemExit("no comparison points found -- run the pipeline first")
     return pd.concat(frames, ignore_index=True)
+
+
+# Quality control applied to the MEASUREMENTS before any comparison. The rule
+# uses measured quantities only -- it contains no modelled term -- so it cannot
+# select for or against agreement with the model.
+SHORTWAVE_DROPOUT_KDOWN_WM2 = 10.0
+
+
+def apply_measurement_qc(points: pd.DataFrame) -> tuple:
+    """Reject daytime samples in which BOTH shortwave channels read at or below
+    their zero simultaneously.
+
+    A four-component radiometer cannot report near-zero downwelling and negative
+    upwelling shortwave at the same time while the sun is above the horizon.
+    Complete building shade still admits diffuse sky irradiance: across these six
+    campaigns the 1st percentile of genuine deep-shade samples (those the model
+    also calls shaded) is 19 W m-2, and the 5th percentile 31 W m-2. A pair of
+    simultaneous zeros is the instrument reporting its own offset, not the sky.
+
+    Small negative upwelling values on their own are the ordinary pyranometer
+    thermal offset at a dark point and are RETAINED; it is the coincidence of
+    both channels that identifies a dropout.
+    """
+    day = points["period"] == "day"
+    dropout = (day
+               & (points["measured_swin_wm2"] < SHORTWAVE_DROPOUT_KDOWN_WM2)
+               & (points["measured_swout_wm2"] < 0.0))
+    audit = {
+        "rule": ("daytime AND measured K-down < "
+                 f"{SHORTWAVE_DROPOUT_KDOWN_WM2:g} W/m2 AND measured K-up < 0"),
+        "n_before": int(len(points)),
+        "n_rejected": int(dropout.sum()),
+        "rejected_fraction": float(dropout.mean()),
+        "by_case": {k: int(v) for k, v in
+                    points.loc[dropout, "case_id"].value_counts().items()},
+    }
+    if dropout.any():
+        audit["extent_m"] = {
+            case: [float(g["distance_along_route_m"].min()),
+                   float(g["distance_along_route_m"].max())]
+            for case, g in points.loc[dropout].groupby("case_id")}
+    return points.loc[~dropout].reset_index(drop=True), audit
 
 
 def stats(model: np.ndarray, measured: np.ndarray) -> dict:
@@ -257,29 +304,59 @@ def figure_globe(points: pd.DataFrame, out: Path) -> dict:
 
 
 def figure_radiometer(points: pd.DataFrame, out: Path) -> dict:
-    """Pooled four-component radiometer channels."""
-    fig, axes = plt.subplots(2, 2, figsize=(6.6, 6.8), constrained_layout=True)
+    """Pooled four-component radiometer channels, drawn as 2-D density.
+
+    Two presentation choices matter for what this figure is asked to show.
+
+    A scatter of 4600 points at any usable marker size saturates wherever the
+    data is dense, so the four corner modes of the shortwave panels -- which are
+    the sun/shade registration quadrants and the substance of the result --
+    become indistinguishable from one another however different their
+    occupancies are. Hexagonal binning with logarithmic counts keeps them
+    distinguishable.
+
+    Axis limits are percentile-clipped rather than set by the extremes. A
+    handful of tilt-inflated measured samples reach 1492 W m-2 against a 99th
+    percentile of 1081, and letting them set the range leaves roughly half of
+    the panel empty and compresses the structure into a corner. Clipped points
+    are counted and annotated rather than silently dropped: they are present in
+    every statistic reported, and only their position on the page is affected.
+    """
+    fig, axes = plt.subplots(2, 2, figsize=(6.8, 7.0), constrained_layout=True)
     summary = {}
     for ax, (mcol, ocol, label) in zip(axes.ravel(), CHANNELS):
         d = points.dropna(subset=[mcol, ocol])
         st_all = stats(d[mcol].values, d[ocol].values)
         summary[label] = st_all
-        for period, colour in (("day", DAY), ("night", NIGHT)):
-            s = d[d["period"] == period]
-            if not s.empty:
-                ax.scatter(s[ocol], s[mcol], s=4, alpha=0.3, c=colour, lw=0,
-                           zorder=2, label=period)
-        lo = float(min(d[mcol].min(), d[ocol].min()))
-        hi = float(max(d[mcol].max(), d[ocol].max()))
-        pad = 0.05 * (hi - lo)
-        _square(ax, lo - pad, hi + pad,
-                "Measured (W m$^{-2}$)", "TREC-Route (W m$^{-2}$)", label)
-        ax.text(0.04, 0.96,
-                f"n={st_all['n']}\nMBE {st_all['mbe']:+.1f}\n"
-                f"RMSE {st_all['rmse']:.1f}\nr={st_all['r']:.2f}",
-                transform=ax.transAxes, va="top", ha="left", fontsize=7.2,
-                bbox=dict(fc="white", ec="0.7", lw=0.5, alpha=0.9, pad=2.2))
-    axes[0, 0].legend(loc="lower right", frameon=True, framealpha=0.9, markerscale=2)
+
+        both = np.concatenate([d[mcol].values, d[ocol].values])
+        lo, hi = np.percentile(both, [0.2, 99.8])
+        pad = 0.04 * (hi - lo)
+        lo, hi = lo - pad, hi + pad
+        clipped = int((~((d[mcol].between(lo, hi)) & (d[ocol].between(lo, hi)))).sum())
+
+        for period, cmap in (("day", "Reds"), ("night", "Blues")):
+            sub = d[d["period"] == period]
+            if sub.empty:
+                continue
+            ax.hexbin(sub[ocol], sub[mcol], gridsize=42, bins="log", cmap=cmap,
+                      mincnt=1, linewidths=0.0, extent=(lo, hi, lo, hi),
+                      alpha=0.85, zorder=2)
+        _square(ax, lo, hi, "Measured (W m$^{-2}$)", "TREC-Route (W m$^{-2}$)",
+                label)
+
+        note = (f"n={st_all['n']}\nMBE {st_all['mbe']:+.1f}\n"
+                f"RMSE {st_all['rmse']:.1f}\nr={st_all['r']:.2f}")
+        if clipped:
+            note += f"\n{clipped} off-scale"
+        ax.text(0.04, 0.96, note, transform=ax.transAxes, va="top", ha="left",
+                fontsize=7.2,
+                bbox=dict(fc="white", ec="0.7", lw=0.5, alpha=0.92, pad=2.2))
+
+    handles = [plt.Line2D([], [], marker="h", ls="", ms=7, mec="none", mfc=c)
+               for c in (DAY, NIGHT)]
+    axes[0, 0].legend(handles, ["day", "night"], loc="lower right", frameon=True,
+                      framealpha=0.9, fontsize=7.5, handletextpad=0.4)
     fig.savefig(out / "validation_radiometer_pooled.png")
     plt.close(fig)
     return summary
@@ -345,6 +422,192 @@ def shadow_registration(points: pd.DataFrame, out: Path) -> dict:
     fig.savefig(out / "validation_shadow_registration.png")
     plt.close(fig)
     return result
+
+
+def autocorrelation_audit(points: pd.DataFrame) -> dict:
+    """How much independent information the along-route comparison carries.
+
+    Every walk is a time series sampled every 5-10 s, so consecutive samples are
+    not independent draws: the globe's own time constant alone guarantees that
+    neighbouring points repeat most of their information. RMSE and bias remain
+    valid descriptive statistics of the comparison, but the nominal sample count
+    must not be read as a count of independent tests.
+
+    The decorrelation lag is taken as the first lag at which the measured
+    series' autocorrelation falls below 1/e, and the effective sample size as
+    n / (2 * that lag). Computed on the MEASUREMENT only, so it describes the
+    observation's own structure rather than the model's.
+    """
+    by_walk, n_tot, neff_tot = {}, 0, 0
+    for (case, period), g in points.groupby(["case_id", "period"]):
+        x = g.sort_values("seq")["measured_black_globe_temperature_c"].values
+        x = x[np.isfinite(x)].astype(float)
+        if len(x) < 60:
+            continue
+        xc = x - x.mean()
+        ac = np.correlate(xc, xc, "full")[len(xc) - 1:]
+        ac = ac / ac[0]
+        below = np.flatnonzero(ac < 1.0 / np.e)
+        lag = int(below[0]) if below.size else len(ac)
+        neff = max(1, len(x) // max(1, 2 * lag))
+        by_walk[f"{case}_{period}"] = {"n": int(len(x)), "decorrelation_lag": lag,
+                                       "n_effective": int(neff)}
+        n_tot += len(x)
+        neff_tot += neff
+    return {"by_walk": by_walk, "n_total": int(n_tot),
+            "n_effective_total": int(neff_tot),
+            "effective_fraction": (neff_tot / n_tot) if n_tot else None}
+
+
+def albedo_skill(points: pd.DataFrame) -> dict:
+    """Separate the LEVEL of the modelled ground albedo from its PLACEMENT.
+
+    The upwelling shortwave channel is the product of two things the framework
+    gets right to very different degrees: how much sun reaches the ground
+    (shading, which it resolves well) and what the ground is made of (material
+    identity, which for 85% of surface area is a generic fallback). Comparing
+    K-up directly conflates them, because a shaded sample is dark whatever its
+    albedo.
+
+    Restricting to samples that BOTH sides class as sunlit removes the shading
+    term, and the ratio K-up / K-down is then the effective albedo of whatever
+    the sensor is over. Its mean, its spread and its correlation answer three
+    different questions: is the typical surface right, is the scene's variety
+    right, and is that variety in the right PLACE. A model can score well on the
+    first two and near zero on the third, which is a materially different defect
+    from "the model varies too little" and points at a different fix.
+    """
+    d = points[(points["period"] == "day") &
+               (points["trec_atmospheric_ghi_wm2"] > 50)].dropna(
+        subset=["measured_swin_wm2", "measured_swout_wm2",
+                "sensor_shortwave_down_Wm2", "sensor_shortwave_up_Wm2",
+                "trec_atmospheric_ghi_wm2"])
+    ghi = d["trec_atmospheric_ghi_wm2"].values
+    both_sunlit = ((d["measured_swin_wm2"].values > 0.5 * ghi) &
+                   (d["sensor_shortwave_down_Wm2"].values > 0.5 * ghi))
+
+    def _ratios(frame: pd.DataFrame, mask: np.ndarray) -> tuple:
+        s = frame[mask]
+        return (s["measured_swout_wm2"].values / s["measured_swin_wm2"].values,
+                s["sensor_shortwave_up_Wm2"].values / s["sensor_shortwave_down_Wm2"].values)
+
+    def _block(frame: pd.DataFrame, mask: np.ndarray) -> dict:
+        meas_a, model_a = _ratios(frame, mask)
+        ok = np.isfinite(meas_a) & np.isfinite(model_a)
+        meas_a, model_a = meas_a[ok], model_a[ok]
+        sub = frame[mask]
+        out = {
+            "n_both_sunlit": int(len(meas_a)),
+            "measured_albedo_mean": float(meas_a.mean()) if len(meas_a) else float("nan"),
+            "model_albedo_mean": float(model_a.mean()) if len(meas_a) else float("nan"),
+            "measured_albedo_sd": float(meas_a.std()) if len(meas_a) else float("nan"),
+            "model_albedo_sd": float(model_a.std()) if len(meas_a) else float("nan"),
+            "albedo_r": float(np.corrcoef(model_a, meas_a)[0, 1]) if len(meas_a) > 2
+            else float("nan"),
+            # The same spread question asked of the raw channel, which is what a
+            # reader sees in the along-route figure.
+            "kup_sd_measured_Wm2": float(sub["measured_swout_wm2"].std()),
+            "kup_sd_model_Wm2": float(sub["sensor_shortwave_up_Wm2"].std()),
+        }
+        return out
+
+    result = {"pooled": _block(d, both_sunlit)}
+    # Whole-daytime channel spread, shading included -- this is the number the
+    # along-route figure's K-up panel displays.
+    result["pooled"]["kup_sd_measured_all_day_Wm2"] = float(d["measured_swout_wm2"].std())
+    result["pooled"]["kup_sd_model_all_day_Wm2"] = float(d["sensor_shortwave_up_Wm2"].std())
+    result["by_case"] = {}
+    for case, g in d.groupby("case_id"):
+        gm = ((g["measured_swin_wm2"].values > 0.5 * g["trec_atmospheric_ghi_wm2"].values) &
+              (g["sensor_shortwave_down_Wm2"].values > 0.5 * g["trec_atmospheric_ghi_wm2"].values))
+        if gm.sum() >= 10:
+            result["by_case"][case] = _block(g, gm)
+    return result
+
+
+def solar_forcing_audit(root: Path, points: pd.DataFrame) -> dict:
+    """Audit the one place the validation is not fully independent.
+
+    The atmospheric shortwave forcing is fitted to the unshaded upper envelope
+    of the same mobile pyranometer whose samples the K-down channel is later
+    compared against, so that channel's LEVEL is not an independent test; only
+    its spatial structure is. This reads back what the fit actually did, from
+    each case's own provenance record, and measures the residual level offset
+    on samples both sides class as sunlit -- the quantity a reader needs in
+    order to see exactly how much the fit did and did not constrain.
+
+    The envelope diagnostics also record that the measured unshaded samples sit
+    ABOVE the brightest clear sky the radiative model can represent, which the
+    forcing fit declines to chase. That surplus is carried here rather than
+    silently dropped.
+    """
+    cases: dict = {}
+    for case in CASES:
+        prov = root / "input" / case / "weather" / "weather_from_sensors_provenance.json"
+        entry: dict = {}
+        if prov.is_file():
+            solar = json.loads(prov.read_text()).get("solar", {})
+            env = solar.get("envelope_diagnostics", {})
+            entry.update({
+                "measured_swin_max_wm2": env.get("measured_swin_max_wm2"),
+                "clear_sky_ghi_max_wm2": env.get("clear_ghi_max_wm2"),
+                "residual_instrument_bias_fraction":
+                    env.get("residual_instrument_bias_fraction"),
+                "samples_above_physical_ceiling_fraction":
+                    env.get("samples_above_physical_ceiling_fraction"),
+                "ceiling_linke_turbidity": env.get("ceiling_linke_turbidity"),
+                "baseline_linke_turbidity": solar.get("baseline_linke_turbidity"),
+            })
+        g = points[(points["case_id"] == case) & (points["period"] == "day") &
+                   (points["trec_atmospheric_ghi_wm2"] > 50)].dropna(
+            subset=["measured_swin_wm2", "sensor_shortwave_down_Wm2",
+                    "trec_atmospheric_ghi_wm2"])
+        if len(g):
+            ghi = g["trec_atmospheric_ghi_wm2"].values
+            both = ((g["measured_swin_wm2"].values > 0.5 * ghi) &
+                    (g["sensor_shortwave_down_Wm2"].values > 0.5 * ghi))
+            if both.sum() >= 10:
+                s = g[both]
+                entry["n_both_sunlit"] = int(both.sum())
+                entry["sunlit_kdown_measured_Wm2"] = float(s["measured_swin_wm2"].mean())
+                entry["sunlit_kdown_model_Wm2"] = float(s["sensor_shortwave_down_Wm2"].mean())
+                entry["sunlit_kdown_bias_Wm2"] = float(
+                    (s["sensor_shortwave_down_Wm2"] - s["measured_swin_wm2"]).mean())
+            # Hard physical ceiling on the measurement itself. Horizontal GHI
+            # cannot exceed the extraterrestrial horizontal irradiance except
+            # for instants of cloud-edge enhancement, so a sustained excess is
+            # an instrument statement, not a sky one. Computed on the measured
+            # series only; nothing modelled depends on it.
+            t = pd.to_datetime(g["timestamp_utc"], utc=True, format="ISO8601")
+            zenith = pvlib.solarposition.get_solarposition(
+                t, g["latitude"].mean(), g["longitude"].mean())["zenith"].values
+            mu = np.clip(np.cos(np.radians(zenith)), 1e-3, None)
+            toa = np.asarray(pvlib.irradiance.get_extra_radiation(
+                t.dt.dayofyear.to_numpy())) * mu
+            ratio = g["measured_swin_wm2"].values / toa
+            entry["n_daytime"] = int(len(g))
+            entry["fraction_above_toa_horizontal"] = float(np.mean(ratio > 1.0))
+            entry["max_measured_over_toa_horizontal"] = float(np.nanmax(ratio))
+            entry["max_solar_elevation_deg"] = float(90.0 - zenith.min())
+        if entry:
+            cases[case] = entry
+
+    biases = [c["sunlit_kdown_bias_Wm2"] for c in cases.values()
+              if "sunlit_kdown_bias_Wm2" in c]
+    surplus = [c["residual_instrument_bias_fraction"] for c in cases.values()
+               if c.get("residual_instrument_bias_fraction") is not None]
+    ceiling = [c["samples_above_physical_ceiling_fraction"] for c in cases.values()
+               if c.get("samples_above_physical_ceiling_fraction") is not None]
+    n_tot = sum(c.get("n_daytime", 0) for c in cases.values())
+    n_over = sum(c.get("n_daytime", 0) * c.get("fraction_above_toa_horizontal", 0.0)
+                 for c in cases.values())
+    return {
+        "by_case": cases,
+        "pooled_fraction_above_toa_horizontal": (n_over / n_tot) if n_tot else None,
+        "sunlit_kdown_bias_range_Wm2": [min(biases), max(biases)] if biases else None,
+        "residual_instrument_bias_range": [min(surplus), max(surplus)] if surplus else None,
+        "above_physical_ceiling_range": [min(ceiling), max(ceiling)] if ceiling else None,
+    }
 
 
 def table_radiometer(points: pd.DataFrame) -> str:
@@ -423,6 +686,12 @@ def main() -> None:
     out.mkdir(parents=True, exist_ok=True)
 
     points = load_points(args.root)
+    points, qc_audit = apply_measurement_qc(points)
+    print(f"measurement QC: rejected {qc_audit['n_rejected']} of "
+          f"{qc_audit['n_before']:,} samples "
+          f"({qc_audit['rejected_fraction']:.2%}) -- {qc_audit['rule']}")
+    if qc_audit["by_case"]:
+        print(f"  by case: {qc_audit['by_case']}  extent {qc_audit.get('extent_m')}")
     print(f"pooled comparison points: {len(points):,} from {points.case_id.nunique()} cases")
     aligned = points["simulation_date_matches_observation"].astype(bool)
     print(f"  date-aligned {int(aligned.sum()):,} / date-mismatched {int((~aligned).sum()):,}")
@@ -432,12 +701,18 @@ def main() -> None:
     shadow = shadow_registration(points, out)
     budget = globe_flux_budget(points)
     surface = surface_temperature_budget(points)
+    albedo = albedo_skill(points)
+    forcing = solar_forcing_audit(args.root, points)
     spin = points[~points["globe_spinup_affected"].astype(bool)] \
         if "globe_spinup_affected" in points else points
     within_r = {p: within_case_r(spin[spin["period"] == p],
                                  "globe_transient_temperature_C",
                                  "measured_black_globe_temperature_c")
                 for p in ("day", "night")}
+    autocorr = autocorrelation_audit(spin)
+    print("\nINDEPENDENT INFORMATION (measured globe autocorrelation)")
+    print(f"  n={autocorr['n_total']}  ->  n_effective ~ {autocorr['n_effective_total']}  "
+          f"({autocorr['effective_fraction']:.1%} of nominal)")
     (out / "table_radiometer.tex").write_text(table_radiometer(points) + "\n")
     (out / "table_globe.tex").write_text(table_globe(points) + "\n")
 
@@ -469,6 +744,34 @@ def main() -> None:
               f"excess {b['excess_Wm2']:+6.1f} W/m2  -> "
               f"dTg {b['implied_bias_K']:+.2f} K (actual {b['actual_bias_K']:+.2f} K)")
 
+    print("\nGROUND ALBEDO SKILL (samples both sides class as sunlit)")
+    a = albedo["pooled"]
+    print(f"  n={a['n_both_sunlit']:5d}  effective albedo: "
+          f"measured {a['measured_albedo_mean']:.3f} (sd {a['measured_albedo_sd']:.3f})  "
+          f"model {a['model_albedo_mean']:.3f} (sd {a['model_albedo_sd']:.3f})  "
+          f"r={a['albedo_r']:+.3f}")
+    print(f"  K-up spread over all daytime samples: measured "
+          f"{a['kup_sd_measured_all_day_Wm2']:.1f}  model "
+          f"{a['kup_sd_model_all_day_Wm2']:.1f} W/m2")
+    for case, b in albedo["by_case"].items():
+        print(f"    {case:8s} n={b['n_both_sunlit']:4d}  "
+              f"meas {b['measured_albedo_mean']:.3f}  model {b['model_albedo_mean']:.3f}  "
+              f"r={b['albedo_r']:+.3f}")
+
+    print("\nSOLAR FORCING AUDIT (K-down level is fitted, not independent)")
+    for case, b in forcing["by_case"].items():
+        print(f"  {case:8s} sunlit K-down measured "
+              f"{b.get('sunlit_kdown_measured_Wm2', float('nan')):6.0f}  model "
+              f"{b.get('sunlit_kdown_model_Wm2', float('nan')):6.0f}  bias "
+              f"{b.get('sunlit_kdown_bias_Wm2', float('nan')):+6.0f} W/m2   "
+              f"unshaded surplus over brightest clear sky "
+              f"{100 * (b.get('residual_instrument_bias_fraction') or float('nan')):.1f}% "
+              f"on {100 * (b.get('samples_above_physical_ceiling_fraction') or float('nan')):.0f}% "
+              f"of samples; {100 * b.get('fraction_above_toa_horizontal', float('nan')):.1f}% "
+              f"above TOA horizontal (max {b.get('max_measured_over_toa_horizontal', float('nan')):.2f}x)")
+    print(f"  POOLED   {100 * (forcing['pooled_fraction_above_toa_horizontal'] or 0):.1f}% "
+          f"of daytime samples exceed the extraterrestrial horizontal irradiance")
+
     if "amplitude" in surface:
         a = surface["amplitude"]
         print("\nSURFACE TEMPERATURE (inverted from the longwave channels)")
@@ -482,9 +785,13 @@ def main() -> None:
               f"{a['amplitude_bias_K']:+.2f} K -> admittance factor needed "
               f"{a['admittance_factor_needed']:.2f}")
 
-    summary = {"n_points": int(len(points)), "globe": globe, "shadow": shadow,
+    summary = {"n_points": int(len(points)), "measurement_qc": qc_audit,
+               "globe": globe, "shadow": shadow,
                "globe_flux_budget": budget, "globe_within_case_r": within_r,
                "surface_temperature": surface,
+               "albedo_skill": albedo,
+               "autocorrelation": autocorr,
+               "solar_forcing_audit": forcing,
                "radiometer": {k: v for k, v in radio.items()},
                "date_aligned": int(aligned.sum()),
                "date_mismatched": int((~aligned).sum())}

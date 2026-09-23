@@ -242,6 +242,19 @@ def parse_args():
                          "downwelling longwave onto both surfaces and the pedestrian. "
                          "'constant' reproduces the previous fixed 0.78. MUST match the value "
                          "passed to 05b so surfaces and pedestrian see the same sky.")
+    p.add_argument("--wall-temperature-offset-K", type=float, default=0.0,
+                   help="Diagnostic: add this offset to every WALL facet "
+                        "temperature before the longwave surround is formed. "
+                        "0.0 (default) leaves the solved field untouched. Used "
+                        "to attribute the daytime radiative excess to a surface "
+                        "class; the perturbation propagates into the globe, the "
+                        "sensor channels and the body through the existing view "
+                        "weights, so no angular conversion is involved. "
+                        "Requires --facet-thermal-dir.")
+    p.add_argument("--ground-temperature-offset-K", type=float, default=0.0,
+                   help="As --wall-temperature-offset-K but for GROUND facets.")
+    p.add_argument("--roof-temperature-offset-K", type=float, default=0.0,
+                   help="As --wall-temperature-offset-K but for ROOF facets.")
     p.add_argument("--facet-thermal-dir", default=None,
                     help="Directory holding BOTH the 05a outputs "
                          "(lw_view_matrix.npz, lw_point_weights.npz, "
@@ -1068,6 +1081,20 @@ class FacetLongwave:
         if facets_path.is_file():
             facet_meta = np.load(facets_path)
             facet_class = facet_meta["cls"]
+            # Diagnostic surface-class temperature perturbation. Applied to the
+            # SOLVED facet field before any radiosity or view weighting, so the
+            # offset reaches the globe (sphere-weighted), the emulated
+            # radiometer (horizontal cosine-weighted) and the body
+            # (cylinder-weighted) through their own existing weights. Adding an
+            # offset to a receptor's absorbed flux instead would convert between
+            # angular conventions by a fixed factor, which is exactly what this
+            # framework refuses to do elsewhere.
+            self._class_temperature_offsets = [
+                (c, v) for c, v in (
+                    (0, float(getattr(args, "ground_temperature_offset_K", 0.0) or 0.0)),
+                    (1, float(getattr(args, "wall_temperature_offset_K", 0.0) or 0.0)),
+                    (2, float(getattr(args, "roof_temperature_offset_K", 0.0) or 0.0)))
+                if v != 0.0]
             if "material_name" in facet_meta.files:
                 self.facet_material_name = facet_meta["material_name"].astype(str)
             else:
@@ -1194,6 +1221,33 @@ class FacetLongwave:
             self.environment_J = np.load(environment_path)
         self.radiosity_model = radiosity_model
         self.args = args
+        # Apply the diagnostic surface-class offset now that BOTH the
+        # temperature field and the grey radiosity (if 05b wrote one) are
+        # loaded. surround_at consumes facet_J when it exists, so perturbing
+        # facet_T alone would be silently inert -- the offset must move the
+        # emitted term of the radiosity as well.
+        #
+        #   J = eps*sigma*T^4 + (1-eps)*G,  so  dJ = eps*sigma*((T+dT)^4 - T^4)
+        #
+        # holding the solved irradiance G fixed. That is a first-order
+        # treatment: it neglects the re-reflection of the perturbation between
+        # facets, which for the offsets used here is a small correction to an
+        # already diagnostic experiment.
+        for cls_id, delta in getattr(self, "_class_temperature_offsets", []):
+            mask = facet_class == cls_id if facet_class is not None else None
+            if mask is None or not mask.any():
+                continue
+            T_old = self.facet_T[:, mask].astype(float)
+            T_new = T_old + delta
+            if self.facet_J is not None:
+                self.facet_J = np.array(self.facet_J, dtype=float, copy=True)
+                self.facet_J[:, mask] += (self.facet_eps[mask]
+                                          * SIGMA * (T_new ** 4 - T_old ** 4))
+            self.facet_T = np.array(self.facet_T, dtype=float, copy=True)
+            self.facet_T[:, mask] = T_new
+            print(f"  [diagnostic] facet class {cls_id} temperature offset "
+                  f"{delta:+.2f} K applied to {int(mask.sum())} facets "
+                  f"(radiosity model: {radiosity_model})", flush=True)
         # ---- consistency checks: refuse to run on mismatched inputs ----
         if len(self.point_map) != n_points:
             raise ValueError(

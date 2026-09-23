@@ -91,6 +91,25 @@ check(np.allclose(sample.relative_humidity_pct, 60.0),
       "humidity remains with shared weather provider")
 
 
+print("T2b: recorded wind height referred to the UTCI 10 m reference")
+from weather_provider import WeatherProvider
+with tempfile.TemporaryDirectory() as tmp:
+    csv = Path(tmp) / "weather.csv"
+    csv.write_text("hour,air_temp_C,rh_pct,wind_ms,wind_height_m\n"
+                   "0,25,60,2.0,1.0\n12,30,50,2.0,1.0\n")
+    cart = EnvironmentField(WeatherProvider(csv_path=csv))
+    sample = cart.sample(points, np.array([6.0, 6.0]))
+    check(np.allclose(sample.wind_speed_ms, 2.0),
+          "body-level wind is the recorded wind, unconverted")
+    check(np.allclose(sample.utci_wind_speed_10m_ms,
+                      2.0 * np.log(1000.0) / np.log(100.0)),
+          "1 m wind is converted by the UTCI procedure's log profile (Broede Eq. 3)")
+    csv.write_text("hour,air_temp_C,rh_pct,wind_ms\n0,25,60,2.0\n12,30,50,2.0\n")
+    station = EnvironmentField(WeatherProvider(csv_path=csv))
+    check(np.allclose(station.sample(points, 6.0).utci_wind_speed_10m_ms, 2.0),
+          "a CSV without wind_height_m is taken as 10 m and left unchanged")
+
+
 print("T3: elliptic projection and thermal transport")
 shape = (10, 10, 10)
 solid = np.zeros(shape, dtype=bool)

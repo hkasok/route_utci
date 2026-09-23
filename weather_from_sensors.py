@@ -1003,6 +1003,8 @@ def build_case_inputs(case_dir: Path, *, name: str, bin_min: float,
         weather["wind_inlet_ms"] = np.interp(
             weather["hour"].to_numpy(float), inlet["hours"], inlet["inlet_ms"],
             left=inlet["inlet_ms"][0], right=inlet["inlet_ms"][-1])
+    # Height of `wind_ms`, so that UTCI can refer it to its 10 m reference.
+    weather["wind_height_m"] = float(sensor_wind_height_m)
     weather_path = case_dir / "weather" / f"{name}.csv"
     components_path = case_dir / "config" / f"{name}_solar_components.csv"
     config_path = case_dir / "config" / f"{name}.json"
