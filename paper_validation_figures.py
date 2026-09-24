@@ -424,6 +424,67 @@ def shadow_registration(points: pd.DataFrame, out: Path) -> dict:
     return result
 
 
+
+# First-order time constants bracketing thermopile pyranometers (95 % response
+# of roughly 1.5-18 s, i.e. tau = t95 / 3). The campaign documentation does
+# not name the pyranometer, so no single value is asserted: the audit reports
+# the whole range and the default comparison stays unfiltered.
+PYRANOMETER_TAU_S = (0.0, 2.0, 4.0, 6.0)
+
+
+def first_order_response(values: np.ndarray, time_s: np.ndarray,
+                         tau_s: float) -> np.ndarray:
+    """Exact first-order lag of a piecewise-constant input, sample by sample."""
+    values = np.asarray(values, dtype=float)
+    if tau_s <= 0.0 or len(values) < 2:
+        return values.copy()
+    out = np.empty_like(values)
+    out[0] = values[0]
+    for k in range(1, len(values)):
+        dt = max(float(time_s[k] - time_s[k - 1]), 0.0)
+        a = np.exp(-dt / tau_s)
+        out[k] = a * out[k - 1] + (1.0 - a) * values[k]
+    return out
+
+
+def pyranometer_response_audit(points: pd.DataFrame) -> dict:
+    """How much of the daytime shortwave scatter is instrument response.
+
+    A thermopile pyranometer on a cart moving at ~1.4 m/s lags by several
+    metres at a shadow edge. The MODELLED channels are passed through a
+    first-order lag of time constant tau along each walk, in time order,
+    exactly as the instrument would respond; the measurement is untouched.
+    Reported for a bracket of tau because the instrument model is not
+    documented -- this is a bound on the effect, not a fitted parameter.
+    """
+    d = points[points["period"] == "day"].dropna(
+        subset=["measured_swin_wm2", "sensor_shortwave_down_Wm2",
+                "measured_swout_wm2", "sensor_shortwave_up_Wm2",
+                "trec_atmospheric_ghi_wm2", "timestamp_utc"]).copy()
+    d["_t"] = (pd.to_datetime(d["timestamp_utc"], utc=True, format="ISO8601")
+              - pd.Timestamp("1970-01-01", tz="UTC")).dt.total_seconds()
+    d = d.sort_values(["case_id", "route_id", "_t", "seq"])
+    result = {}
+    for tau in PYRANOMETER_TAU_S:
+        down = np.empty(len(d)); up = np.empty(len(d))
+        pos = 0
+        for _, walk in d.groupby(["case_id", "route_id"], sort=False):
+            n = len(walk)
+            down[pos:pos + n] = first_order_response(
+                walk["sensor_shortwave_down_Wm2"].values, walk["_t"].values, tau)
+            up[pos:pos + n] = first_order_response(
+                walk["sensor_shortwave_up_Wm2"].values, walk["_t"].values, tau)
+            pos += n
+        ghi = d["trec_atmospheric_ghi_wm2"].values
+        meas = d["measured_swin_wm2"].values
+        agree = (meas > 0.5 * ghi) == (down > 0.5 * ghi)
+        result[f"tau_{tau:g}s"] = {
+            "kdown": stats(down, meas),
+            "kup": stats(up, d["measured_swout_wm2"].values),
+            "classification_agreement": float(agree.mean()),
+        }
+    return result
+
 def autocorrelation_audit(points: pd.DataFrame) -> dict:
     """How much independent information the along-route comparison carries.
 
@@ -703,6 +764,7 @@ def main() -> None:
     surface = surface_temperature_budget(points)
     albedo = albedo_skill(points)
     forcing = solar_forcing_audit(args.root, points)
+    response = pyranometer_response_audit(points)
     spin = points[~points["globe_spinup_affected"].astype(bool)] \
         if "globe_spinup_affected" in points else points
     within_r = {p: within_case_r(spin[spin["period"] == p],
@@ -736,6 +798,12 @@ def main() -> None:
           f"model-shade/meas-sun {shadow['model_shade_measured_sun']:.1%})")
     print(f"  K-down RMSE  agree {shadow['rmse_agree']:.0f}  "
           f"disagree {shadow['rmse_disagree']:.0f}  all {shadow['rmse_all']:.0f} W/m2")
+
+    print("\nPYRANOMETER RESPONSE (modelled shortwave lagged; bracket, not a fit)")
+    for key, r in response.items():
+        print(f"  {key:8s} K-down RMSE {r['kdown']['rmse']:6.1f}  r={r['kdown']['r']:.3f}  "
+              f"agree {r['classification_agreement']:.1%}  |  "
+              f"K-up RMSE {r['kup']['rmse']:6.1f}  r={r['kup']['r']:.3f}")
 
     print("\nGLOBE FLUX BUDGET (absorbed flux inverted from the measurement)")
     for period, b in budget.items():
@@ -792,6 +860,7 @@ def main() -> None:
                "albedo_skill": albedo,
                "autocorrelation": autocorr,
                "solar_forcing_audit": forcing,
+               "pyranometer_response_audit": response,
                "radiometer": {k: v for k, v in radio.items()},
                "date_aligned": int(aligned.sum()),
                "date_mismatched": int((~aligned).sum())}

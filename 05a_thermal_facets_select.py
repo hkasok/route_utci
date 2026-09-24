@@ -38,6 +38,10 @@ Outputs (in --output-dir)
   lw_view_matrix.npz    scipy CSR, (n_coarse_points x n_facets); row sums
                         + sky + veg + default weights = 1 exactly
   lw_point_weights.npz  w_sky, w_veg, w_default per coarse point
+  sensor_up_view_matrix.npz, sensor_up_point_weights.npz
+                        the SAME rays re-weighted for an UP-FACING horizontal
+                        radiometer: upper hemisphere only, cosine (sin el)
+                        weighting; facet columns identical to lw_view_matrix
   point_map.npy         index of the coarse point serving each FULL-
                         resolution route point (nearest neighbor)
   selection_report.txt  human-readable sanity numbers
@@ -159,13 +163,24 @@ def main():
     print(f"  LW directions per point: {ndirs} "
           f"(body model: {args.body_model})")
     assert abs(weights.sum() - 1.0) < 1e-12
+    # Up-facing horizontal sensor: the same rays, upper hemisphere only, each
+    # weighted by solid angle (cos el) times the plate's cosine response
+    # (sin el). Recomputed from the directions so it does not depend on the
+    # body model used for `weights`.
+    up_dir = directions[:, 2] > 0.0
+    sensor_up_weights = np.where(
+        up_dir, np.sqrt(np.clip(1.0 - directions[:, 2] ** 2, 0.0, None))
+        * directions[:, 2], 0.0)
+    sensor_up_weights = sensor_up_weights / sensor_up_weights.sum()
 
     # ------------------------------------------------------------------
     # Full-sphere raytrace, accumulating the sparse view matrix
     # ------------------------------------------------------------------
     facet_key_to_col = {}          # (mesh_id, face_id) -> compact column
     facet_orient_sign = []         # +1 keep mesh normal, -1 flip (per facet)
-    rows, cols, vals = [], [], []
+    rows, cols, vals, vals_up = [], [], [], []
+    w_sky_up = np.zeros(n_coarse)
+    w_veg_up = np.zeros(n_coarse)
     w_sky = np.zeros(n_coarse)
     w_veg = np.zeros(n_coarse)
     w_default = np.zeros(n_coarse)
@@ -181,6 +196,7 @@ def main():
         origins = np.repeat(pts, ndirs, axis=0)
         dirs = np.tile(directions, (m, 1))
         wts = np.tile(weights, m)
+        wts_up = np.tile(sensor_up_weights, m)
         pt_of_ray = np.repeat(np.arange(start, end), ndirs)
 
         hit_mesh, hit_face, _ = nearest_hit_multi(
@@ -192,6 +208,8 @@ def main():
         np.add.at(w_default, pt_of_ray[no_hit & ~up], wts[no_hit & ~up])
         veg = hit_mesh == MESH_VEGETATION
         np.add.at(w_veg, pt_of_ray[veg], wts[veg])
+        np.add.at(w_sky_up, pt_of_ray[no_hit & up], wts_up[no_hit & up])
+        np.add.at(w_veg_up, pt_of_ray[veg & up], wts_up[veg & up])
 
         solid = (hit_mesh == MESH_BUILDINGS) | (hit_mesh == MESH_GROUND)
         s_idx = np.where(solid)[0]
@@ -210,6 +228,7 @@ def main():
             rows.append(pt_of_ray[ri])
             cols.append(col)
             vals.append(wts[ri])
+            vals_up.append(wts_up[ri])
 
         if (bi + 1) % max(1, n_batches // 20) == 0 or bi == n_batches - 1:
             el = time.time() - t0
@@ -221,6 +240,11 @@ def main():
         (np.asarray(vals), (np.asarray(rows), np.asarray(cols))),
         shape=(n_coarse, n_facets)).tocsr()
     W.sum_duplicates()
+    W_up = sp.coo_matrix(
+        (np.asarray(vals_up), (np.asarray(rows), np.asarray(cols))),
+        shape=(n_coarse, n_facets)).tocsr()
+    W_up.sum_duplicates()
+    W_up.eliminate_zeros()
 
     # ------------------------------------------------------------------
     # HARD VERIFICATION: weights must partition unity at every point
@@ -229,6 +253,10 @@ def main():
     err = np.abs(total - 1.0).max()
     print(f"\n  Weight-partition check: max |sum - 1| = {err:.2e}")
     assert err < 1e-9, "View weights do not partition unity -- bug upstream"
+    total_up = np.asarray(W_up.sum(axis=1)).ravel() + w_sky_up + w_veg_up
+    err_up = np.abs(total_up - 1.0).max()
+    print(f"  Up-facing sensor partition check: max |sum - 1| = {err_up:.2e}")
+    assert err_up < 1e-9, "Up-facing sensor weights do not partition unity"
 
     # ------------------------------------------------------------------
     # Facet metadata (centroid, oriented outward normal, area, class)
@@ -357,6 +385,9 @@ def main():
     sp.save_npz(out_dir / "lw_view_matrix.npz", W)
     np.savez(out_dir / "lw_point_weights.npz", w_sky=w_sky, w_veg=w_veg,
              w_default=w_default)
+    sp.save_npz(out_dir / "sensor_up_view_matrix.npz", W_up)
+    np.savez(out_dir / "sensor_up_point_weights.npz", w_sky=w_sky_up,
+             w_veg=w_veg_up)
     np.save(out_dir / "point_map.npy", point_map)
     np.save(out_dir / "coarse_index.npy", coarse_idx)
     with open(out_dir / "config.json", "w") as f:

@@ -185,6 +185,16 @@ def parse_args():
                          "diagnostics for like-for-like comparison against field "
                          "measurements; they are never mixed into the "
                          "body-absorbed flux or MRT.")
+    p.add_argument("--sensor-emulation", choices=["facet", "legacy"],
+                   default="facet",
+                   help="How the emulated radiometer forms its non-sky "
+                        "channels. 'facet' (default): downwelling longwave and "
+                        "reflected shortwave from the 05a up-facing view, and "
+                        "upwelling shortwave from each footprint ground facet's "
+                        "own irradiance; falls back to 'legacy' when the "
+                        "thermal folder has no up-facing view. 'legacy': the "
+                        "cylinder-weighted surround mean and footprint albedo "
+                        "x sensor downwelling.")
     p.add_argument("--sensor-height-m", type=float, default=1.0,
                     help="Height above local ground of the emulated radiometer "
                          "(default 1.0 m). The receptor ray tracing is performed "
@@ -941,7 +951,9 @@ def sensor_radiometer_quantities(dni, dhi, elevation_deg, tau_direct,
                                  svf_planar, L_sky, L_surround,
                                  ground_albedo, ground_emitted_Wm2,
                                  ground_emissivity, surround_sw_radiance,
-                                 args):
+                                 args, longwave_down_override=None,
+                                 reflected_down_override=None,
+                                 shortwave_up_override=None):
     """Emulate a four-component net radiometer at the sensor height.
 
     Returns the four channels such an instrument reports, on ITS OWN angular
@@ -971,6 +983,11 @@ def sensor_radiometer_quantities(dni, dhi, elevation_deg, tau_direct,
       the surround's mean radiosity is reused while only the SPLIT is planar.
       A fully rigorous version would need a second, planar-weighted view
       matrix from 05a.
+    * With ``--sensor-emulation facet`` (the default when 05a wrote the
+      up-facing view) the two approximations above are removed: the
+      downwelling longwave and the surround-reflected shortwave come from the
+      up-facing view (``*_override`` arguments), and the upwelling shortwave
+      is the footprint average of each ground facet's own reflected sunlight.
     * The ray tracing is performed once, at ``--z-height``. When
       ``--sensor-height-m`` differs, the receptor's shading and sky view are
       reused; over the ~0.1 m offsets involved this is negligible in the open
@@ -985,15 +1002,22 @@ def sensor_radiometer_quantities(dni, dhi, elevation_deg, tau_direct,
     else:
         surround_sw = (1.0 - svf_planar) * np.asarray(surround_sw_radiance,
                                                       dtype=float)
+    if reflected_down_override is not None:
+        surround_sw = np.asarray(reflected_down_override, dtype=float)
     shortwave_down = beam_horizontal + diffuse_sky + surround_sw
 
     albedo = (np.full_like(svf_planar, float(args.ground_albedo or 0.18))
               if ground_albedo is None
               else np.asarray(ground_albedo, dtype=float))
     shortwave_up = albedo * shortwave_down
+    if shortwave_up_override is not None:
+        override = np.asarray(shortwave_up_override, dtype=float)
+        shortwave_up = np.where(np.isfinite(override), override, shortwave_up)
 
     longwave_down = (svf_planar * np.asarray(L_sky, dtype=float)
                      + (1.0 - svf_planar) * np.asarray(L_surround, dtype=float))
+    if longwave_down_override is not None:
+        longwave_down = np.asarray(longwave_down_override, dtype=float)
 
     if ground_emitted_Wm2 is None:
         # No resolved ground footprint: the surround radiosity is the best
@@ -1066,6 +1090,20 @@ class FacetLongwave:
         d = Path(thermal_dir)
         self.W = sp.load_npz(d / "lw_view_matrix.npz")
         pw = np.load(d / "lw_point_weights.npz")
+        # Up-facing radiometer view from 05a: the same rays re-weighted for a
+        # horizontal cosine receiver over the upper hemisphere. Optional, so
+        # thermal folders written before it existed still load.
+        self.W_up = None
+        up_matrix = d / "sensor_up_view_matrix.npz"
+        up_weights = d / "sensor_up_point_weights.npz"
+        if up_matrix.is_file() and up_weights.is_file():
+            self.W_up = sp.load_npz(up_matrix)
+            uw = np.load(up_weights)
+            self.w_sky_up = uw["w_sky"]
+            self.w_veg_up = uw["w_veg"]
+            if self.W_up.shape != self.W.shape:
+                raise ValueError("up-facing sensor view does not match the "
+                                 "05a view matrix")
         self.w_sky = pw["w_sky"]
         self.w_veg = pw["w_veg"]
         self.w_def = pw["w_default"]
@@ -1464,6 +1502,75 @@ class FacetLongwave:
         temps = np.asarray(self.facet_T[it], dtype=float)[index]
         emitted = self.facet_eps[index] * SIGMA * temps ** 4
         weighted = np.asarray(self._footprint @ emitted).ravel()
+        return np.where(self._footprint_total > 1e-12,
+                        weighted / np.maximum(self._footprint_total, 1e-12),
+                        np.nan)
+
+    def _radiosities(self, it, air_temp_C, elevation_deg, sky_longwave_Wm2):
+        """(facet, vegetation, environment) radiosity at one time step, on
+        the same convention ``surround_at`` uses."""
+        a = self.args
+        air_K = air_temp_C + 273.15
+        if self.facet_J is not None:
+            J_facet = self.facet_J[it].astype(float)
+            J_environment = float(self.environment_J[it])
+            G_vegetation = 0.5 * (sky_longwave_Wm2 + J_environment)
+            J_vegetation = (a.vegetation_emissivity * SIGMA * air_K ** 4
+                            + (1.0 - a.vegetation_emissivity) * G_vegetation)
+        else:
+            sin_el = np.sin(np.deg2rad(max(elevation_deg, 0.0)))
+            legacy_K = air_K + a.surface_temp_offset_day_c * max(sin_el, 0.0)
+            J_facet = self.facet_eps * SIGMA * self.facet_T[it].astype(float) ** 4
+            J_vegetation = a.vegetation_emissivity * SIGMA * air_K ** 4
+            J_environment = a.surrounding_emissivity * SIGMA * legacy_K ** 4
+        return J_facet, J_vegetation, J_environment
+
+    @property
+    def has_sensor_up_view(self):
+        return self.W_up is not None
+
+    def sensor_downwelling_at(self, it, air_temp_C, elevation_deg,
+                              sky_longwave_Wm2, facet_incident_sw=None):
+        """What an UP-FACING horizontal radiometer receives, W m^-2.
+
+        Returns ``(longwave_down, reflected_shortwave_down)`` per full route
+        point. Both use the 05a up-facing view, so the part of the upper
+        hemisphere that is not sky is filled by the surfaces actually above
+        the horizon -- walls, roofs, canopy -- at their own radiosity, instead
+        of by the body's cylinder-weighted mean, which includes the (hot by
+        day) ground below the horizon that this sensor cannot see.
+
+        Vegetation reflection of shortwave is not represented (the canopy
+        underside a sensor sees from below is largely shaded).
+        """
+        J_facet, J_veg, _ = self._radiosities(
+            it, air_temp_C, elevation_deg, sky_longwave_Wm2)
+        lw = (self.w_sky_up * float(sky_longwave_Wm2)
+              + self.W_up @ J_facet + self.w_veg_up * J_veg)
+        if facet_incident_sw is None or self.facet_albedo is None:
+            sw = np.zeros_like(lw)
+        else:
+            sw = self.W_up @ (self.facet_albedo * facet_incident_sw)
+        return (np.asarray(lw).ravel()[self.point_map],
+                np.asarray(sw).ravel()[self.point_map])
+
+    def sensor_ground_reflected(self, facet_incident_sw):
+        """Footprint-weighted shortwave reflected by the ground, W m^-2.
+
+        Each ground facet reflects ``albedo * (its OWN incident shortwave)``:
+        its own ray-traced beam transmission on its own tilt plus its own sky
+        share of the diffuse. The earlier emulation multiplied the footprint
+        albedo by the SENSOR's downwelling irradiance, which assigns the
+        sensor's shade state to ground up to a few metres away -- wrong
+        whenever a shadow edge lies inside the footprint.
+        """
+        if (getattr(self, "_footprint", None) is None
+                or facet_incident_sw is None or self.facet_albedo is None):
+            return None
+        index = self._footprint_ground_index
+        reflected = self.facet_albedo[index] * np.asarray(
+            facet_incident_sw, dtype=float)[index]
+        weighted = np.asarray(self._footprint @ reflected).ravel()
         return np.where(self._footprint_total > 1e-12,
                         weighted / np.maximum(self._footprint_total, 1e-12),
                         np.nan)
@@ -1936,13 +2043,25 @@ def main():
                 sensor_albedo = (facet_lw.sensor_ground_albedo
                                  if facet_lw.sensor_ground_albedo is not None
                                  else local_ground_albedo)
+                lw_down_up = sw_refl_up = sw_up_facet = None
+                if (args.sensor_emulation == "facet"
+                        and facet_lw.has_sensor_up_view):
+                    incident_sw = facet_lw.facet_incident_shortwave(
+                        it, dni[it], dhi[it], sun_vec_now)
+                    lw_down_up, sw_refl_up = facet_lw.sensor_downwelling_at(
+                        it, air_temp_C_time[it], el, sky_lw_current,
+                        incident_sw)
+                    sw_up_facet = facet_lw.sensor_ground_reflected(incident_sw)
                 sensor = sensor_radiometer_quantities(
                     dni[it], dhi[it], el, tau_direct, svf_planar,
                     sky_lw_current, L_surround_override,
                     sensor_albedo,
                     facet_lw.sensor_ground_emitted(it),
                     facet_lw.sensor_ground_emissivity,
-                    surround_sw_radiance, args)
+                    surround_sw_radiance, args,
+                    longwave_down_override=lw_down_up,
+                    reflected_down_override=sw_refl_up,
+                    shortwave_up_override=sw_up_facet)
                 contributions.update(sensor)
             if record_globe:
                 # Second pass over the SAME traced scene with sphere weighting

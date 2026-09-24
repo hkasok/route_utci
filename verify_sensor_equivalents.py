@@ -342,6 +342,61 @@ for retired in ("LEGACY_PROXY_FLUX_COMPONENTS", "add_measured_flux_diagnostics",
 check(hasattr(comparison, "plot_day_radiometer_along_route"),
       "the along-route figure is the radiometer-channel version")
 
+
+print("\nT_facet: facet-resolved upwelling shortwave and up-facing downwelling")
+import scipy.sparse as _sp
+
+# (a) Each ground facet reflects its OWN irradiance. Over a shadow edge
+# through the sensor the reading is the footprint average of the two sides,
+# whatever the sensor itself sees.
+stub_sw = _FootprintStub(centroids, areas, albedo, eps, temps)
+stub_sw.build_sensor_ground_footprint(
+    np.array([[0.0, 0.0, height]]), height, height, maximum_radius_m=40.0)
+stub_sw.sensor_ground_reflected = m05.FacetLongwave.sensor_ground_reflected.__get__(stub_sw)
+uniform_in = np.full(len(areas), 700.0)
+check(abs(float(stub_sw.sensor_ground_reflected(uniform_in)[0]) - 0.20 * 700.0) < 1e-6,
+      "uniform irradiance reflects exactly albedo x irradiance")
+edge_in = np.where(centroids[:, 0] < 0.0, 800.0, 100.0)
+edge_in[centroids[:, 0] == 0.0] = 450.0   # cells ON the edge: half each
+edge = float(stub_sw.sensor_ground_reflected(edge_in)[0])
+check(abs(edge - 0.20 * 450.0) < 0.5,
+      "a shadow edge under the sensor gives the average of both sides, not "
+      "the sensor's own shade state", f"{edge:.1f} W/m2")
+
+
+class _UpStub:
+    """Minimal FacetLongwave for the up-facing sensor methods."""
+    def __init__(self, W_up, w_sky_up, w_veg_up, J, J_env, albedo):
+        self.W_up, self.w_sky_up, self.w_veg_up = W_up, w_sky_up, w_veg_up
+        self.facet_J = J[None, :]
+        self.environment_J = np.array([J_env])
+        self.facet_albedo = albedo
+        self.point_map = np.arange(W_up.shape[0])
+        self.args = SimpleNamespace(vegetation_emissivity=1.0)
+    _radiosities = m05.FacetLongwave._radiosities
+    sensor_downwelling_at = m05.FacetLongwave.sensor_downwelling_at
+
+
+T0 = 300.0
+bb = sigma * T0 ** 4
+# column 0: a wall above the horizon; column 1: ground below it (zero up-weight)
+W_up = _sp.csr_matrix(np.array([[0.4, 0.0]]))
+up = _UpStub(W_up, np.array([0.5]), np.array([0.1]),
+             np.array([bb, bb]), bb, np.array([0.3, 0.2]))
+lw, _ = up.sensor_downwelling_at(0, T0 - 273.15, 30.0, bb)
+check(abs(float(lw[0]) - bb) < 1e-6,
+      "an isothermal black enclosure reads sigma*T^4 on the up-facing sensor")
+hot_ground = _UpStub(W_up, np.array([0.5]), np.array([0.1]),
+                     np.array([bb, 3.0 * bb]), bb, np.array([0.3, 0.2]))
+lw_hot, _ = hot_ground.sensor_downwelling_at(0, T0 - 273.15, 30.0, bb)
+check(abs(float(lw_hot[0]) - bb) < 1e-6,
+      "ground below the horizon cannot reach the up-facing sensor -- the "
+      "cylinder surround mean it replaces could")
+_, sw = up.sensor_downwelling_at(0, T0 - 273.15, 30.0, bb,
+                                 facet_incident_sw=np.array([500.0, 900.0]))
+check(abs(float(sw[0]) - 0.4 * 0.3 * 500.0) < 1e-9,
+      "reflected shortwave from above comes only from surfaces above the horizon")
+
 print("\n" + "=" * 68)
 print(f"RESULT: {passed} passed, {failed} failed")
 raise SystemExit(1 if failed else 0)
