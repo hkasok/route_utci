@@ -29,7 +29,7 @@ def main():
             r = r.iloc[0]
             rows.append((case, period, r))
 
-    lines = [r"\setlength{\tabcolsep}{3.5pt}",
+    lines = [r"\setlength{\tabcolsep}{3pt}",
              r"\begin{tabular}{llrrrrrrrrr}", r"\toprule",
              r"Case & Walk & Length & Dur. & $\overline{T_a}$ & "
              r"$\overline{T_{\mathrm{mrt}}}$ & $\overline{UTCI}$ & "
