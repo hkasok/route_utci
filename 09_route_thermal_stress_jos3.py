@@ -260,10 +260,12 @@ def parse_args():
                          "(the earlier protocol; default 10.0). The default indoor "
                          "preconditioning runs to steady state instead.")
     jos3_protocol.add_protocol_arguments(p)
-    p.add_argument("--activity-par", type=float, default=2.5,
-                    help="Physical activity ratio (metabolic rate / basal rate) for "
-                         "walking pace -- JOS-3 default for sitting quietly is 1.2; "
-                         "walking ~4-5 km/h is typically 2.5-3.3 per ISO 8996 (default: 2.5)")
+    p.add_argument("--activity-par", default="auto",
+                    help="Physical activity ratio (metabolic rate / basal rate) "
+                         "while walking. 'auto' (default) derives it per walk "
+                         "from the walk's mean speed (Pandolf et al. 1977, level "
+                         "unloaded walking; ~3.5 at 1.3 m/s); a number fixes it "
+                         "(the earlier default was 2.5).")
     p.add_argument("--subject-profile", default=None,
                     choices=sorted(PROFILES.keys()),
                     help="Literature-backed virtual subject preset "
@@ -404,9 +406,13 @@ def main():
                  f"{clothing_provenance['dressing_temperature_c']:.1f} C"
                  if "dressing_temperature_c" in clothing_provenance else "")
               + ")")
+        mean_speed = route["length_m"] / max(
+            (arrival_hour[-1] - arrival_hour[0]) * 3600.0, 1e-9)
+        activity_par = jos3_protocol.resolve_activity_ratio(
+            args.activity_par, subject.make_model(), mean_speed, subject.weight)
         walk = simulate_walk(xy, arrival_hour, nearest_idx, mrt_field,
                              environment, subject, segment_clo,
-                             args.activity_par, args.equilibration_min,
+                             activity_par, args.equilibration_min,
                              context=f"stage 09 route {route_id}",
                              precondition=args.precondition,
                              core_metric=args.core_metric)
@@ -416,7 +422,7 @@ def main():
         # the strain attributable to the radiant environment alone.
         neutral = simulate_walk(xy, arrival_hour, nearest_idx, mrt_field,
                                 environment, subject, segment_clo,
-                                args.activity_par, args.equilibration_min,
+                                activity_par, args.equilibration_min,
                                 context=f"stage 09 route {route_id} (neutral)",
                                 radiation_neutral=True,
                                 precondition=args.precondition,
@@ -447,6 +453,8 @@ def main():
             "radiation_attributable_rise_c": (walk["final_tcore_rise_c"]
                                               - neutral["final_tcore_rise_c"]),
             "time_sunlit_min": float(np.sum(dt_min[sunlit])),
+            "mean_speed_ms": mean_speed,
+            "activity_par": activity_par,
             "final_tcore_c": walk["tcore_trace_c"][-1],
             "start_core_c": walk["start_core_c"],
             "precondition_min": walk["precondition"]["precondition_min"],
@@ -493,6 +501,7 @@ def main():
         "neutral_tcore_rise_c": r["neutral_tcore_rise_c"],
         "radiation_attributable_rise_c": r["radiation_attributable_rise_c"],
         "time_sunlit_min": r["time_sunlit_min"],
+        "mean_speed_ms": r["mean_speed_ms"], "activity_par": r["activity_par"],
         "mean_tmrt_c": r["mean_tmrt_c"], "max_tmrt_c": r["max_tmrt_c"],
         "final_tcore_c": r["final_tcore_c"],
         "start_core_c": r["start_core_c"],

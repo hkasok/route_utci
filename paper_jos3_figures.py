@@ -59,7 +59,7 @@ def parse_args():
                          "to step size at this scale (checked against stage 09 "
                          "at the configured departure).")
     ap.add_argument("--walking-speed-ms", type=float, default=1.3)
-    ap.add_argument("--activity-par", type=float, default=2.5)
+    ap.add_argument("--activity-par", default="auto")
     ap.add_argument("--equilibration-min", type=float, default=10.0)
     ap.add_argument("--reuse-sweep", action="store_true")
     return ap.parse_args()
@@ -266,8 +266,11 @@ def run_sweep(args, root, case, stage09_summary):
                 is_daytime=daytime,
                 wind_ms=float(np.mean(conditions.wind_speed_ms)),
                 climate=provenance["climate"], config=config)
+            par = stage09.jos3_protocol.resolve_activity_ratio(
+                args.activity_par, subject.make_model(),
+                args.walking_speed_ms, subject.weight)
             common = (xy, arrival, nearest, mrt, environment, subject, clo,
-                      args.activity_par, args.equilibration_min)
+                      par, args.equilibration_min)
             walk = stage09.simulate_walk(*common, context="sweep")
             neutral = stage09.simulate_walk(*common, context="sweep neutral",
                                             radiation_neutral=True)

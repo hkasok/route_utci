@@ -185,6 +185,13 @@ def parse_args():
                          "diagnostics for like-for-like comparison against field "
                          "measurements; they are never mixed into the "
                          "body-absorbed flux or MRT.")
+    p.add_argument("--globe-weighting", choices=["sphere", "cylinder"],
+                   default="sphere",
+                   help="Angular weighting of the emulated black globe's "
+                        "diffuse, reflected and longwave load. 'sphere' "
+                        "(default) uses solid-angle weights from 05a and a "
+                        "sphere sky view; 'cylinder' reproduces the earlier "
+                        "emulation, which changed only the beam factor.")
     p.add_argument("--sensor-emulation", choices=["facet", "legacy"],
                    default="facet",
                    help="How the emulated radiometer forms its non-sky "
@@ -307,12 +314,13 @@ def parse_args():
 
 
 SIGMA = 5.670374419e-8
-SVF_CACHE_SCHEMA_VERSION = 1
+SVF_CACHE_SCHEMA_VERSION = 2
 SVF_CACHE_METADATA = "svf_cache_metadata.json"
 SVF_CACHE_ARRAYS = (
     "svf_building_only.npy",
     "svf_planar.npy",
     "svf_standing.npy",
+    "svf_sphere.npy",
 )
 
 
@@ -489,6 +497,8 @@ def make_sky_directions(n_azimuth, n_elevation):
       cylinder -- for a STANDING person: response proportional to
                   cos(elevation), so the sky view is dominated by the near-
                   horizon directions (where buildings block), not the zenith.
+      sphere   -- for the black globe: equal response in every direction,
+                  so only the solid angle weights each ray.
 
     Both share the solid-angle Jacobian cos(elevation). Because they weight the
     SAME traced sky transmission, computing both costs one extra dot product.
@@ -496,7 +506,7 @@ def make_sky_directions(n_azimuth, n_elevation):
     in street canyons -> more weight on the hot surround -> higher Tmrt, which
     is the SOLWEIG-consistent standing-person behaviour.
     """
-    directions, w_planar, w_cyl = [], [], []
+    directions, w_planar, w_cyl, w_sph = [], [], [], []
     for ie in range(n_elevation):
         elevation = (ie + 0.5) * (0.5 * np.pi) / n_elevation
         solid = np.cos(elevation)                       # dOmega ~ cos(el)
@@ -508,10 +518,13 @@ def make_sky_directions(n_azimuth, n_elevation):
             directions.append([x, y, z])
             w_planar.append(solid * np.sin(elevation))  # horizontal receiver
             w_cyl.append(solid * np.cos(elevation))     # standing cylinder
+            w_sph.append(solid)                          # sphere (globe)
     directions = np.asarray(directions, dtype=float)
     w_planar = np.asarray(w_planar, dtype=float)
     w_cyl = np.asarray(w_cyl, dtype=float)
-    return directions, w_planar / w_planar.sum(), w_cyl / w_cyl.sum()
+    w_sph = np.asarray(w_sph, dtype=float)
+    return (directions, w_planar / w_planar.sum(), w_cyl / w_cyl.sum(),
+            w_sph / w_sph.sum())
 
 
 def vegetation_transmission_from_intersections(vegetation_intersector, origins, directions,
@@ -586,14 +599,15 @@ def vegetation_transmission_from_intersections(vegetation_intersector, origins, 
 
 def compute_effective_svf_batched(path_xyz, sky_directions, w_planar, w_cyl,
                                    building_intersector, vegetation_intersector,
-                                   k_lad_diffuse, batch_size):
-    """Returns (svf_building_only, svf_planar, svf_standing). The planar and
-    standing sky-view factors are two weightings of the SAME traced sky
-    transmission -- see make_sky_directions()."""
+                                   k_lad_diffuse, batch_size, w_sph=None):
+    """Returns (svf_building_only, svf_planar, svf_standing, svf_sphere). The
+    planar, standing and sphere sky-view factors are weightings of the SAME
+    traced sky transmission -- see make_sky_directions()."""
     n = len(path_xyz)
     ndirs = len(sky_directions)
     svf_planar = np.zeros(n)
     svf_standing = np.zeros(n)
+    svf_sphere = np.zeros(n)
     svf_building_only = np.zeros(n)
 
     n_batches = int(np.ceil(n / batch_size))
@@ -617,6 +631,8 @@ def compute_effective_svf_batched(path_xyz, sky_directions, w_planar, w_cyl,
         T = sky_transmission.reshape(m, ndirs)
         svf_planar[start:end] = T @ w_planar
         svf_standing[start:end] = T @ w_cyl
+        if w_sph is not None:
+            svf_sphere[start:end] = T @ w_sph
         svf_building_only[start:end] = building_open.reshape(m, ndirs) @ w_planar
 
         if (bi + 1) % max(1, n_batches // 20) == 0 or bi == n_batches - 1:
@@ -626,7 +642,7 @@ def compute_effective_svf_batched(path_xyz, sky_directions, w_planar, w_cyl,
             print(f"  SVF batch {bi + 1}/{n_batches} ({end}/{n} points) "
                   f"-- {elapsed:.0f}s elapsed, ~{eta:.0f}s remaining")
 
-    return svf_building_only, svf_planar, svf_standing
+    return svf_building_only, svf_planar, svf_standing, svf_sphere
 
 
 def direct_solar_transmission_batched(path_xyz, sun_vec, building_intersector,
@@ -1050,12 +1066,15 @@ def globe_radiation_args(args, spec):
     deliberate: the globe must see exactly the same traced shading, sky view,
     facet longwave surround and wall-reflected shortwave as the pedestrian does,
     or any model-versus-instrument difference would be contaminated by the two
-    receptors having been given different scenes. Only three things change --
+    receptors having been given different scenes. Here three things change --
     the beam projected-area factor becomes the sphere's constant 0.25, and the
     absorptivity/emissivity become the globe's paint rather than human skin and
-    clothing. Diffuse, reflected and longwave angular factors are ~0.5/0.5/
-    isotropic for a sphere and a standing cylinder alike (VDI 3787), so they are
-    correctly left untouched.
+    clothing. The diffuse, reflected and longwave HEMISPHERIC split is ~0.5/0.5
+    for both receptors (VDI 3787), but the weighting WITHIN the surround is not:
+    a cylinder weights directions by cos^2(elevation) and so emphasises walls,
+    a sphere by solid angle alone. The caller therefore supplies the
+    sphere-weighted sky view, surround, ground albedo and facet-reflected
+    shortwave (--globe-weighting sphere, the default).
 
     This costs no extra ray tracing: it is a second pass over already-traced
     per-point quantities.
@@ -1104,6 +1123,19 @@ class FacetLongwave:
             if self.W_up.shape != self.W.shape:
                 raise ValueError("up-facing sensor view does not match the "
                                  "05a view matrix")
+        # Sphere-weighted view for the black-globe emulator (same rays,
+        # solid-angle weights only). Optional for older thermal folders.
+        self.W_g = None
+        g_matrix = d / "globe_view_matrix.npz"
+        g_weights = d / "globe_point_weights.npz"
+        if g_matrix.is_file() and g_weights.is_file():
+            self.W_g = sp.load_npz(g_matrix)
+            gw = np.load(g_weights)
+            self.w_sky_g = gw["w_sky"]
+            self.w_veg_g = gw["w_veg"]
+            self.w_def_g = gw["w_default"]
+            if self.W_g.shape != self.W.shape:
+                raise ValueError("globe view does not match the 05a view matrix")
         self.w_sky = pw["w_sky"]
         self.w_veg = pw["w_veg"]
         self.w_def = pw["w_default"]
@@ -1154,6 +1186,15 @@ class FacetLongwave:
                     weighted_albedo / np.maximum(ground_weight, 1e-12),
                     getattr(args, "ground_albedo", 0.18))
                 self.local_ground_albedo = coarse_albedo[self.point_map]
+                self.globe_ground_albedo = None
+                if self.W_g is not None:
+                    g_ground = np.asarray(
+                        self.W_g[:, ground_mask].sum(axis=1)).ravel()
+                    g_albedo = np.asarray(
+                        self.W_g[:, ground_mask] @ facet_albedo[ground_mask]).ravel()
+                    self.globe_ground_albedo = np.where(
+                        g_ground > 1e-12, g_albedo / np.maximum(g_ground, 1e-12),
+                        coarse_albedo)[self.point_map]
                 source_weighted_albedo = {}
                 for material in sorted(set(self.facet_material_name[ground_mask])):
                     source = canonical_sw_source(material)
@@ -1526,6 +1567,32 @@ class FacetLongwave:
         return J_facet, J_vegetation, J_environment
 
     @property
+    def has_globe_view(self):
+        return self.W_g is not None
+
+    def globe_view_at(self, it, air_temp_C, elevation_deg, sky_longwave_Wm2,
+                      facet_incident_sw=None):
+        """Sphere-weighted surround for the black globe, per full point.
+
+        Returns ``(L_surround, sky_fraction, wall_reflected_sw)`` on the same
+        convention as the body's cylinder-weighted quantities, so the globe
+        pass of ``estimate_mrt_from_radiation`` can take them unchanged.
+        """
+        J_facet, J_veg, J_env = self._radiosities(
+            it, air_temp_C, elevation_deg, sky_longwave_Wm2)
+        surf = 1.0 - self.w_sky_g
+        num = self.W_g @ J_facet + self.w_veg_g * J_veg + self.w_def_g * J_env
+        L = np.where(surf > 1e-6, num / np.maximum(surf, 1e-6), J_env)
+        if facet_incident_sw is None or self.wall_reflect_mask is None:
+            refl = np.zeros_like(L)
+        else:
+            reflected = np.where(self.wall_reflect_mask,
+                                 self.facet_albedo * facet_incident_sw, 0.0)
+            refl = np.asarray(self.W_g @ reflected).ravel()
+        pm = self.point_map
+        return L[pm], self.w_sky_g[pm].astype(float), refl[pm]
+
+    @property
     def has_sensor_up_view(self):
         return self.W_up is not None
 
@@ -1744,7 +1811,7 @@ def main():
 
     print("\n" + "=" * 70)
     print("Computing static effective sky-view factor...")
-    sky_directions, sky_w_planar, sky_w_cyl = make_sky_directions(
+    sky_directions, sky_w_planar, sky_w_cyl, sky_w_sph = make_sky_directions(
         args.sky_n_azimuth, args.sky_n_elevation)
     print(f"  Sky directions: {len(sky_directions)}")
 
@@ -1757,18 +1824,18 @@ def main():
         else:
             cached_svf = load_cached_svf(args.svf_cache, svf_metadata, n_points)
     if cached_svf is None:
-        svf_building_only, svf_planar, svf_standing = compute_effective_svf_batched(
-            path_xyz, sky_directions, sky_w_planar, sky_w_cyl,
-            building_intersector, vegetation_intersector,
-            args.k_lad_diffuse, args.svf_batch_size,
-        )
+        svf_building_only, svf_planar, svf_standing, svf_sphere = (
+            compute_effective_svf_batched(
+                path_xyz, sky_directions, sky_w_planar, sky_w_cyl,
+                building_intersector, vegetation_intersector,
+                args.k_lad_diffuse, args.svf_batch_size, w_sph=sky_w_sph))
         if args.svf_cache:
             write_svf_cache(
                 args.svf_cache, svf_metadata,
-                (svf_building_only, svf_planar, svf_standing),
+                (svf_building_only, svf_planar, svf_standing, svf_sphere),
             )
     else:
-        svf_building_only, svf_planar, svf_standing = cached_svf
+        svf_building_only, svf_planar, svf_standing, svf_sphere = cached_svf
     # The pedestrian's sky fraction depends on body model; the ground below is
     # always a horizontal (planar) receiver.
     svf_person = svf_standing if args.sky_view_body == "standing" else svf_planar
@@ -1776,6 +1843,7 @@ def main():
     np.save(out_dir / "svf_building_only.npy", svf_building_only)
     np.save(out_dir / "svf_planar.npy", svf_planar)
     np.save(out_dir / "svf_standing.npy", svf_standing)
+    np.save(out_dir / "svf_sphere.npy", svf_sphere)
     np.save(out_dir / "svf_effective.npy", svf_person)   # back-compat name
     print(f"  Sky-view factor ({args.sky_view_body}) range: "
           f"{svf_person.min():.3f} to {svf_person.max():.3f} "
@@ -2064,20 +2132,37 @@ def main():
                     shortwave_up_override=sw_up_facet)
                 contributions.update(sensor)
             if record_globe:
-                # Second pass over the SAME traced scene with sphere weighting
-                # and globe optics -- no extra rays are cast.
+                # Second pass over the SAME traced scene with globe optics and,
+                # by default, a SPHERE's angular weighting throughout: sphere
+                # sky view for the diffuse, and the sphere-weighted 05a view for
+                # the longwave surround, sky fraction, ground albedo and
+                # facet-reflected shortwave -- no extra rays are cast.
+                # 'cylinder' reproduces the earlier emulation, which changed
+                # only the beam factor and reused the body's weighting.
+                g_svf, g_L, g_sky, g_alb, g_refl = (
+                    svf_person, L_surround_override, lw_sky_frac,
+                    local_ground_albedo, wall_reflected_incident)
+                if (args.globe_weighting == "sphere"
+                        and facet_lw.has_globe_view):
+                    g_L, g_sky, g_refl = facet_lw.globe_view_at(
+                        it, air_temp_C_time[it], el, sky_lw_current,
+                        facet_lw.facet_incident_shortwave(
+                            it, dni[it], dhi[it], sun_vec_now))
+                    g_svf = svf_sphere
+                    if facet_lw.globe_ground_albedo is not None:
+                        g_alb = facet_lw.globe_ground_albedo
                 _, globe_flux, _, _ = estimate_mrt_from_radiation(
                     dni[it], dhi[it], ghi[it], el, tau_direct,
-                    svf_person, svf_ground,
+                    g_svf, svf_ground,
                     local_air_c, rh_pct_time[it], cloud_fraction_time[it],
                     globe_args,
-                    L_surround_override=L_surround_override,
-                    lw_sky_frac=lw_sky_frac,
-                    local_ground_albedo=local_ground_albedo,
+                    L_surround_override=g_L,
+                    lw_sky_frac=g_sky,
+                    local_ground_albedo=g_alb,
                     reflected_source_fractions=None,
                     L_surround_components=None,
                     L_sky_override=lwin_time[it],
-                    wall_reflected_incident=wall_reflected_incident,
+                    wall_reflected_incident=g_refl,
                     wall_reflected_parts=None,
                     return_contributions=False,
                 )

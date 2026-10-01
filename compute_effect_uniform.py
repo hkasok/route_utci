@@ -350,7 +350,11 @@ def run_jos3_walk(route: MeasuredRoute, ta_series: np.ndarray,
         raise ValueError(f"{context}: Ta/RH series length mismatch")
     check_jos3_inputs(ta_series, mrt, wind, rh_series, context)
 
-    model, weights = initialize_jos3_model(subject, args.activity_par,
+    par = jos3_protocol.resolve_activity_ratio(
+        args.activity_par,
+        initialize_jos3_model(subject, 1.0, route.segment_clo or None)[0],
+        route.distance_m / (route.duration_min * 60.0), subject["weight"])
+    model, weights = initialize_jos3_model(subject, par,
                                            route.segment_clo or None)
 
     def core_c() -> float:
@@ -362,7 +366,7 @@ def run_jos3_walk(route: MeasuredRoute, ta_series: np.ndarray,
     # walk's own Ta/RH, so benchmark and uniform cases share it exactly.
     if args.precondition == "indoor":
         jos3_protocol.precondition_indoor(model)
-        model.par = args.activity_par
+        model.par = par
     else:
         model.tdb, model.tr = float(ta_series[0]), float(mrt[0])
         model.rh, model.v = float(rh_series[0]), float(wind[0])
@@ -675,7 +679,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--equilibration-min", type=float, default=10.0,
                    help="Only with --precondition outdoor_walk.")
     jos3_protocol.add_protocol_arguments(p)
-    p.add_argument("--activity-par", type=float, default=2.5)
+    p.add_argument("--activity-par", default="auto",
+                   help="'auto' (from each walk's mean speed) or a fixed ratio")
     p.add_argument("--subject-profile", choices=sorted(PROFILES), default=None)
     p.add_argument("--person-height-m", type=float, default=None)
     p.add_argument("--person-weight-kg", type=float, default=None)

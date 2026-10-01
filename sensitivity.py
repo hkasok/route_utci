@@ -73,7 +73,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--equilibration-min", type=float, default=10.0,
                    help="Only with --precondition outdoor_walk.")
     jos3_protocol.add_protocol_arguments(p)
-    p.add_argument("--activity-par", type=float, default=2.5)
+    p.add_argument("--activity-par", default="auto",
+                   help="'auto' (from each route's mean speed) or a fixed ratio")
     p.add_argument("--subject-profile", choices=sorted(PROFILES), default=None)
     p.add_argument("--person-height-m", type=float, default=None)
     p.add_argument("--person-weight-kg", type=float, default=None)
@@ -95,8 +96,8 @@ def validate_settings(args: argparse.Namespace) -> tuple[np.ndarray, np.ndarray]
         raise ValueError("--departure-hour must be finite")
     if not np.isfinite(args.equilibration_min) or args.equilibration_min < 0:
         raise ValueError("--equilibration-min must be finite and non-negative")
-    if not np.isfinite(args.activity_par) or args.activity_par <= 0:
-        raise ValueError("--activity-par must be finite and positive")
+    if str(args.activity_par).lower() != "auto" and not float(args.activity_par) > 0:
+        raise ValueError("--activity-par must be 'auto' or positive")
     for name, lo, hi, levels in (("Ta", args.ta_min, args.ta_max, args.ta_levels),
                                   ("vapor pressure", args.e_min, args.e_max, args.e_levels)):
         if not np.isfinite(lo) or not np.isfinite(hi) or lo >= hi:
@@ -282,7 +283,10 @@ def simulate_uniform_reference_case(routes: list[PreparedRoute], mrt_matrix: np.
     for route in routes:
         if route.route_id not in clo_by_route:
             raise KeyError(f"no stage-09 clothing record for route {route.route_id}")
-        model, weights = initialize_jos3_model(subject, args.activity_par,
+        par = jos3_protocol.resolve_activity_ratio(
+            args.activity_par, initialize_jos3_model(subject, 1.0, clo_by_route[route.route_id])[0],
+            route.length_m / (route.duration_min * 60.0), subject["weight"])
+        model, weights = initialize_jos3_model(subject, par,
                                               clo_by_route[route.route_id])
         def core() -> float:
             return jos3_protocol.core_temperature(model, args.core_metric)
@@ -292,7 +296,7 @@ def simulate_uniform_reference_case(routes: list[PreparedRoute], mrt_matrix: np.
         if not np.isfinite(tr0) or not np.isfinite(v0): raise ValueError(f"Non-finite start MRT/wind, route {route.route_id}")
         if args.precondition == "indoor":
             jos3_protocol.precondition_indoor(model)
-            model.par = args.activity_par
+            model.par = par
         else:
             model.tdb, model.tr, model.rh, model.v = ta_ref_c, tr0, rh, v0
             if args.equilibration_min > 0:
@@ -584,7 +588,7 @@ def main() -> None:
         wind=np.asarray(weather.wind_ms(route.arrival_hour%24),float)
         if not np.isfinite(wind).all(): raise ValueError(f"Non-finite resolved wind for route {route.route_id}")
     subject=resolve_subject(args); out=Path(args.output_dir); out.mkdir(parents=True,exist_ok=True); ncases=len(ta_values)*len(e_values)
-    probe,_=initialize_jos3_model(subject,args.activity_par,[0.0]*17)
+    probe,_=initialize_jos3_model(subject,1.0,[0.0]*17)
     clo_by_route=load_segment_clothing(Path(args.clothing_provenance),probe)
     missing=[r.route_id for r in routes if r.route_id not in clo_by_route]
     if missing: raise KeyError(f"no stage-09 clothing record for routes {missing}")

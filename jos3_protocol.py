@@ -89,6 +89,32 @@ def precondition_indoor(model, *, air_temperature_c=INDOOR_AIR_TEMPERATURE_C,
         f"min (last {STEADY_BLOCK_MIN}-min drift {drift:.4f} C)")
 
 
+def walking_activity_ratio(model, speed_ms: float, mass_kg: float) -> float:
+    """JOS-3 physical activity ratio for level, unloaded walking at a speed.
+
+    Metabolic rate from Pandolf et al. (1977) for level paved ground with no
+    load, M = 1.5 W + 1.5 W v^2 (W, with W the body mass in kg and v in m/s),
+    divided by the subject's own JOS-3 basal metabolic rate. At 1.3 m/s for a
+    74 kg adult this is ~299 W, i.e. ~3.5 compendium METs; a fixed ratio of 2.5
+    understates it by about 30 %.
+    """
+    if not (np.isfinite(speed_ms) and speed_ms > 0):
+        raise ValueError("walking speed must be finite and positive")
+    metabolic_w = 1.5 * mass_kg + 1.5 * mass_kg * speed_ms ** 2
+    basal_w = float(model.bmr) * float(np.sum(model.bsa))
+    return max(metabolic_w / basal_w, INDOOR_ACTIVITY_PAR)
+
+
+def resolve_activity_ratio(spec, model, speed_ms: float, mass_kg: float) -> float:
+    """``spec`` is "auto" (from walking speed) or a fixed ratio."""
+    if str(spec).strip().lower() == "auto":
+        return walking_activity_ratio(model, speed_ms, mass_kg)
+    value = float(spec)
+    if not (np.isfinite(value) and value > 0):
+        raise ValueError("--activity-par must be 'auto' or a positive number")
+    return value
+
+
 def add_protocol_arguments(parser) -> None:
     parser.add_argument(
         "--core-metric", choices=CORE_METRICS, default="pelvis",

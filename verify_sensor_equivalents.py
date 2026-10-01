@@ -397,6 +397,41 @@ _, sw = up.sensor_downwelling_at(0, T0 - 273.15, 30.0, bb,
 check(abs(float(sw[0]) - 0.4 * 0.3 * 500.0) < 1e-9,
       "reflected shortwave from above comes only from surfaces above the horizon")
 
+
+print("\nT_globe: sphere-weighted globe view")
+_dirs, _wp, _wc, _ws = m05.make_sky_directions(48, 12)
+check(abs(_ws.sum() - 1.0) < 1e-12 and np.all(_ws > 0),
+      "sphere sky weights are positive and normalised")
+check(_ws[-48:].mean() / _ws[:48].mean() > _wc[-48:].mean() / _wc[:48].mean(),
+      "a sphere weights the zenith band more, relative to the horizon, than a "
+      "standing cylinder does")
+
+
+class _GlobeStub:
+    def __init__(self, W_g, w_sky, w_veg, w_def, J, J_env, albedo, wall):
+        self.W_g, self.w_sky_g, self.w_veg_g, self.w_def_g = W_g, w_sky, w_veg, w_def
+        self.facet_J = J[None, :]
+        self.environment_J = np.array([J_env])
+        self.facet_albedo = albedo
+        self.wall_reflect_mask = wall
+        self.point_map = np.arange(W_g.shape[0])
+        self.args = SimpleNamespace(vegetation_emissivity=1.0)
+    _radiosities = m05.FacetLongwave._radiosities
+    globe_view_at = m05.FacetLongwave.globe_view_at
+
+
+W_g = _sp.csr_matrix(np.array([[0.3, 0.2]]))
+gs = _GlobeStub(W_g, np.array([0.4]), np.array([0.05]), np.array([0.05]),
+                np.array([bb, bb]), bb, np.array([0.3, 0.2]),
+                np.array([True, False]))
+gL, gsky, grefl = gs.globe_view_at(0, T0 - 273.15, 30.0, bb,
+                                   facet_incident_sw=np.array([500.0, 800.0]))
+check(abs(float(gL[0]) - bb) < 1e-6 and abs(float(gsky[0]) - 0.4) < 1e-12,
+      "an isothermal black enclosure gives the globe a surround of sigma*T^4")
+check(abs(float(grefl[0]) - 0.3 * 0.3 * 500.0) < 1e-9,
+      "the globe's reflected shortwave comes from walls and roofs only, on "
+      "sphere weights (ground reflection is the separate local-albedo term)")
+
 print("\n" + "=" * 68)
 print(f"RESULT: {passed} passed, {failed} failed")
 raise SystemExit(1 if failed else 0)

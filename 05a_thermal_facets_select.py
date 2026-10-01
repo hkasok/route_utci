@@ -42,6 +42,9 @@ Outputs (in --output-dir)
                         the SAME rays re-weighted for an UP-FACING horizontal
                         radiometer: upper hemisphere only, cosine (sin el)
                         weighting; facet columns identical to lw_view_matrix
+  globe_view_matrix.npz, globe_point_weights.npz
+                        the SAME rays re-weighted for a SPHERE (solid angle
+                        only, full sphere), for the black-globe emulator
   point_map.npy         index of the coarse point serving each FULL-
                         resolution route point (nearest neighbor)
   selection_report.txt  human-readable sanity numbers
@@ -172,13 +175,19 @@ def main():
         up_dir, np.sqrt(np.clip(1.0 - directions[:, 2] ** 2, 0.0, None))
         * directions[:, 2], 0.0)
     sensor_up_weights = sensor_up_weights / sensor_up_weights.sum()
+    # Sphere (black globe): every direction weighted by its solid angle alone.
+    globe_weights = np.sqrt(np.clip(1.0 - directions[:, 2] ** 2, 0.0, None))
+    globe_weights = globe_weights / globe_weights.sum()
 
     # ------------------------------------------------------------------
     # Full-sphere raytrace, accumulating the sparse view matrix
     # ------------------------------------------------------------------
     facet_key_to_col = {}          # (mesh_id, face_id) -> compact column
     facet_orient_sign = []         # +1 keep mesh normal, -1 flip (per facet)
-    rows, cols, vals, vals_up = [], [], [], []
+    rows, cols, vals, vals_up, vals_g = [], [], [], [], []
+    w_sky_g = np.zeros(n_coarse)
+    w_veg_g = np.zeros(n_coarse)
+    w_def_g = np.zeros(n_coarse)
     w_sky_up = np.zeros(n_coarse)
     w_veg_up = np.zeros(n_coarse)
     w_sky = np.zeros(n_coarse)
@@ -197,6 +206,7 @@ def main():
         dirs = np.tile(directions, (m, 1))
         wts = np.tile(weights, m)
         wts_up = np.tile(sensor_up_weights, m)
+        wts_g = np.tile(globe_weights, m)
         pt_of_ray = np.repeat(np.arange(start, end), ndirs)
 
         hit_mesh, hit_face, _ = nearest_hit_multi(
@@ -210,6 +220,9 @@ def main():
         np.add.at(w_veg, pt_of_ray[veg], wts[veg])
         np.add.at(w_sky_up, pt_of_ray[no_hit & up], wts_up[no_hit & up])
         np.add.at(w_veg_up, pt_of_ray[veg & up], wts_up[veg & up])
+        np.add.at(w_sky_g, pt_of_ray[no_hit & up], wts_g[no_hit & up])
+        np.add.at(w_def_g, pt_of_ray[no_hit & ~up], wts_g[no_hit & ~up])
+        np.add.at(w_veg_g, pt_of_ray[veg], wts_g[veg])
 
         solid = (hit_mesh == MESH_BUILDINGS) | (hit_mesh == MESH_GROUND)
         s_idx = np.where(solid)[0]
@@ -229,6 +242,7 @@ def main():
             cols.append(col)
             vals.append(wts[ri])
             vals_up.append(wts_up[ri])
+            vals_g.append(wts_g[ri])
 
         if (bi + 1) % max(1, n_batches // 20) == 0 or bi == n_batches - 1:
             el = time.time() - t0
@@ -245,6 +259,10 @@ def main():
         shape=(n_coarse, n_facets)).tocsr()
     W_up.sum_duplicates()
     W_up.eliminate_zeros()
+    W_g = sp.coo_matrix(
+        (np.asarray(vals_g), (np.asarray(rows), np.asarray(cols))),
+        shape=(n_coarse, n_facets)).tocsr()
+    W_g.sum_duplicates()
 
     # ------------------------------------------------------------------
     # HARD VERIFICATION: weights must partition unity at every point
@@ -257,6 +275,8 @@ def main():
     err_up = np.abs(total_up - 1.0).max()
     print(f"  Up-facing sensor partition check: max |sum - 1| = {err_up:.2e}")
     assert err_up < 1e-9, "Up-facing sensor weights do not partition unity"
+    total_g = np.asarray(W_g.sum(axis=1)).ravel() + w_sky_g + w_veg_g + w_def_g
+    assert np.abs(total_g - 1.0).max() < 1e-9, "Globe weights do not partition unity"
 
     # ------------------------------------------------------------------
     # Facet metadata (centroid, oriented outward normal, area, class)
@@ -388,6 +408,9 @@ def main():
     sp.save_npz(out_dir / "sensor_up_view_matrix.npz", W_up)
     np.savez(out_dir / "sensor_up_point_weights.npz", w_sky=w_sky_up,
              w_veg=w_veg_up)
+    sp.save_npz(out_dir / "globe_view_matrix.npz", W_g)
+    np.savez(out_dir / "globe_point_weights.npz", w_sky=w_sky_g, w_veg=w_veg_g,
+             w_default=w_def_g)
     np.save(out_dir / "point_map.npy", point_map)
     np.save(out_dir / "coarse_index.npy", coarse_idx)
     with open(out_dir / "config.json", "w") as f:
