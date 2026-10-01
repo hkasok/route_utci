@@ -20,7 +20,8 @@ def main():
         base = args.run_output / f"lisbon{case}" / "viz"
         utci = pd.read_csv(base / "route_utci" / "route_ranking_summary.csv")
         jos = pd.read_csv(base / "route_jos3" / "route_ranking_summary.csv")
-        merged = utci.merge(jos[["route_id", "final_tcore_rise_c"]], on="route_id")
+        merged = utci.merge(jos[["route_id", "final_tcore_rise_c",
+                                 "radiation_attributable_rise_c"]], on="route_id")
         for period in ("day", "night"):
             r = merged[merged["route_name"].str.startswith(period)]
             if len(r) != 1:
@@ -29,19 +30,22 @@ def main():
             rows.append((case, period, r))
 
     lines = [r"\setlength{\tabcolsep}{3.5pt}",
-             r"\begin{tabular}{llrrrrrrrr}", r"\toprule",
+             r"\begin{tabular}{llrrrrrrrrr}", r"\toprule",
              r"Case & Walk & Length & Dur. & $\overline{T_a}$ & "
              r"$\overline{T_{\mathrm{mrt}}}$ & $\overline{UTCI}$ & "
-             r"$UTCI_{\max}$ & $D$ & $\Delta T_{\mathrm{core}}$ \\",
+             r"$UTCI_{\max}$ & $D$ & $\Delta T_{\mathrm{core}}^{\mathrm{rad}}$ & "
+             r"$\Delta T_{\mathrm{core}}$ \\",
              r" & & (\si{\metre}) & (\si{\minute}) & (\si{\celsius}) & "
              r"(\si{\celsius}) & (\si{\celsius}) & (\si{\celsius}) & "
-             r"(\si{\celsius\minute}) & (\si{\celsius}) \\", r"\midrule"]
+             r"(\si{\celsius\minute}) & (\si{\celsius}) & (\si{\celsius}) \\",
+             r"\midrule"]
     for case, period, r in rows:
         label = f"Lisbon {case}" if period == "day" else ""
         lines.append(
             f"{label} & {period} & {r.length_m:.0f} & {r.walk_duration_min:.0f} & "
             f"{r.mean_ta_c:.1f} & {r.mean_tmrt_c:.1f} & {r.mean_utci_c:.1f} & "
             f"{r.max_utci_c:.1f} & {r.strong_stress_dose_degmin:.0f} & "
+            f"{r.radiation_attributable_rise_c:+.3f} & "
             f"{r.final_tcore_rise_c:.3f} \\\\")
         if period == "night" and case < 6:
             lines.append(r"\addlinespace[2pt]")

@@ -52,6 +52,7 @@ Run:
 
 import argparse
 import json
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -66,9 +67,153 @@ from subject_profiles import PROFILES, get_profile, apply_profile_to_model
 import clothing_profiles
 from generate_route import load_routes_directory, route_arrival_schedule
 from physical_checks import check_jos3_inputs
+import jos3_protocol
 
 
 CORE_TEMP_SETPOINT_C = 37.0  # used only for reporting "rise from baseline"
+# Direct-beam transmission above which a route point counts as sunlit (the
+# beam reaches the walker through at most a thin canopy edge).
+SUNLIT_TAU = 0.5
+
+
+@dataclass(frozen=True)
+class Subject:
+    """The virtual walker; builds identically configured JOS-3 models."""
+    height: float
+    weight: float
+    age: int
+    sex: str
+    fat: float
+    ci: float
+    setpoint_shift: float = 0.0
+
+    def make_model(self):
+        model = JOS3(height=self.height, weight=self.weight, age=self.age,
+                     sex=self.sex, fat=self.fat, ci=self.ci)
+        if self.setpoint_shift:
+            model.cr_set_point = model.cr_set_point + self.setpoint_shift
+        return model
+
+    def bsa(self):
+        return self.make_model().bsa
+
+
+@dataclass(frozen=True)
+class MrtField:
+    """Stage-05 radiant field: Tmrt (and beam transmission) per point/time."""
+    xyz: np.ndarray
+    tmrt_matrix: np.ndarray
+    time_hours: np.ndarray
+    tau_matrix: np.ndarray | None = None
+
+
+def simulate_walk(xy, arrival_hour, nearest_idx, mrt, environment, subject,
+                  segment_clo, activity_par, equilibration_min, context,
+                  radiation_neutral=False, precondition="indoor",
+                  core_metric="pelvis"):
+    """Walk one route through JOS-3, carrying physiological state forward.
+
+    ``radiation_neutral`` replaces Tmrt with air temperature at every point
+    (and during equilibration): the same walk with no radiant excess. The
+    difference from the real walk is the strain attributable to the radiant
+    environment; the neutral walk alone is the strain of walking in that air.
+
+    ``precondition="indoor"`` starts every walk from the same steady state
+    indoors (``jos3_protocol``), so real and neutral runs, and all routes and
+    departures, share one start; ``"outdoor_walk"`` is the earlier
+    ``equilibration_min`` at walking activity in the start conditions.
+    """
+    xy = np.asarray(xy, dtype=float)
+    n_pts = len(xy)
+    cumdist = np.concatenate(([0.0], np.cumsum(
+        np.linalg.norm(np.diff(xy, axis=0), axis=1))))
+    model = subject.make_model()
+    if list(getattr(model, "body_names", clothing_profiles.JOS3_SEGMENTS)) \
+            != list(clothing_profiles.JOS3_SEGMENTS):
+        raise RuntimeError(
+            "JOS-3 segment order differs from clothing_profiles."
+            "JOS3_SEGMENTS; refusing to apply clothing to the wrong parts")
+    # Clothing must be on the body BEFORE equilibration, otherwise the
+    # subject equilibrates naked and then dresses at the start line.
+    model.clo = segment_clo
+
+    def weighted_core_c():
+        return jos3_protocol.core_temperature(model, core_metric)
+
+    def forcing(j):
+        h = arrival_hour[j] % 24.0
+        point_xyz = np.array([xy[j, 0], xy[j, 1], mrt.xyz[nearest_idx[j], 2]])
+        local = environment.sample(point_xyz, h)
+        ta = float(local.air_temperature_c[0])
+        tmrt = (ta if radiation_neutral else float(np.interp(
+            h, mrt.time_hours, mrt.tmrt_matrix[:, nearest_idx[j]], period=24.0)))
+        tau = (float(np.interp(h, mrt.time_hours,
+                               mrt.tau_matrix[:, nearest_idx[j]], period=24.0))
+               if mrt.tau_matrix is not None else np.nan)
+        return (ta, tmrt, float(local.relative_humidity_pct[0]),
+                float(local.wind_speed_ms[0]), tau)
+
+    ta0, tmrt0, rh0, v0, _ = forcing(0)
+    # JOS-3's .rh is RELATIVE HUMIDITY IN PERCENT (library default 50), the
+    # same convention as UTCI -- guard the units before they enter the
+    # thermoregulation model, where a fraction would read as ~0.7% (arid).
+    check_jos3_inputs(ta0, tmrt0, v0, rh0, f"{context} start")
+    if precondition == "indoor":
+        precondition_info = jos3_protocol.precondition_indoor(model)
+    elif precondition == "outdoor_walk":
+        # Earlier protocol: hold at the start conditions at walking activity.
+        model.par = activity_par
+        model.tdb, model.tr = ta0, tmrt0
+        model.rh, model.v = rh0, v0
+        if equilibration_min > 0:
+            model.simulate(times=int(equilibration_min), dtime=60, output=False)
+        precondition_info = {"precondition_min": float(equilibration_min)}
+    else:
+        raise ValueError(f"unknown precondition {precondition!r}")
+    model.par = activity_par
+    start_core_c = weighted_core_c()
+
+    # Extremity (hand/foot) state is tracked as its OWN quantity, at the
+    # same instants as the core trace, so every reported extremity number
+    # is a like-for-like comparison. Extremity tissue sits several degrees
+    # below body core even in perfect thermal balance -- differencing the
+    # two would report that permanent offset as if it were strain.
+    idx_extreme = [k for k, name in enumerate(model.body_names)
+                   if "hand" in name or "foot" in name]
+    if not idx_extreme:
+        raise RuntimeError("this JOS-3 build exposes no hand/foot segments")
+    start_extremity_core_c = float(np.mean(model.t_core[idx_extreme]))
+    start_extremity_skin_c = float(np.mean(model.t_skin[idx_extreme]))
+
+    traces = {k: np.zeros(n_pts) for k in (
+        "tcore_trace_c", "tmrt_trace_c", "ta_trace_c", "tau_dir_trace",
+        "hand_foot_trace_c", "hand_foot_skin_trace_c")}
+    for j in range(n_pts):
+        ta_now, tmrt_now, rh_now, v_now, tau_now = forcing(j)
+        if j == 0:   # guard once per route (uniform drivers, hot loop)
+            check_jos3_inputs(ta_now, tmrt_now, v_now, rh_now, f"{context} walk")
+        dt_s = (arrival_hour[j] - arrival_hour[j - 1]) * 3600.0 if j > 0 else 0.0
+        model.tdb, model.tr = ta_now, tmrt_now
+        model.rh, model.v = rh_now, v_now
+        if dt_s > 0:
+            model.simulate(times=1, dtime=dt_s, output=False)
+        traces["tcore_trace_c"][j] = weighted_core_c()
+        traces["tmrt_trace_c"][j] = tmrt_now
+        traces["ta_trace_c"][j] = ta_now
+        traces["tau_dir_trace"][j] = tau_now
+        traces["hand_foot_trace_c"][j] = float(np.mean(model.t_core[idx_extreme]))
+        traces["hand_foot_skin_trace_c"][j] = float(np.mean(model.t_skin[idx_extreme]))
+    traces.update({
+        "cumdist_m": cumdist,
+        "start_core_c": start_core_c,
+        "precondition": precondition_info,
+        "final_tcore_rise_c": traces["tcore_trace_c"][-1] - start_core_c,
+        "extremity_core_change_c": (traces["hand_foot_trace_c"][-1]
+                                    - start_extremity_core_c),
+        "extremity_skin_change_c": (traces["hand_foot_skin_trace_c"][-1]
+                                    - start_extremity_skin_c),
+    })
+    return traces
 
 
 # ============================================================
@@ -110,10 +255,11 @@ def parse_args():
                     help="Hour of day (0-24) the walk begins (default: 13.0, "
                          "solar-afternoon heat. Use 8.0 for a morning walk).")
     p.add_argument("--equilibration-min", type=float, default=10.0,
-                    help="Minutes of simulated equilibration at the route's starting "
-                         "conditions before 'official' walk timing begins, to avoid "
-                         "JOS-3's default initial state creating a startup transient "
-                         "(default: 10.0)")
+                    help="Only with --precondition outdoor_walk: minutes at walking "
+                         "activity in the route's starting conditions before the walk "
+                         "(the earlier protocol; default 10.0). The default indoor "
+                         "preconditioning runs to steady state instead.")
+    jos3_protocol.add_protocol_arguments(p)
     p.add_argument("--activity-par", type=float, default=2.5,
                     help="Physical activity ratio (metabolic rate / basal rate) for "
                          "walking pace -- JOS-3 default for sitting quietly is 1.2; "
@@ -179,6 +325,8 @@ def main():
     print(f"  body: age {subj_age}, {subj_sex}, {subj_height} m, "
           f"{subj_weight} kg, fat {subj_fat}%, cardiac index {subj_ci} "
           f"L/min/m^2, setpoint shift {subj_setpoint_shift:+.2f} C")
+    subject = Subject(subj_height, subj_weight, subj_age, subj_sex, subj_fat,
+                      subj_ci, subj_setpoint_shift)
 
     routes, start_xy, end_xy, start_node, end_node, connectivity = get_routes(args)
 
@@ -191,6 +339,10 @@ def main():
     time_hours = np.array([t.hour + t.minute / 60.0 + t.second / 3600.0 for t in times])
     # unwrap in case times cross midnight boundary at the array edges
     mrt_tree = cKDTree(mrt_xyz[:, :2])
+    tau_path = mrt_dir / "direct_transmission_matrix.npy"
+    mrt_field = MrtField(
+        mrt_xyz, tmrt_matrix, time_hours,
+        np.load(tau_path, mmap_mode="r") if tau_path.is_file() else None)
 
     # Clothing is chosen per route from that walk's own mean conditions, so a
     # night walk and a noon walk over the same street are dressed differently.
@@ -234,35 +386,16 @@ def main():
     for i, route in enumerate(routes):
         route_id = route["route_id"]
         xy = route["xy"]
-        n_pts = len(xy)
-
-        seg_lens = np.linalg.norm(np.diff(xy, axis=0), axis=1)
-        cumdist = np.concatenate(([0], np.cumsum(seg_lens)))
         arrival_hour, timing_source = route_arrival_schedule(
             route, args.departure_hour, args.walking_speed_ms)
-
         _, nearest_idx = mrt_tree.query(xy)
-
-        model = JOS3(height=subj_height, weight=subj_weight,
-                     age=subj_age, sex=subj_sex, fat=subj_fat, ci=subj_ci)
-        if subj_setpoint_shift:
-            model.cr_set_point = model.cr_set_point + subj_setpoint_shift
-        model.par = args.activity_par
-        # Clothing must be on the body BEFORE equilibration, otherwise the
-        # subject equilibrates naked and then dresses at the start line.
+        # Clothing is resolved from air temperature, wind and time of day --
+        # never from Tmrt -- so the radiation-neutral counterfactual below
+        # wears exactly the same outfit as the real walk.
         segment_clo, clothing_provenance = walk_clothing(
             route_id, xy, nearest_idx, arrival_hour)
-        if list(getattr(model, "body_names", clothing_profiles.JOS3_SEGMENTS)) \
-                != list(clothing_profiles.JOS3_SEGMENTS):
-            raise RuntimeError(
-                "JOS-3 segment order differs from clothing_profiles."
-                "JOS3_SEGMENTS; refusing to apply clothing to the wrong parts")
-        model.clo = segment_clo
-        # surface-area weights for a single scalar "whole-body mean core temp"
-        # summary metric from the 17 segment values
-        bsa_weights = model.bsa / model.bsa.sum()
         clothing_provenance["whole_body_clo"] = clothing_profiles.whole_body_clo(
-            segment_clo, model.bsa)
+            segment_clo, subject.bsa())
         print(f"  Route {route_id} clothing: "
               f"{clothing_provenance['ensemble_label']} "
               f"({clothing_provenance['whole_body_clo']:.2f} clo whole-body; "
@@ -271,116 +404,77 @@ def main():
                  f"{clothing_provenance['dressing_temperature_c']:.1f} C"
                  if "dressing_temperature_c" in clothing_provenance else "")
               + ")")
-
-        def weighted_core_c(m):
-            return float(np.sum(m.t_core * bsa_weights))
-
-        baseline_core_c = weighted_core_c(model)
-
-        # Equilibration: hold at the route's starting conditions before the
-        # "official" walk timing begins, to avoid JOS-3's default initial
-        # state creating a startup transient in the results.
-        h0 = arrival_hour[0] % 24.0
-        tmrt0 = np.interp(h0, time_hours, tmrt_matrix[:, nearest_idx[0]], period=24.0)
-        start_xyz = np.array([xy[0, 0], xy[0, 1],
-                              mrt_xyz[nearest_idx[0], 2]])
-        start_environment = environment.sample(start_xyz, h0)
-        ta0 = float(start_environment.air_temperature_c[0])
-        rh0 = float(start_environment.relative_humidity_pct[0])
-        v0 = float(start_environment.wind_speed_ms[0])
-        # JOS-3's .rh is RELATIVE HUMIDITY IN PERCENT (library default 50), the
-        # same convention as UTCI -- guard the units before they enter the
-        # thermoregulation model, where a fraction would read as ~0.7% (arid).
-        check_jos3_inputs(ta0, tmrt0, v0, rh0,
-                          f"stage 09 JOS-3 equilibration, route {route_id}")
-        model.tdb, model.tr = ta0, tmrt0
-        model.rh, model.v = rh0, v0
-        if args.equilibration_min > 0:
-            model.simulate(times=int(args.equilibration_min), dtime=60, output=False)
-        start_core_c = weighted_core_c(model)
-
-        # Extremity (hand/foot) state is tracked as its OWN quantity, at the
-        # same instants as the core trace, so every reported extremity number
-        # is a like-for-like comparison. Extremity tissue sits several degrees
-        # below body core even in perfect thermal balance -- differencing the
-        # two would report that permanent offset as if it were strain.
-        idx_extreme = [k for k, name in enumerate(model.body_names)
-                       if "hand" in name or "foot" in name]
-        if not idx_extreme:
-            raise RuntimeError("this JOS-3 build exposes no hand/foot segments")
-        extremity_core_c = lambda: float(np.mean(model.t_core[idx_extreme]))
-        extremity_skin_c = lambda: float(np.mean(model.t_skin[idx_extreme]))
-        start_extremity_core_c = extremity_core_c()
-        start_extremity_skin_c = extremity_skin_c()
-
-        tcore_trace = np.zeros(n_pts)
-        tmrt_trace = np.zeros(n_pts)
-        hand_foot_trace = np.zeros(n_pts)        # extremity tissue temperature
-        hand_foot_skin_trace = np.zeros(n_pts)   # extremity skin temperature
-
-        for j in range(n_pts):
-            h = arrival_hour[j] % 24.0
-            tmrt_series = tmrt_matrix[:, nearest_idx[j]]
-            tmrt_now = np.interp(h, time_hours, tmrt_series, period=24.0)
-            point_xyz = np.array([xy[j, 0], xy[j, 1],
-                                  mrt_xyz[nearest_idx[j], 2]])
-            local_environment = environment.sample(point_xyz, h)
-            ta_now = float(local_environment.air_temperature_c[0])
-            dt_s = (arrival_hour[j] - arrival_hour[j - 1]) * 3600.0 if j > 0 else 0.0
-
-            rh_now = float(local_environment.relative_humidity_pct[0])
-            v_now = float(local_environment.wind_speed_ms[0])
-            if j == 0:   # guard once per route (uniform drivers, hot loop)
-                check_jos3_inputs(ta_now, tmrt_now, v_now, rh_now,
-                                  f"stage 09 JOS-3 walk, route {route_id}")
-            model.tdb, model.tr = ta_now, tmrt_now
-            model.rh, model.v = rh_now, v_now
-            if dt_s > 0:
-                model.simulate(times=1, dtime=dt_s, output=False)
-
-            tcore_trace[j] = weighted_core_c(model)
-            tmrt_trace[j] = tmrt_now
-            hand_foot_trace[j] = extremity_core_c()
-            hand_foot_skin_trace[j] = extremity_skin_c()
-
+        walk = simulate_walk(xy, arrival_hour, nearest_idx, mrt_field,
+                             environment, subject, segment_clo,
+                             args.activity_par, args.equilibration_min,
+                             context=f"stage 09 route {route_id}",
+                             precondition=args.precondition,
+                             core_metric=args.core_metric)
+        # Counterfactual: the same walk with the radiant environment equal to
+        # air temperature (Tmrt = Ta). Everything else -- pace, air, wind,
+        # humidity, clothing, subject -- is identical, so the difference is
+        # the strain attributable to the radiant environment alone.
+        neutral = simulate_walk(xy, arrival_hour, nearest_idx, mrt_field,
+                                environment, subject, segment_clo,
+                                args.activity_par, args.equilibration_min,
+                                context=f"stage 09 route {route_id} (neutral)",
+                                radiation_neutral=True,
+                                precondition=args.precondition,
+                                core_metric=args.core_metric)
         walk_duration_min = (arrival_hour[-1] - arrival_hour[0]) * 60.0
+        dt_min = np.diff(arrival_hour, prepend=arrival_hour[0]) * 60.0
+        sunlit = walk["tau_dir_trace"] > SUNLIT_TAU
         results.append({
             "route_id": route_id,
             "route_name": route["name"],
             "timing_source": timing_source,
             "xy": xy,
-            "cumdist_m": cumdist,
+            "cumdist_m": walk["cumdist_m"],
             "arrival_hour": arrival_hour,
-            "tcore_trace_c": tcore_trace,
-            "tmrt_trace_c": tmrt_trace,
-            "hand_foot_trace_c": hand_foot_trace,
-            "hand_foot_skin_trace_c": hand_foot_skin_trace,
+            "tcore_trace_c": walk["tcore_trace_c"],
+            "tcore_rise_trace_c": walk["tcore_trace_c"] - walk["start_core_c"],
+            "tcore_rise_neutral_trace_c": (neutral["tcore_trace_c"]
+                                           - neutral["start_core_c"]),
+            "tmrt_trace_c": walk["tmrt_trace_c"],
+            "ta_trace_c": walk["ta_trace_c"],
+            "tau_dir_trace": walk["tau_dir_trace"],
+            "hand_foot_trace_c": walk["hand_foot_trace_c"],
+            "hand_foot_skin_trace_c": walk["hand_foot_skin_trace_c"],
             "length_m": route["length_m"],
             "walk_duration_min": walk_duration_min,
-            "final_tcore_rise_c": tcore_trace[-1] - start_core_c,
-            "final_tcore_c": tcore_trace[-1],
-            "mean_tmrt_c": float(np.mean(tmrt_trace)),
-            "max_tmrt_c": float(np.max(tmrt_trace)),
+            "final_tcore_rise_c": walk["final_tcore_rise_c"],
+            "neutral_tcore_rise_c": neutral["final_tcore_rise_c"],
+            "radiation_attributable_rise_c": (walk["final_tcore_rise_c"]
+                                              - neutral["final_tcore_rise_c"]),
+            "time_sunlit_min": float(np.sum(dt_min[sunlit])),
+            "final_tcore_c": walk["tcore_trace_c"][-1],
+            "start_core_c": walk["start_core_c"],
+            "precondition_min": walk["precondition"]["precondition_min"],
+            "mean_tmrt_c": float(np.mean(walk["tmrt_trace_c"])),
+            "max_tmrt_c": float(np.max(walk["tmrt_trace_c"])),
             # Extremity strain, all like-for-like:
             #   *_change_c  = same quantity, end minus its own start
             #   *_temp_c    = absolute end-of-walk temperature
             #   gradient    = core minus extremity AT THE SAME INSTANT, the
             #                 physiological core-to-periphery gradient that
             #                 widens with vasoconstriction
-            "extremity_core_change_c": hand_foot_trace[-1] - start_extremity_core_c,
-            "extremity_skin_change_c": (hand_foot_skin_trace[-1]
-                                        - start_extremity_skin_c),
-            "final_extremity_core_c": hand_foot_trace[-1],
-            "final_extremity_skin_c": hand_foot_skin_trace[-1],
-            "final_core_to_extremity_gradient_c": (tcore_trace[-1]
-                                                   - hand_foot_trace[-1]),
+            "extremity_core_change_c": walk["extremity_core_change_c"],
+            "extremity_skin_change_c": walk["extremity_skin_change_c"],
+            "final_extremity_core_c": walk["hand_foot_trace_c"][-1],
+            "final_extremity_skin_c": walk["hand_foot_skin_trace_c"][-1],
+            "final_core_to_extremity_gradient_c": (walk["tcore_trace_c"][-1]
+                                                   - walk["hand_foot_trace_c"][-1]),
             "clothing": clothing_provenance,
         })
+        r = results[-1]
         print(f"  Route {route_id} ({route['name']}): {route['length_m']:.0f} m, "
               f"{walk_duration_min:.1f} min [{timing_source}], "
-              f"final core temp rise = {results[-1]['final_tcore_rise_c']:+.3f} C "
-              f"(hand/foot skin {results[-1]['final_extremity_skin_c']:.1f} C, "
-              f"{results[-1]['extremity_skin_change_c']:+.2f} C over the walk)")
+              f"final core temp rise = {r['final_tcore_rise_c']:+.3f} C "
+              f"(radiation-neutral {r['neutral_tcore_rise_c']:+.3f} C, "
+              f"radiation-attributable {r['radiation_attributable_rise_c']:+.3f} C; "
+              f"{r['time_sunlit_min']:.1f} min sunlit; "
+              f"hand/foot skin {r['final_extremity_skin_c']:.1f} C, "
+              f"{r['extremity_skin_change_c']:+.2f} C over the walk)")
 
     # Rank routes by final core temp rise (lower = better/cooler)
     ranking = sorted(results, key=lambda r: r["final_tcore_rise_c"])
@@ -396,8 +490,14 @@ def main():
         "timing_source": r["timing_source"], "length_m": r["length_m"],
         "walk_duration_min": r["walk_duration_min"],
         "final_tcore_rise_c": r["final_tcore_rise_c"],
+        "neutral_tcore_rise_c": r["neutral_tcore_rise_c"],
+        "radiation_attributable_rise_c": r["radiation_attributable_rise_c"],
+        "time_sunlit_min": r["time_sunlit_min"],
         "mean_tmrt_c": r["mean_tmrt_c"], "max_tmrt_c": r["max_tmrt_c"],
         "final_tcore_c": r["final_tcore_c"],
+        "start_core_c": r["start_core_c"],
+        "precondition_min": r["precondition_min"],
+        "core_metric": args.core_metric, "precondition": args.precondition,
         "final_extremity_skin_c": r["final_extremity_skin_c"],
         "extremity_skin_change_c": r["extremity_skin_change_c"],
         "final_extremity_core_c": r["final_extremity_core_c"],
@@ -410,6 +510,18 @@ def main():
     } for r in results]
     pd.DataFrame(summary_rows).sort_values("final_tcore_rise_c").to_csv(
         out_dir / "route_ranking_summary.csv", index=False)
+    # Per-point traces, so figures can be redrawn without re-running JOS-3.
+    for r in results:
+        pd.DataFrame({
+            "distance_m": r["cumdist_m"],
+            "arrival_hour": r["arrival_hour"],
+            "elapsed_min": (r["arrival_hour"] - r["arrival_hour"][0]) * 60.0,
+            "x_local_m": r["xy"][:, 0], "y_local_m": r["xy"][:, 1],
+            "tmrt_c": r["tmrt_trace_c"], "ta_c": r["ta_trace_c"],
+            "tau_direct": r["tau_dir_trace"],
+            "tcore_rise_c": r["tcore_rise_trace_c"],
+            "tcore_rise_neutral_c": r["tcore_rise_neutral_trace_c"],
+        }).to_csv(out_dir / f"route_{r['route_id']}_jos3_trace.csv", index=False)
     # Full clothing provenance: which outfit each walk wore and every term
     # that produced it, so a result is never silently re-clothed.
     (out_dir / "clothing_provenance.json").write_text(json.dumps({
@@ -458,19 +570,26 @@ def main():
     plt.close(fig)
     print(f"\nSaved: {out_dir / 'routes_map.png'}")
 
-    # ---- Visualization 2: cumulative core temp rise vs distance, all routes overlaid ----
-    fig, axes = plt.subplots(2, 1, figsize=(10, 9), sharex=True)
+    # ---- Visualization 2: cumulative core temp rise vs elapsed time ----
+    # Each curve is that walk's own rise from ITS start (post-equilibration),
+    # the same quantity as final_tcore_rise_c; physiology runs on time, and the
+    # routes differ in duration, so time rather than distance is the axis.
+    fig, axes = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
     for r, color in zip(results, route_colors):
-        axes[0].plot(r["cumdist_m"], r["tcore_trace_c"] - CORE_TEMP_SETPOINT_C,
-                     color=color, linewidth=2, label=f"Route {r['route_id']}")
-        axes[1].plot(r["cumdist_m"], r["tmrt_trace_c"], color=color, linewidth=1.5, alpha=0.8)
+        minutes = (r["arrival_hour"] - r["arrival_hour"][0]) * 60.0
+        axes[0].plot(minutes, r["tcore_rise_trace_c"], color=color, linewidth=2,
+                     label=f"Route {r['route_id']}")
+        axes[0].plot(minutes, r["tcore_rise_neutral_trace_c"], color=color,
+                     linewidth=1, linestyle="--")
+        axes[1].plot(minutes, r["tcore_rise_trace_c"]
+                     - r["tcore_rise_neutral_trace_c"], color=color, linewidth=2)
     axes[0].set_ylabel("Core temperature rise [\u00b0C]")
     axes[0].axhline(0, color="gray", linewidth=0.5)
     axes[0].legend(fontsize=9)
-    axes[0].set_title("Cumulative thermal strain vs. distance walked")
-    axes[1].set_ylabel("Local Tmrt [\u00b0C]")
-    axes[1].set_xlabel("Distance walked [m]")
-    axes[1].set_title("Tmrt encountered along each route (at each point's actual arrival time)")
+    axes[0].set_title("Core temperature rise (dashed: same walk with Tmrt = Ta)")
+    axes[1].set_ylabel("Radiation-attributable rise [\u00b0C]")
+    axes[1].set_xlabel("Elapsed time [min]")
+    axes[1].set_title("Strain attributable to the radiant environment")
     fig.tight_layout()
     fig.savefig(out_dir / "cumulative_stress_comparison.png", dpi=140)
     plt.close(fig)

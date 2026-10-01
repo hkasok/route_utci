@@ -22,6 +22,7 @@ from matplotlib.colors import BoundaryNorm, ListedColormap, TwoSlopeNorm
 import numpy as np
 import pandas as pd
 from pythermalcomfort.models import JOS3
+import jos3_protocol
 from scipy.spatial import cKDTree
 from scipy.stats import kendalltau, spearmanr
 
@@ -69,7 +70,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--e-levels", type=int, default=5)
     p.add_argument("--departure-hour", type=float, default=13.0)
     p.add_argument("--walking-speed-ms", type=float, default=1.3)
-    p.add_argument("--equilibration-min", type=float, default=10.0)
+    p.add_argument("--equilibration-min", type=float, default=10.0,
+                   help="Only with --precondition outdoor_walk.")
+    jos3_protocol.add_protocol_arguments(p)
     p.add_argument("--activity-par", type=float, default=2.5)
     p.add_argument("--subject-profile", choices=sorted(PROFILES), default=None)
     p.add_argument("--person-height-m", type=float, default=None)
@@ -202,12 +205,25 @@ def prepare_routes(raw_routes: list[dict[str, Any]], tree: cKDTree, args: argpar
     return sorted(result, key=lambda r: r.route_id)
 
 
+PROTOCOL: dict = {}
+
+
 def validate_baseline(path: Path, route_ids: list[int]) -> pd.DataFrame:
     """Validate unique, finite, exact route coverage in the read-only benchmark."""
     require_file(path, "fully resolved benchmark CSV")
     df = pd.read_csv(path)
     missing = {"route_id", "final_tcore_rise_c"} - set(df)
     if missing: raise ValueError(f"Benchmark lacks columns: {sorted(missing)}")
+    # A benchmark computed under a different start state or core metric is not
+    # comparable with the uniform cases this script runs.
+    for column, wanted in (("core_metric", PROTOCOL.get("core_metric")),
+                           ("precondition", PROTOCOL.get("precondition"))):
+        if wanted is None:
+            continue
+        found = set(df[column].astype(str)) if column in df else {"bsa_mean" if column == "core_metric" else "outdoor_walk"}
+        if found != {wanted}:
+            raise ValueError(f"benchmark {column} {sorted(found)} does not match "
+                             f"--{column.replace('_', '-')} {wanted}; rerun stage 09")
     ids = pd.to_numeric(df["route_id"], errors="raise")
     if ids.isna().any() or not np.equal(ids, np.floor(ids)).all():
         raise ValueError("Benchmark route IDs must be non-missing integers")
@@ -269,17 +285,18 @@ def simulate_uniform_reference_case(routes: list[PreparedRoute], mrt_matrix: np.
         model, weights = initialize_jos3_model(subject, args.activity_par,
                                               clo_by_route[route.route_id])
         def core() -> float:
-            value = float(np.sum(np.asarray(model.t_core)*weights))
-            if not np.isfinite(value):
-                raise ValueError(f"Non-finite core temperature: route {route.route_id}, Ta={ta_ref_c}, e={e_ref_hpa}")
-            return value
+            return jos3_protocol.core_temperature(model, args.core_metric)
         h0 = args.departure_hour % 24
         tr0 = float(np.interp(h0, time_hours, mrt_matrix[:, route.nearest_mrt_index[0]], period=24.0))
         v0 = float(weather.wind_ms(h0))
         if not np.isfinite(tr0) or not np.isfinite(v0): raise ValueError(f"Non-finite start MRT/wind, route {route.route_id}")
-        model.tdb, model.tr, model.rh, model.v = ta_ref_c, tr0, rh, v0
-        if args.equilibration_min > 0:
-            model.simulate(times=int(args.equilibration_min), dtime=60, output=False)
+        if args.precondition == "indoor":
+            jos3_protocol.precondition_indoor(model)
+            model.par = args.activity_par
+        else:
+            model.tdb, model.tr, model.rh, model.v = ta_ref_c, tr0, rh, v0
+            if args.equilibration_min > 0:
+                model.simulate(times=int(args.equilibration_min), dtime=60, output=False)
         start_core = core(); final_core = start_core
         for j, unwrapped_hour in enumerate(route.arrival_hour):
             hour = unwrapped_hour % 24
@@ -557,6 +574,7 @@ def print_summary(overall: pd.DataFrame,cases: pd.DataFrame,pairs: pd.DataFrame)
 
 def main() -> None:
     args=parse_args(); ta_values,e_values=validate_settings(args)
+    PROTOCOL.update(core_metric=args.core_metric, precondition=args.precondition)
     routes_path=Path(args.routes_dir); require_file(Path(args.weather_csv),"weather CSV")
     tree,matrix,hours=load_mrt(Path(args.mrt_results_dir)); raw=load_routes_directory(routes_path)
     if not raw: raise ValueError(f"{routes_path} contains no routes")

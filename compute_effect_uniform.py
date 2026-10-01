@@ -88,6 +88,7 @@ from scipy.stats import kendalltau, spearmanr
 from case_config import load_case
 from generate_route import load_routes_directory, route_arrival_schedule
 from physical_checks import check_jos3_inputs
+import jos3_protocol
 from sensitivity import (initialize_jos3_model, resolve_subject,
                          vapor_pressure_to_rh_pct)
 from subject_profiles import PROFILES
@@ -353,20 +354,21 @@ def run_jos3_walk(route: MeasuredRoute, ta_series: np.ndarray,
                                            route.segment_clo or None)
 
     def core_c() -> float:
-        value = float(np.sum(np.asarray(model.t_core) * weights))
-        if not np.isfinite(value):
-            raise ValueError(f"{context}: non-finite core temperature")
-        return value
+        return jos3_protocol.core_temperature(model, args.core_metric)
 
-    # Stage-09 initialization: equilibrate at the walk's starting conditions
-    # so JOS-3's default state cannot create a startup transient.  Every run
-    # begins from a FRESH model followed by this same procedure; no case
-    # inherits another case's physiological state.
-    model.tdb, model.tr = float(ta_series[0]), float(mrt[0])
-    model.rh, model.v = float(rh_series[0]), float(wind[0])
-    if args.equilibration_min > 0:
-        model.simulate(times=int(args.equilibration_min), dtime=60,
-                       output=False)
+    # Stage-09 initialization (jos3_protocol): every run begins from a FRESH
+    # model brought to the same start state, so no case inherits another
+    # case's physiological state. The indoor start does not depend on the
+    # walk's own Ta/RH, so benchmark and uniform cases share it exactly.
+    if args.precondition == "indoor":
+        jos3_protocol.precondition_indoor(model)
+        model.par = args.activity_par
+    else:
+        model.tdb, model.tr = float(ta_series[0]), float(mrt[0])
+        model.rh, model.v = float(rh_series[0]), float(wind[0])
+        if args.equilibration_min > 0:
+            model.simulate(times=int(args.equilibration_min), dtime=60,
+                           output=False)
     start_core = core_c()
 
     final_core = start_core
@@ -670,7 +672,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--vp-step", type=float, default=None)
     p.add_argument("--vp-levels", type=int, default=5)
     # Production JOS-3 settings (stage-09 defaults)
-    p.add_argument("--equilibration-min", type=float, default=10.0)
+    p.add_argument("--equilibration-min", type=float, default=10.0,
+                   help="Only with --precondition outdoor_walk.")
+    jos3_protocol.add_protocol_arguments(p)
     p.add_argument("--activity-par", type=float, default=2.5)
     p.add_argument("--subject-profile", choices=sorted(PROFILES), default=None)
     p.add_argument("--person-height-m", type=float, default=None)
