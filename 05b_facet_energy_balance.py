@@ -125,6 +125,9 @@ def parse_args():
               "remain aliases for backward-compatible command lines. Set "
               "--no-radiative-film-removal to reproduce pre-fix runs."),
     )
+    p.add_argument("--generic-facade-albedo", type=float, default=None,
+                   help="Sensitivity test: albedo applied to facades that fell "
+                        "back to the generic facade class (default: keep 0.30).")
     p.add_argument("--convection-reference-wind",
                    choices=["free_stream", "facet_local"],
                    default="free_stream",
@@ -401,6 +404,17 @@ def main():
     facets_dir = Path(args.facets_dir)
 
     materials = load_materials(args.material_json)
+    # Sensitivity test: facades with no material evidence fall back to the
+    # generic class (albedo 0.30). Overriding that one value BEFORE the
+    # solvers are built tests whether the facade default, rather than the
+    # energy balance, drives the facade load.
+    if args.generic_facade_albedo is not None:
+        for name in ("wall", "generic_building_facade"):
+            if name in materials:
+                materials[name] = dict(materials[name],
+                                       albedo=float(args.generic_facade_albedo))
+        print(f"  [sensitivity] generic facade albedo set to "
+              f"{args.generic_facade_albedo:.2f}")
     if args.ground_material_dir:
         catalog_path = Path(args.ground_material_dir) / GROUND_MATERIAL_CATALOG
         if not catalog_path.is_file():

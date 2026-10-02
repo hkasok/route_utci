@@ -83,6 +83,11 @@ SIGMA = 5.670374419e-8
 # on how black the sphere is painted. (The standard's Tmrt formula keeps eps in
 # the denominator only because it is dividing through by eps*sigma.)
 ISO_FORCED_COEFFICIENT = 1.1e8 * SIGMA          # ~6.2374 W m-2 K-1 per (m/s)^0.6
+# Diagnostic only: scales the ISO forced-convection coefficient, to test
+# whether the emulated globe's daytime excess is a convection error (ISO 7726
+# was not calibrated for an outdoor globe on a moving cart). 1.0 = ISO 7726.
+FORCED_CONVECTION_SCALE = float(__import__("os").environ.get(
+    "GLOBE_FORCED_CONVECTION_SCALE", "1.0"))
 ISO_FORCED_WIND_EXPONENT = 0.6
 ISO_FORCED_DIAMETER_EXPONENT = 0.4
 NATURAL_CONVECTION_COEFFICIENT = 1.4            # h = 1.4 * (dT / D)^0.25
@@ -193,7 +198,8 @@ def _areal_heat_capacity_for_time_constant(tau_s: float, diameter_m: float,
 def forced_convection_coefficient(wind_ms: Any, diameter_m: float) -> Any:
     """ISO 7726 forced convection for a sphere [W m-2 K-1]."""
     wind = np.maximum(np.asarray(wind_ms, dtype=float), 0.0)
-    return (ISO_FORCED_COEFFICIENT * wind ** ISO_FORCED_WIND_EXPONENT
+    return (FORCED_CONVECTION_SCALE * ISO_FORCED_COEFFICIENT
+            * wind ** ISO_FORCED_WIND_EXPONENT
             / float(diameter_m) ** ISO_FORCED_DIAMETER_EXPONENT)
 
 

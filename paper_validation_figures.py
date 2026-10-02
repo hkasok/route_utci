@@ -171,7 +171,8 @@ def globe_flux_budget(points: pd.DataFrame) -> dict:
     """
     from black_globe import convection_coefficient
 
-    sigma, eps, diameter = 5.670374419e-8, 0.95, 0.152
+    # The deployed BLACKGLOBE-L, as emulated: emittance 0.957, 152 mm.
+    sigma, eps, diameter = 5.670374419e-8, 0.957, 0.152
     d = points.copy()
     if "globe_spinup_affected" in d:
         d = d[~d["globe_spinup_affected"].astype(bool)]
@@ -187,7 +188,13 @@ def globe_flux_budget(points: pd.DataFrame) -> dict:
             continue
         tg = s["measured_black_globe_temperature_c"].values
         ta = s["measured_air_temperature_c"].values
-        h = convection_coefficient(tg, ta, s["measured_wind_ms"].values, diameter)
+        # Ventilate the measured globe exactly as the emulator does: the cart
+        # wind plus the walker's own motion. Using the wind alone understated
+        # convection on a moving globe and so inflated the radiative excess.
+        vent = (s["globe_ventilation_ms"].values
+                if "globe_ventilation_ms" in s and s["globe_ventilation_ms"].notna().all()
+                else s["measured_wind_ms"].values)
+        h = convection_coefficient(tg, ta, vent, diameter)
         implied = eps * sigma * (tg + 273.15) ** 4 + h * (tg - ta)
         excess = s["globe_absorbed_flux_Wm2"].values - implied
         h_rad = 4.0 * eps * sigma * (tg.mean() + 273.15) ** 3

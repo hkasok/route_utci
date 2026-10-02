@@ -599,6 +599,11 @@ fi
 # and 05b consume those cheap byproducts, then the final stage-05 invocation
 # reuses the exact-match SVF cache while computing the authoritative MRT.
 # ----------------------------------------------------------------------------
+# Optional extra arguments for sensitivity tests and diagnostics, e.g.
+#   EB_EXTRA_ARGS="--generic-facade-albedo 0.6"
+#   MRT_FACET_EXTRA_ARGS="--wall-temperature-offset-K -3"
+read -r -a EB_EXTRA <<< "${EB_EXTRA_ARGS:-}"
+read -r -a MRT_FACET_EXTRA <<< "${MRT_FACET_EXTRA_ARGS:-}"
 SVF_FORCE_ARG=()
 [ "${FORCE_SVF:-0}" = "1" ] && SVF_FORCE_ARG=(--force-svf)
 if active 4 && ! skip 05; then
@@ -673,7 +678,8 @@ if active 4 && ! skip 05B; then
         --latent-heat-model "$SURFACE_LATENT_HEAT_MODEL" \
         --cloud-cover-fraction "$CLOUD" \
         --k-lad-direct "$K_LAD_DIRECT" --k-lad-diffuse "$K_LAD_DIFFUSE" \
-        --clear-sky-emissivity "$CLEAR_SKY_MODEL"
+        --clear-sky-emissivity "$CLEAR_SKY_MODEL" \
+        "${EB_EXTRA[@]}"
     progress_event 4 68 running "Surface temperatures and radiosity complete"
 elif active 4; then
     progress_event 4 68 running "Facet energy balance skipped; using existing products"
@@ -707,7 +713,8 @@ if active 4 && ! skip 05FACET; then
         --sensor-equivalent-outputs "$SENSOR_EQUIVALENT_OUTPUTS" \
         --sensor-height-m "$SENSOR_HEIGHT_M" \
         "${RADIATION_FORCING_ARG[@]}" \
-        "${WEATHER_ARG[@]}"
+        "${WEATHER_ARG[@]}" \
+        "${MRT_FACET_EXTRA[@]}"
     progress_event 4 95 running "Facet-thermal MRT complete; preparing diagnostics"
 elif active 4; then
     progress_event 4 95 running "Facet-thermal MRT calculation skipped"
