@@ -104,7 +104,18 @@ def daytime_mask(times_csv: Path) -> np.ndarray:
 
 
 def variant_points(path: Path, case: str) -> pd.DataFrame:
+    """Comparison points of one case of a variant.
+
+    A variant tree starts as a copy of the reference outputs, so a comparison
+    file is only trusted when the variant's own comparison step has run
+    (compare_run.log present) and the file is newer than the variant's
+    radiant assembly; otherwise the stale copy would masquerade as a result."""
     p = path / "run_output" / case / "validation" / "mrt_lisbon" / "radiant_flux_comparison_points.csv"
+    log = path / "run_output" / "compare_run.log"
+    tmrt = path / "run_output" / case / "mrt_facet_out" / "tmrt_matrix_C.npy"
+    if path.name != "" and (path / "variants").exists() is False and path.parent.name == "variants":
+        if not log.is_file() or p.stat().st_mtime < tmrt.stat().st_mtime:
+            raise FileNotFoundError(f"{path.name}/{case}: comparison not yet run for this variant")
     pts, _ = apply_measurement_qc(pd.read_csv(p))
     return pts
 
@@ -152,23 +163,26 @@ def convergence(root: Path, case: str = "lisbon1") -> list[dict]:
         if tl.is_file():
             e = [l.split("\t") for l in tl.read_text().splitlines()]
             seconds = float(e[-1][0]) - float(e[0][0])
+        try:
+            vstats = day_stats(variant_points(vdir, case))
+        except FileNotFoundError as exc:
+            print(f"  {exc}"); continue
         rows.append({"variant": name, "label": label, "facets": n_facets,
                      "max_dT": float(np.abs(diff).max()),
                      "rms_dT": float(np.sqrt((diff ** 2).mean())),
-                     "mean_dT": float(diff.mean()), "seconds": seconds,
-                     **day_stats(variant_points(vdir, case))})
+                     "mean_dT": float(diff.mean()), "seconds": seconds, **vstats})
     return rows
 
 
 def table_convergence(rows) -> str:
-    L = [r"\begin{tabular}{lrrrrrrr}", r"\toprule",
+    L = [r"\begin{tabular}{lrrrrrr}", r"\toprule",
          r"Variant & Facets & $\max|\Delta T_{\mathrm{mrt}}|$ & RMS $\Delta T_{\mathrm{mrt}}$ & "
-         r"Globe MBE & Globe RMSE & $L\!\uparrow$ RMSE & $K\!\downarrow$ RMSE \\",
-         r" & & (K) & (K) & (K) & (K) & (\si{\watt\per\metre\squared}) & (\si{\watt\per\metre\squared}) \\",
+         r"Globe MBE/RMSE & $L\!\uparrow$ RMSE & $K\!\downarrow$ RMSE \\",
+         r" & & (K) & (K) & (K) & (\si{\watt\per\metre\squared}) & (\si{\watt\per\metre\squared}) \\",
          r"\midrule"]
     for r in rows:
         L.append(f"{r['label']} & {r['facets'] or '':,} & {r['max_dT']:.2f} & {r['rms_dT']:.3f} & "
-                 f"{r['globe_day_mbe']:+.2f} & {r['globe_day_rmse']:.2f} & {r['lup_rmse']:.1f} & "
+                 f"{r['globe_day_mbe']:+.2f} / {r['globe_day_rmse']:.2f} & {r['lup_rmse']:.1f} & "
                  f"{r['kdn_rmse']:.0f} \\\\")
     L += [r"\bottomrule", r"\end{tabular}"]
     return "\n".join(L)
@@ -178,13 +192,11 @@ def ablation(root: Path) -> list[dict]:
     def pooled(points_root: Path) -> dict:
         frames = []
         for case in CASES:
-            p = points_root / "run_output" / case / "validation" / "mrt_lisbon" / "radiant_flux_comparison_points.csv"
-            if p.is_file():
-                frames.append(pd.read_csv(p))
-        if len(frames) < 6:
-            return None
-        pts, _ = apply_measurement_qc(pd.concat(frames, ignore_index=True))
-        return day_stats(pts)
+            try:
+                frames.append(variant_points(points_root, case))
+            except (FileNotFoundError, OSError) as exc:
+                print(f"  {exc}"); return None
+        return day_stats(pd.concat(frames, ignore_index=True))
     rows = [{"variant": "reference", "label": "As reported", **pooled(root)}]
     for name, label in ABLATION:
         s = pooled(root / "variants" / name)

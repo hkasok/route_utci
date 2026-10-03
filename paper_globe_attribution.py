@@ -544,7 +544,7 @@ def table_attribution(reg, reg_ci, seg_meas, seg_both, mc, zero, thor, globe_ci)
         L.append(f"{name} & {s['n']} ({s['segments']}) & {s['residual_mean_K']:+.2f} & "
                  f"{s['tg_minus_ta_meas_K']:.1f} & {s['excess_Wm2']:+.1f} \\\\")
     L += [r"\addlinespace", r"\multicolumn{5}{l}{\textbf{(c) Emulator uncertainty "
-          + rf"(Monte Carlo, {mc['draws']} draws): pooled daytime bias" + r"} \\",
+          + rf"(Monte Carlo, {mc['draws']} draws): pooled daytime bias" + r"}} \\",
           r"\multicolumn{2}{l}{Quantity} & \multicolumn{3}{l}{Value} \\", r"\midrule",
           rf"\multicolumn{{2}}{{l}}{{Nominal (ISO 7726)}} & \multicolumn{{3}}{{l}}{{{mc['nominal_bias_K']:+.2f} K "
           rf"(95\,\% block-bootstrap CI {fmt_ci(*globe_ci['day']['mbe'])})}} \\",
