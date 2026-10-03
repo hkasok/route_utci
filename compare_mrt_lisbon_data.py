@@ -101,6 +101,10 @@ GLOBE_FLUX_COLUMNS = {
     "globe_absorbed_flux_Wm2", "globe_radiative_equilibrium_C",
     "globe_steady_temperature_C", "globe_transient_temperature_C",
     "globe_spinup_affected", "globe_ventilation_ms",
+    # per-term absorbed flux on the sphere (stage 05), carried for the
+    # component-wise uncertainty analysis of the globe emulator
+    "globe_sw_direct_Wm2", "globe_sw_diffuse_Wm2", "globe_sw_reflected_Wm2",
+    "globe_lw_sky_Wm2", "globe_lw_surface_Wm2",
 }
 PERSON_LONGWAVE_EMISSIVITY = 0.97   # only used for the opt-in globe-MRT context
 

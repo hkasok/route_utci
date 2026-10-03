@@ -62,6 +62,12 @@ def parse_args():
     ap.add_argument("--activity-par", default="auto")
     ap.add_argument("--equilibration-min", type=float, default=10.0)
     ap.add_argument("--reuse-sweep", action="store_true")
+    ap.add_argument("--fixed-clothing", action="store_true",
+                    help="Dress every departure in the ensemble the automatic "
+                         "selection chose for the stage-09 departure, so the "
+                         "sweep varies the radiant environment alone. The "
+                         "automatic-selection sweep is written alongside with "
+                         "an _autoclothing suffix when both exist.")
     return ap.parse_args()
 
 
@@ -246,6 +252,12 @@ def run_sweep(args, root, case, stage09_summary):
                              / "clothing_provenance.json").read_text())
     subject = stage09.Subject(1.72, 74.0, 30, "male", 15.0, 2.59, 0.0)
     config = clothing_profiles.load_config(provenance.get("config_file"))
+    fixed_clo = {int(r["route_id"]): [float(v) for v in r["segment_clo"]]
+                 for r in provenance.get("routes", [])}
+    fixed_label = {int(r["route_id"]): r.get("ensemble", "stage-09 ensemble")
+                   for r in provenance.get("routes", [])}
+    if args.fixed_clothing and not fixed_clo:
+        raise SystemExit("--fixed-clothing needs per-route clothing in clothing_provenance.json")
 
     rows = []
     departures = np.arange(args.departure_start,
@@ -260,12 +272,17 @@ def run_sweep(args, root, case, stage09_summary):
             mean_hour = float(np.mean(arrival)) % 24.0
             daytime = float(np.interp(mean_hour, time_hours, elevation,
                                       period=24.0)) > 0.0
-            clo, prov = clothing_profiles.resolve(
-                provenance["requested"],
-                air_temp_c=float(np.mean(conditions.air_temperature_c)),
-                is_daytime=daytime,
-                wind_ms=float(np.mean(conditions.wind_speed_ms)),
-                climate=provenance["climate"], config=config)
+            if args.fixed_clothing:
+                # the ensemble stage 09 chose for this route at its own departure
+                clo = fixed_clo[int(route["route_id"])]
+                prov = {"ensemble": fixed_label[int(route["route_id"])]}
+            else:
+                clo, prov = clothing_profiles.resolve(
+                    provenance["requested"],
+                    air_temp_c=float(np.mean(conditions.air_temperature_c)),
+                    is_daytime=daytime,
+                    wind_ms=float(np.mean(conditions.wind_speed_ms)),
+                    climate=provenance["climate"], config=config)
             par = stage09.jos3_protocol.resolve_activity_ratio(
                 args.activity_par, subject.make_model(),
                 args.walking_speed_ms, subject.weight)
@@ -302,7 +319,7 @@ def run_sweep(args, root, case, stage09_summary):
     return sweep
 
 
-def figure_sweep(sweep, out):
+def figure_sweep(sweep, out, name="jos3_departure_sweep"):
     fig, (ax_a, ax_b) = plt.subplots(2, 1, figsize=(7.0, 4.8), sharex=True,
                                      constrained_layout=True)
     for rid, g in sweep.groupby("route_id"):
@@ -327,7 +344,7 @@ def figure_sweep(sweep, out):
     ax_a.text(0.005, 0.92, "(a)", transform=ax_a.transAxes)
     ax_b.text(0.005, 0.92, "(b)", transform=ax_b.transAxes)
     for ext in ("png", "pdf"):
-        fig.savefig(out / f"jos3_departure_sweep.{ext}", dpi=300)
+        fig.savefig(out / f"{name}.{ext}", dpi=300)
     plt.close(fig)
 
 
@@ -343,14 +360,19 @@ def main():
 
     sweep_dir = root / "run_output" / args.case / "postprocessing" / "departure_sweep"
     sweep_dir.mkdir(parents=True, exist_ok=True)
-    sweep_csv = sweep_dir / "departure_sweep.csv"
+    tag = "_fixedclothing" if args.fixed_clothing else ""
+    sweep_csv = sweep_dir / f"departure_sweep{tag}.csv"
     if args.reuse_sweep and sweep_csv.is_file():
         sweep = pd.read_csv(sweep_csv)
     else:
         print("departure sweep ...")
         sweep = run_sweep(args, root, args.case, summary)
         sweep.to_csv(sweep_csv, index=False)
-    figure_sweep(sweep, args.paper_dir)
+    # The fixed-clothing sweep is the main-text figure; the automatic-
+    # selection sweep goes to the supplement under its own name.
+    figure_sweep(sweep, args.paper_dir,
+                 name="jos3_departure_sweep" if args.fixed_clothing
+                 else "jos3_departure_sweep_autoclothing")
 
     best = sweep.loc[sweep.groupby("departure_hour").tcore_rise_c.idxmin()]
     print("\nlowest-strain route by departure:",

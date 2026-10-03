@@ -318,7 +318,13 @@ fi
 # ----------------------------------------------------------------------------
 # Helpers
 # ----------------------------------------------------------------------------
-log()  { printf '\n\033[1;36m==== %s ====\033[0m\n' "$*"; }
+log()  {
+    printf '\n\033[1;36m==== %s ====\033[0m\n' "$*"
+    # Wall-clock record: one line per stage boundary, so the time spent in
+    # each stage is the difference between consecutive lines.
+    [ -n "${OUT_ROOT:-}" ] && mkdir -p "$OUT_ROOT" \
+        && printf '%s\t%s\n' "$(date +%s.%N)" "$*" >> "$OUT_ROOT/stage_timings.log"
+}
 skip() { local v="SKIP_$1"; [ "${!v:-0}" = "1" ]; }
 active() { [ "$START_STEP" -le "$1" ]; }   # true if step N is at/after start
 
@@ -602,8 +608,10 @@ fi
 # Optional extra arguments for sensitivity tests and diagnostics, e.g.
 #   EB_EXTRA_ARGS="--generic-facade-albedo 0.6"
 #   MRT_FACET_EXTRA_ARGS="--wall-temperature-offset-K -3"
+#   FACET_SELECT_EXTRA_ARGS="--n-lw-azimuth 48 --n-lw-elevation 36"
 read -r -a EB_EXTRA <<< "${EB_EXTRA_ARGS:-}"
 read -r -a MRT_FACET_EXTRA <<< "${MRT_FACET_EXTRA_ARGS:-}"
+read -r -a FACET_SELECT_EXTRA <<< "${FACET_SELECT_EXTRA_ARGS:-}"
 SVF_FORCE_ARG=()
 [ "${FORCE_SVF:-0}" = "1" ] && SVF_FORCE_ARG=(--force-svf)
 if active 4 && ! skip 05; then
@@ -646,7 +654,8 @@ if active 4 && ! skip 05A; then
         --output-dir "$THERMAL_DIR" \
         "${GROUND_MATERIAL_ARG[@]}" \
         "${SURFACE_MATERIAL_ARG[@]}" \
-        --point-stride "$POINT_STRIDE" --max-distance "$MAX_DISTANCE"
+        --point-stride "$POINT_STRIDE" --max-distance "$MAX_DISTANCE" \
+        "${FACET_SELECT_EXTRA[@]}"
     progress_event 4 45 running "Route-visible facets and view matrix complete"
 elif active 4; then
     progress_event 4 45 running "Facet selection skipped; using existing products"

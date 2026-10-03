@@ -57,7 +57,7 @@ from thermal_common import (MATERIALS_MANIFEST, RADIOSITY_ENVIRONMENT,
                             sky_longwave_down)
 from radiant_flux_contributions import (
     CONTRIBUTION_ARCHIVE, CONTRIBUTION_METADATA, GLOBE_COLUMNS,
-    LW_SOURCE_COLUMNS, SENSOR_COLUMNS,
+    GLOBE_COMPONENT_SOURCES, LW_SOURCE_COLUMNS, SENSOR_COLUMNS,
     PRIMARY_COLUMNS, SW_SOURCE_COLUMNS, TOTAL_COLUMNS, canonical_lw_source,
     canonical_sw_source, load_contribution_config,
     validate_contribution_arrays, write_contribution_metadata)
@@ -272,6 +272,13 @@ def parse_args():
                    help="As --wall-temperature-offset-K but for GROUND facets.")
     p.add_argument("--roof-temperature-offset-K", type=float, default=0.0,
                    help="As --wall-temperature-offset-K but for ROOF facets.")
+    p.add_argument("--facet-temperature-source", choices=["solved", "air"],
+                   default="solved",
+                   help="Diagnostic: 'air' replaces every solved facet "
+                        "temperature by the air temperature of its time step "
+                        "(radiosity adjusted to match), i.e. no surface energy "
+                        "balance at all. The ablation reference for what the "
+                        "facet solve contributes. Requires --facet-thermal-dir.")
     p.add_argument("--facet-thermal-dir", default=None,
                     help="Directory holding BOTH the 05a outputs "
                          "(lw_view_matrix.npz, lw_point_weights.npz, "
@@ -1363,6 +1370,26 @@ class FacetLongwave:
                   f"{self.local_ground_albedo.min():.3f}.."
                   f"{self.local_ground_albedo.max():.3f}")
 
+    def replace_temperatures(self, temperature_K_time):
+        """Diagnostic: set every facet to a prescribed temperature per step.
+
+        Used for the 'surfaces at air temperature' ablation. The grey
+        radiosity is moved with the emitted term, holding the solved incident
+        longwave fixed, exactly as the class offsets above do."""
+        T_time = np.asarray(temperature_K_time, dtype=float)
+        if T_time.shape != (self.facet_T.shape[0],):
+            raise ValueError("one replacement temperature per time step is required")
+        T_old = self.facet_T.astype(float)
+        T_new = np.broadcast_to(T_time[:, None], T_old.shape)
+        if self.facet_J is not None:
+            self.facet_J = (np.asarray(self.facet_J, dtype=float)
+                            + self.facet_eps[None, :] * SIGMA
+                            * (T_new ** 4 - T_old ** 4))
+        self.facet_T = np.array(T_new, dtype=float)
+        print(f"  [diagnostic] every facet temperature replaced by the air "
+              f"temperature of its time step ({T_time.min() - 273.15:.1f}.."
+              f"{T_time.max() - 273.15:.1f} C)", flush=True)
+
     def facet_incident_shortwave(self, it, dni, dhi, sun_vec):
         """Global shortwave incident on every route-visible facet, W m^-2.
 
@@ -1957,6 +1984,8 @@ def main():
     facet_lw = None
     if args.facet_thermal_dir:
         facet_lw = FacetLongwave(args.facet_thermal_dir, n_points, nt, args)
+        if args.facet_temperature_source == "air":
+            facet_lw.replace_temperatures(air_temp_C_time + 273.15)
     tmrt_matrix = np.zeros((nt, n_points), dtype=np.float32)
     direct_transmission_matrix = np.zeros((nt, n_points), dtype=np.float32)
     local_air_min = np.zeros(nt, dtype=float)
@@ -2151,7 +2180,7 @@ def main():
                     g_svf = svf_sphere
                     if facet_lw.globe_ground_albedo is not None:
                         g_alb = facet_lw.globe_ground_albedo
-                _, globe_flux, _, _ = estimate_mrt_from_radiation(
+                _, globe_flux, _, _, globe_parts = estimate_mrt_from_radiation(
                     dni[it], dhi[it], ghi[it], el, tau_direct,
                     g_svf, svf_ground,
                     local_air_c, rh_pct_time[it], cloud_fraction_time[it],
@@ -2164,9 +2193,15 @@ def main():
                     L_sky_override=lwin_time[it],
                     wall_reflected_incident=g_refl,
                     wall_reflected_parts=None,
-                    return_contributions=False,
+                    return_contributions=True,
                 )
                 contributions["globe_absorbed_flux_Wm2"] = globe_flux
+                # The sphere's own absorbed components (globe optics, sphere
+                # weighting). They let the globe's energy balance be perturbed
+                # term by term afterwards -- beam factor, paint absorptivity --
+                # without re-tracing, and they sum to globe_absorbed_flux_Wm2.
+                for key, part in GLOBE_COMPONENT_SOURCES.items():
+                    contributions[key] = globe_parts[part]
                 contributions["globe_radiative_equilibrium_C"] = (
                     radiative_equilibrium_temperature_C(
                         globe_flux, globe_spec.emissivity))

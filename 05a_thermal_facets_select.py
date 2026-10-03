@@ -129,6 +129,13 @@ def parse_args():
     p.add_argument("--roof-normal-z", type=float, default=0.7,
                    help="Building faces with oriented normal z above this "
                         "are classed 'roof', otherwise 'wall'")
+    p.add_argument("--select-all", action="store_true",
+                   help="Diagnostic: keep EVERY building and ground face as a "
+                        "thermal facet, not only the route-visible first hits. "
+                        "The view matrices are unchanged (unseen faces get "
+                        "zero weight); only the energy-balance population and "
+                        "its enclosure radiosity grow. This is the full-scene "
+                        "reference the route-first culling is checked against.")
     return p.parse_args()
 
 
@@ -248,6 +255,21 @@ def main():
             el = time.time() - t0
             print(f"  batch {bi + 1}/{n_batches} -- {el:.0f}s elapsed, "
                   f"{len(facet_key_to_col):,} facets so far")
+
+    if args.select_all:
+        # Append every face the rays never reached. They receive no view
+        # weight from any receptor, so they influence the route only through
+        # the enclosure-mean radiosity of 05b -- which is exactly the coupling
+        # the route-first culling neglects and this option measures.
+        n_hit = len(facet_key_to_col)
+        for mid in (MESH_BUILDINGS, MESH_GROUND):
+            for fid in range(len(meshes[mid].faces)):
+                key = (mid, fid)
+                if key not in facet_key_to_col:
+                    facet_key_to_col[key] = len(facet_key_to_col)
+                    facet_orient_sign.append(1.0)
+        print(f"  --select-all: {n_hit:,} route-visible facets plus "
+              f"{len(facet_key_to_col) - n_hit:,} unseen faces")
 
     n_facets = len(facet_key_to_col)
     W = sp.coo_matrix(

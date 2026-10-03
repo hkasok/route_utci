@@ -230,6 +230,12 @@ def parse_args():
                         "material table")
     p.add_argument("--surface-offset", type=float, default=2e-3,
                    help="Ray-origin offset along the facet normal, m")
+    p.add_argument("--steady-state", action="store_true",
+                   help="Diagnostic: drop the substrate heat capacity so every "
+                        "facet is in instantaneous equilibrium with its "
+                        "forcing (iterated to convergence at each step). "
+                        "Removes thermal storage; the ablation reference for "
+                        "what the transient solve contributes.")
     return p.parse_args()
 
 
@@ -293,7 +299,9 @@ class ClassSolver:
     layer (made thin by the graded grid). Each step solves an exact
     tridiagonal system per facet (batched Thomas algorithm)."""
 
-    def __init__(self, mat, n_facets, dt, T_init, T_bottom_ref, h_bottom):
+    def __init__(self, mat, n_facets, dt, T_init, T_bottom_ref, h_bottom,
+                 steady_state=False):
+        self.steady_state = bool(steady_state)
         self.k, self.C = mat["k"], mat["C"]
         self.dz = build_layers(mat["depth"], mat["n_layers"])
         self.nl = mat["n_layers"]
@@ -315,12 +323,30 @@ class ClassSolver:
         self.T_bottom_ref = T_bottom_ref
         self.T = np.full((n_facets, self.nl), T_init, dtype=float)
         self.cap = self.C * self.dz / dt                        # (nl,)
+        if self.steady_state:
+            # No storage: the system is steady conduction between the
+            # surface balance and the bottom boundary at every step.
+            self.cap = np.zeros_like(self.cap)
 
-    def step(self, Q_ext, h_conv, T_air_K):
+    def step(self, Q_ext, h_conv, T_air_K, *, tolerance_K=1e-3,
+             max_iterations=50):
         """One implicit step. Q_ext = SW_abs + eps*L_in (W/m2, per facet).
         The nonlinear emission eps*sigma*T^4 and convection are linearized
         about the current surface temperature (exact for the emitted term
-        to first order; step size 600 s keeps the error << 0.01 K)."""
+        to first order; step size 600 s keeps the error << 0.01 K).
+
+        Without storage (``steady_state``) the linearization point matters,
+        so the solve is repeated until the surface temperature stops moving."""
+        if not self.steady_state:
+            return self._linearized_step(Q_ext, h_conv, T_air_K)
+        for _ in range(int(max_iterations)):
+            previous = self.T[:, 0].copy()
+            surface = self._linearized_step(Q_ext, h_conv, T_air_K)
+            if np.max(np.abs(surface - previous)) < tolerance_K:
+                return surface
+        raise RuntimeError("steady-state facet solve did not converge")
+
+    def _linearized_step(self, Q_ext, h_conv, T_air_K):
         nf, nl = self.T.shape
         Ts = self.T[:, 0]
         G_rad = 4.0 * self.eps * SIGMA * Ts ** 3
@@ -737,7 +763,8 @@ def main():
             solvers[name] = ClassSolver(materials[name], len(members[name]), dt,
                                         T_init=float(air_K.mean()),
                                         T_bottom_ref=bot_ref,
-                                        h_bottom=args.h_interior)
+                                        h_bottom=args.h_interior,
+                                        steady_state=args.steady_state)
             print(f"  {name:25s}: {len(members[name]):,} facets, "
                   f"{materials[name]['n_layers']} layers, "
                   f"depth {materials[name]['depth']} m")

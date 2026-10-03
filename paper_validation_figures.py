@@ -403,29 +403,203 @@ def shadow_registration(points: pd.DataFrame, out: Path) -> dict:
         "mbe_all": float(residual.mean()),
     }
 
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(6.6, 3.0), constrained_layout=True)
-    ax1.scatter(d["measured_swin_wm2"][agree], d["sensor_shortwave_down_Wm2"][agree],
-                s=4, alpha=0.3, c="#27ae60", lw=0,
-                label=f"same sun/shade class ({agree.mean():.0%})")
-    ax1.scatter(d["measured_swin_wm2"][~agree], d["sensor_shortwave_down_Wm2"][~agree],
-                s=4, alpha=0.3, c="#c0392b", lw=0,
-                label=f"opposite class ({1 - agree.mean():.0%})")
-    hi = float(max(d["measured_swin_wm2"].max(), d["sensor_shortwave_down_Wm2"].max()))
-    _square(ax1, -30, hi * 1.03, r"Measured $K\downarrow$ (W m$^{-2}$)",
-            r"TREC-Route $K\downarrow$ (W m$^{-2}$)", "(a) Daytime shortwave down")
-    ax1.legend(loc="upper left", frameon=True, framealpha=0.9, markerscale=2.2,
-               fontsize=7)
+    # Cohen's kappa of the 2 x 2 sun/shade table: agreement beyond what the
+    # two marginal sunlit fractions would produce by chance.
+    p_o = float(agree.mean())
+    p_e = float(meas_sun.mean() * model_sun.mean()
+                + (1 - meas_sun.mean()) * (1 - model_sun.mean()))
+    result["cohen_kappa"] = (p_o - p_e) / (1.0 - p_e)
+    return result
 
-    labels = ["classes\nagree", "classes\ndisagree", "all\ndaytime"]
-    values = [result["rmse_agree"], result["rmse_disagree"], result["rmse_all"]]
-    bars = ax2.bar(labels, values, color=["#27ae60", "#c0392b", "0.55"], width=0.62)
-    for bar, value in zip(bars, values):
-        ax2.text(bar.get_x() + bar.get_width() / 2, value + 12, f"{value:.0f}",
-                 ha="center", fontsize=8)
-    ax2.set_ylabel(r"RMSE in $K\downarrow$ (W m$^{-2}$)")
-    ax2.set_title("(b) Error is shadow registration")
-    ax2.set_ylim(0, max(values) * 1.18)
+
+# Along-track tolerances for the registration test: metres of position error
+# and seconds of clock error (the source timestamps are quantised to 60 s).
+SPATIAL_TOLERANCES_M = np.arange(0.0, 5.01, 0.5)
+TIME_TOLERANCES_S = np.arange(0.0, 60.01, 5.0)
+EDGE_DISTANCE_BINS_M = [0, 1, 2, 5, 10, 20, 50, np.inf]
+RIGID_SHIFTS_M = np.arange(-30.0, 30.01, 1.0)
+
+
+def shadow_registration_tolerance(points: pd.DataFrame, root: Path, out: Path) -> dict:
+    """How far off, in metres or seconds, would a sample have to be for the
+    model's sun/shade state to match the measurement?
+
+    The modelled state is read along the whole densified route at each
+    sample's own time (stage-05 sensor K-down matrix / atmospheric GHI), so a
+    sample can be tested against the model within +-s m of its position, or
+    within the stretch of track the walker covered in +-t s according to the
+    recorded track itself. A separate curve asks for the best single rigid
+    along-track shift per walk. The misclassification rate is also binned by
+    the distance from the sample to the nearest modelled shadow edge: if the
+    error is registration, it lives at the edges.
+    """
+    from scipy.spatial import cKDTree
+
+    d_all = points[(points["period"] == "day")
+                   & (points["trec_atmospheric_ghi_wm2"] > 50)].dropna(
+        subset=["measured_swin_wm2", "sensor_shortwave_down_Wm2",
+                "trec_atmospheric_ghi_wm2", "timestamp_utc"])
+    n_s, n_t = len(SPATIAL_TOLERANCES_M), len(TIME_TOLERANCES_S)
+    agree_s = np.zeros(n_s); agree_t = np.zeros(n_t); n_total = 0
+    edge_dist, mis, run_lengths_m = [], [], []
+    rigid = {}
+    for case, g in d_all.groupby("case_id"):
+        g = g.sort_values("seq")
+        case_json = json.loads((root / "input" / case / "case.json").read_text())
+        ox = case_json["coordinates"]["local_origin_x"]
+        oy = case_json["coordinates"]["local_origin_y"]
+        mrt = root / "run_output" / case / "mrt_facet_out"
+        xyz = np.load(mrt / "path_xyz.npy")
+        seg = np.load(mrt / "path_segment_id.npy")
+        kdown = np.load(mrt / "radiant_flux_contributions.npz")["sensor_shortwave_down_Wm2"]
+        times = pd.read_csv(mrt / "times.csv")
+        tt = pd.to_datetime(times["time"])
+        hours = (tt.dt.hour + tt.dt.minute / 60 + tt.dt.second / 3600).to_numpy(float)
+        ghi_t = times["GHI_Wm2"].to_numpy(float)
+        # the walked route's own densified points, in track order
+        _, nearest = cKDTree(xyz[:, :2]).query(
+            np.column_stack([g["x_projected_m"] - ox, g["y_projected_m"] - oy]))
+        route_seg = int(np.bincount(seg[nearest]).argmax())
+        on_route = np.flatnonzero(seg == route_seg)
+        s_route = np.concatenate(([0.0], np.cumsum(
+            np.linalg.norm(np.diff(xyz[on_route, :2], axis=0), axis=1))))
+        pos = np.searchsorted(on_route, nearest)          # index into on_route
+        pos = np.clip(pos, 0, len(on_route) - 1)
+        s_sample = s_route[pos]
+        t_s = (pd.to_datetime(g["timestamp_utc"], utc=True, format="ISO8601")
+               - pd.Timestamp("1970-01-01", tz="UTC")).dt.total_seconds().to_numpy(float)
+        hour = g["arrival_hour_local"].to_numpy(float)
+        meas = (g["measured_swin_wm2"].to_numpy(float)
+                > 0.5 * g["trec_atmospheric_ghi_wm2"].to_numpy(float))
+        model_here = (g["sensor_shortwave_down_Wm2"].to_numpy(float)
+                      > 0.5 * g["trec_atmospheric_ghi_wm2"].to_numpy(float))
+        # time index weights for interpolating the dense matrix at each sample
+        i1 = np.clip(np.searchsorted(hours, hour), 1, len(hours) - 1)
+        w = (hour - hours[i1 - 1]) / (hours[i1] - hours[i1 - 1])
+        dense = np.empty((len(g), len(on_route)), dtype=bool)
+        for k in range(len(g)):
+            row = (1 - w[k]) * kdown[i1[k] - 1, on_route] + w[k] * kdown[i1[k], on_route]
+            ghi_k = (1 - w[k]) * ghi_t[i1[k] - 1] + w[k] * ghi_t[i1[k]]
+            dense[k] = row > 0.5 * ghi_k
+        # sanity: the dense state at the sample's own point must reproduce the
+        # per-sample classification (same quantity, same threshold)
+        own = dense[np.arange(len(g)), pos]
+        if np.mean(own == model_here) < 0.97:
+            raise RuntimeError(f"{case}: dense shadow state disagrees with the "
+                               f"sampled channel ({np.mean(own == model_here):.1%})")
+        # spatial tolerance: any dense point within +-s m matching the measurement
+        for j, tol in enumerate(SPATIAL_TOLERANCES_M):
+            ok = np.zeros(len(g), dtype=bool)
+            for k in range(len(g)):
+                lo = np.searchsorted(s_route, s_sample[k] - tol)
+                hi = np.searchsorted(s_route, s_sample[k] + tol, side="right")
+                ok[k] = np.any(dense[k, lo:hi] == meas[k])
+            agree_s[j] += ok.sum()
+        # time tolerance: the stretch of track the walker occupied in +-t s,
+        # from the recorded track's own time-distance relation
+        for j, tol in enumerate(TIME_TOLERANCES_S):
+            ok = np.zeros(len(g), dtype=bool)
+            s_lo = np.interp(t_s - tol, t_s, s_sample)
+            s_hi = np.interp(t_s + tol, t_s, s_sample)
+            for k in range(len(g)):
+                lo = np.searchsorted(s_route, min(s_lo[k], s_hi[k]))
+                hi = np.searchsorted(s_route, max(s_lo[k], s_hi[k]), side="right")
+                ok[k] = np.any(dense[k, max(lo, 0):max(hi, lo + 1)] == meas[k])
+            agree_t[j] += ok.sum()
+        # best single rigid along-track shift for this walk
+        shift_agree = []
+        for sh in RIGID_SHIFTS_M:
+            idx = np.clip(np.searchsorted(s_route, s_sample + sh), 0, len(on_route) - 1)
+            shift_agree.append(float(np.mean(dense[np.arange(len(g)), idx] == meas)))
+        rigid[case] = {"shift_m": RIGID_SHIFTS_M.tolist(), "agreement": shift_agree,
+                       "best_shift_m": float(RIGID_SHIFTS_M[int(np.argmax(shift_agree))]),
+                       "best_agreement": float(max(shift_agree)),
+                       "zero_shift_agreement": float(shift_agree[len(RIGID_SHIFTS_M) // 2])}
+        # along-track length of each run of consecutive misclassified samples
+        wrong = own != meas
+        start = None
+        for k in range(len(g) + 1):
+            if k < len(g) and wrong[k]:
+                start = k if start is None else start
+            elif start is not None:
+                run_lengths_m.append(float(s_sample[k - 1] - s_sample[start]
+                                           + np.median(np.diff(s_sample))))
+                start = None
+        # distance to the nearest modelled shadow edge at the sample's time
+        for k in range(len(g)):
+            edges = np.flatnonzero(np.diff(dense[k].astype(int)) != 0)
+            if edges.size:
+                edge_s = 0.5 * (s_route[edges] + s_route[edges + 1])
+                edge_dist.append(float(np.min(np.abs(edge_s - s_sample[k]))))
+            else:
+                edge_dist.append(np.inf)
+            mis.append(bool(own[k] != meas[k]))
+        n_total += len(g)
+
+    agree_s /= n_total; agree_t /= n_total
+    edge_dist = np.asarray(edge_dist); mis = np.asarray(mis)
+    bins = []
+    for lo, hi in zip(EDGE_DISTANCE_BINS_M[:-1], EDGE_DISTANCE_BINS_M[1:]):
+        m = (edge_dist >= lo) & (edge_dist < hi)
+        bins.append({"lo_m": float(lo), "hi_m": float(hi) if np.isfinite(hi) else None,
+                     "n": int(m.sum()),
+                     "misclassification_rate": float(mis[m].mean()) if m.any() else None})
+    result = {
+        "n": int(n_total),
+        "spatial_tolerance_m": SPATIAL_TOLERANCES_M.tolist(),
+        "agreement_vs_spatial_tolerance": agree_s.tolist(),
+        "time_tolerance_s": TIME_TOLERANCES_S.tolist(),
+        "agreement_vs_time_tolerance": agree_t.tolist(),
+        "misclassification_by_edge_distance": bins,
+        "misclassified_run_length_m": {
+            "n_runs": int(len(run_lengths_m)),
+            "mean": float(np.mean(run_lengths_m)),
+            "median": float(np.median(run_lengths_m)),
+            "p90": float(np.percentile(run_lengths_m, 90))},
+        "median_edge_distance_misclassified_m": float(np.median(edge_dist[mis])),
+        "median_edge_distance_correct_m": float(np.median(edge_dist[~mis])),
+        "rigid_shift_by_case": rigid,
+    }
+    # the along-track scale of the registration error: tolerance at which the
+    # agreement curve has recovered half of its deficit from 1
+    deficit = 1.0 - agree_s
+    half = deficit[0] / 2.0
+    result["spatial_half_recovery_m"] = float(np.interp(-half, -deficit, SPATIAL_TOLERANCES_M))
+    deficit_t = 1.0 - agree_t
+    result["time_half_recovery_s"] = float(np.interp(-deficit_t[0] / 2, -deficit_t,
+                                                     TIME_TOLERANCES_S))
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(6.8, 3.0), constrained_layout=True)
+    ax1.plot(SPATIAL_TOLERANCES_M, 100 * agree_s, "-o", ms=3, color="#1f618d",
+             label="position tolerance (m)")
+    ax1.set_xlabel("Allowed along-track position error (m)")
+    ax1.set_ylabel("Sun/shade agreement (%)")
+    ax1.set_ylim(70, 100.5)
+    ax1b = ax1.twiny()
+    ax1b.plot(TIME_TOLERANCES_S, 100 * agree_t, "-s", ms=3, color="#b03a2e",
+              label="clock tolerance (s)")
+    ax1b.set_xlabel("Allowed clock error (s)")
+    ax1b.grid(False)
+    lines = ax1.get_lines() + ax1b.get_lines()
+    ax1.legend(lines, [l.get_label() for l in lines], loc="lower right",
+               frameon=True, framealpha=0.9, fontsize=7.5)
+    ax1.set_title("(a) Agreement against allowed error")
+
+    labels = [f"{int(b['lo_m'])}–{int(b['hi_m'])}" if b["hi_m"] else f"≥{int(b['lo_m'])}"
+              for b in bins]
+    rates = [100 * (b["misclassification_rate"] or 0) for b in bins]
+    bars = ax2.bar(labels, rates, color="#7f8c8d", width=0.7)
+    for bar, b in zip(bars, bins):
+        ax2.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 1,
+                 f"n={b['n']}", ha="center", fontsize=6.5)
+    ax2.axhline(100 * mis.mean(), color="k", lw=0.8, ls="--")
+    ax2.text(len(bins) - 0.5, 100 * mis.mean() + 1.5, f"all: {100 * mis.mean():.0f}%",
+             ha="right", fontsize=7)
+    ax2.set_xlabel("Distance to nearest modelled shadow edge (m)")
+    ax2.set_ylabel("Samples misclassified (%)")
+    ax2.set_ylim(0, max(rates) * 1.25)
     ax2.grid(axis="x", visible=False)
+    ax2.set_title("(b) Misclassification lives at the edges")
     fig.savefig(out / "validation_shadow_registration.png")
     plt.close(fig)
     return result
@@ -767,6 +941,8 @@ def main() -> None:
     globe = figure_globe(points, out)
     radio = figure_radiometer(points, out)
     shadow = shadow_registration(points, out)
+    tolerance = shadow_registration_tolerance(points, args.root, out)
+    shadow["tolerance"] = tolerance
     budget = globe_flux_budget(points)
     surface = surface_temperature_budget(points)
     albedo = albedo_skill(points)
@@ -805,6 +981,21 @@ def main() -> None:
           f"model-shade/meas-sun {shadow['model_shade_measured_sun']:.1%})")
     print(f"  K-down RMSE  agree {shadow['rmse_agree']:.0f}  "
           f"disagree {shadow['rmse_disagree']:.0f}  all {shadow['rmse_all']:.0f} W/m2")
+    print(f"  Cohen's kappa {shadow['cohen_kappa']:.3f}")
+    print("  agreement vs position tolerance (m): " + ", ".join(
+        f"{m:g}:{100 * a:.1f}%" for m, a in zip(tolerance["spatial_tolerance_m"],
+                                               tolerance["agreement_vs_spatial_tolerance"])))
+    print("  agreement vs clock tolerance (s):    " + ", ".join(
+        f"{s:g}:{100 * a:.1f}%" for s, a in zip(tolerance["time_tolerance_s"],
+                                               tolerance["agreement_vs_time_tolerance"])))
+    print(f"  half of the deficit recovered within {tolerance['spatial_half_recovery_m']:.1f} m "
+          f"/ {tolerance['time_half_recovery_s']:.0f} s")
+    print("  misclassification by distance to modelled shadow edge: " + ", ".join(
+        f"{b['lo_m']:g}-{b['hi_m'] if b['hi_m'] else 'inf'} m: {100 * (b['misclassification_rate'] or 0):.0f}% (n={b['n']})"
+        for b in tolerance["misclassification_by_edge_distance"]))
+    print("  best rigid along-track shift per walk: " + ", ".join(
+        f"{c}: {r['best_shift_m']:+.0f} m ({100 * r['zero_shift_agreement']:.0f}->{100 * r['best_agreement']:.0f}%)"
+        for c, r in tolerance["rigid_shift_by_case"].items()))
 
     print("\nPYRANOMETER RESPONSE (modelled shortwave lagged; bracket, not a fit)")
     for key, r in response.items():

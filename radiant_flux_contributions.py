@@ -116,10 +116,23 @@ SENSOR_COLUMNS = [
 # The transient (lagged) globe temperature is NOT here: it depends on the order
 # and timing in which a walker visits points, so it can only be formed along a
 # route. See black_globe.integrate_globe_temperature_C.
+#
+# The absorbed flux is also recorded term by term, on the globe's optics and
+# the sphere weighting, so that the emulator's energy balance can be perturbed
+# component-wise (beam projected-area factor, paint absorptivity) without
+# re-tracing. The five components sum to globe_absorbed_flux_Wm2.
+GLOBE_COMPONENT_SOURCES = {
+    "globe_sw_direct_Wm2": "sw_direct_absorbed_Wm2",
+    "globe_sw_diffuse_Wm2": "sw_diffuse_sky_absorbed_Wm2",
+    "globe_sw_reflected_Wm2": "sw_reflected_total_absorbed_Wm2",
+    "globe_lw_sky_Wm2": "lw_sky_absorbed_Wm2",
+    "globe_lw_surface_Wm2": "lw_surface_total_absorbed_Wm2",
+}
 GLOBE_COLUMNS = [
     "globe_absorbed_flux_Wm2",
     "globe_radiative_equilibrium_C",
     "globe_steady_temperature_C",
+    *GLOBE_COMPONENT_SOURCES,
 ]
 
 # Everything that emulates an instrument rather than the human body.
