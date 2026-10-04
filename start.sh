@@ -31,9 +31,10 @@
 #  separate project utilities and are never launched by this workflow.
 #
 #  Step 3 solves a terrain-referenced pedestrian-level potential-flow wind
-#  field (stage 05e); step 4's surface-energy balance (05b) automatically
-#  consumes it for its convective heat-transfer coefficient when present
-#  (USE_PEDESTRIAN_WIND=auto), or falls back to the uniform weather wind.
+#  field (stage 05e) as a diagnostic. Step 4's surface-energy balance (05b)
+#  uses the uniform reference wind for its convective coefficient unless
+#  USE_PEDESTRIAN_WIND=1 (or auto with a solved field) is set; the paper's runs
+#  use the uniform wind at every site.
 #  The former optional 3-D microclimate/urban-radiation step (05c/05d) was
 #  replaced by step 3; those scripts remain available for manual/legacy runs
 #  and previously solved 3-D fields are still reused downstream when valid.
@@ -68,7 +69,7 @@ Important controls:
                          (default: Z_HEIGHT, the shared receptor height)
   PEDESTRIAN_WIND_SPACING=DX  step-3 Cartesian grid spacing, m (default 2.0)
   USE_PEDESTRIAN_WIND=auto|0|1  let 05b use the solved step-3 wind field for
-                         its convection coefficient (auto = when present)
+                         its convection coefficient (default 0; auto = when present)
   CLOTHING=auto|NAME|CLO  clothing for the JOS-3 walker (stage 09): auto picks
                          an ensemble per walk from its temperature, day/night
                          and wind; or name one (summer_light, cool_layer,
@@ -221,7 +222,7 @@ PEDESTRIAN_WIND_DIR="${PEDESTRIAN_WIND_DIR:-$OUT_ROOT/pedestrian_wind}"
 WIND_DIRECTION_DEG="${WIND_DIRECTION_DEG:-270.0}"   # meteorological FROM deg
 PEDESTRIAN_WIND_SPACING="${PEDESTRIAN_WIND_SPACING:-2.0}"
 PEDESTRIAN_WIND_BUFFER="${PEDESTRIAN_WIND_BUFFER:-100.0}"
-USE_PEDESTRIAN_WIND="${USE_PEDESTRIAN_WIND:-auto}"
+USE_PEDESTRIAN_WIND="${USE_PEDESTRIAN_WIND:-0}"
 # Legacy 3-D microclimate/urban-radiation paths: the pipeline no longer runs
 # 05c/05d (replaced by step 3), but a previously solved valid field is still
 # reused by the downstream stages exactly as before.
