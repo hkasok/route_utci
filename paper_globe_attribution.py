@@ -532,8 +532,8 @@ def table_attribution(reg, reg_ci, seg_meas, seg_both, mc, zero, thor, globe_ci)
                  f"{fmt_ci(lo, hi)} & {reg['partial_r2'][j]:.3f} \\\\")
     L += [r"\addlinespace", r"\multicolumn{5}{l}{\textbf{(b) Residual on sustained "
           r"($\geq$\SI{60}{\second}) sun/shade stretches}} \\",
-          r"State (measured) & $n$ (segments) & Residual (K) & "
-          r"$(T_g - T_a)_{\mathrm{meas}}$ (K) & Excess (\si{\watt\per\metre\squared}) \\",
+          r"State & $n$ & Residual & $(T_g - T_a)_{\mathrm{meas}}$ & Excess \\",
+          r"(measured) & (segments) & (K) & (K) & (\si{\watt\per\metre\squared}) \\",
           r"\midrule"]
     for key, name in (("shade", "Shade"), ("sun", "Sun")):
         s = seg_meas[key]
@@ -552,7 +552,8 @@ def table_attribution(reg, reg_ci, seg_meas, seg_both, mc, zero, thor, globe_ci)
           rf"{mc['bias_percentiles_K']['2.5']:+.2f} to {mc['bias_percentiles_K']['97.5']:+.2f} K; "
           rf"median {mc['bias_percentiles_K']['50']:+.2f} K}} \\",
           rf"\multicolumn{{2}}{{l}}{{Draws with bias $\leq 0$}} & \multicolumn{{3}}{{l}}{{"
-          rf"{100 * mc['fraction_of_draws_with_bias_le_0']:.1f}\,\%}} \\"]
+          rf"{100 * mc['fraction_of_draws_with_bias_le_0']:.1f}\,\%}} \\",
+          r"\multicolumn{5}{l}{\emph{One at a time, others nominal:}} \\"]
     names = {"h_scale": "Forced convection $\\times$0.5 / $\\times$1.5",
              "sw_absorptivity": "Absorptivity 0.90 / 0.97",
              "height_m": "Height 0.8 / 1.2 m",
@@ -562,15 +563,14 @@ def table_attribution(reg, reg_ci, seg_meas, seg_both, mc, zero, thor, globe_ci)
         if k not in mc["one_at_a_time"]:
             continue
         vals = list(mc["one_at_a_time"][k].values())
-        L.append(rf"\multicolumn{{2}}{{l}}{{{label}, others nominal}} & \multicolumn{{3}}{{l}}{{"
+        L.append(rf"\multicolumn{{2}}{{l}}{{\quad {label}}} & \multicolumn{{3}}{{l}}{{"
                  rf"{vals[0]['bias_K']:+.2f} / {vals[1]['bias_K']:+.2f} K}} \\")
     L += [r"\addlinespace", r"\multicolumn{5}{l}{\textbf{(d) Convective enhancement}} \\",
           r"\midrule",
           rf"\multicolumn{{2}}{{l}}{{Required for zero daytime bias}} & \multicolumn{{3}}{{l}}{{"
           rf"$\times${zero['zero_bias_scale']:.2f}}} \\",
-          rf"\multicolumn{{2}}{{l}}{{Thorsson et al.\ (2007) at \SI{{38}}{{\milli\metre}}, "
-          rf"$V = {thor['mean_ventilation_ms']:.2f}$ m\,s$^{{-1}}$}} & \multicolumn{{3}}{{l}}{{"
-          rf"$\times${thor['enhancement_at_38mm']:.2f}}} \\",
+          rf"\multicolumn{{2}}{{l}}{{Thorsson et al.\ (2007), \SI{{38}}{{\milli\metre}}}} & \multicolumn{{3}}{{l}}{{"
+          rf"$\times${thor['enhancement_at_38mm']:.2f} at $V = {thor['mean_ventilation_ms']:.2f}$ m\,s$^{{-1}}$}} \\",
           rf"\multicolumn{{2}}{{l}}{{Scaled to \SI{{152}}{{\milli\metre}} ($D^{{-0.4}}$ / $D^{{-0.5}}$)}} & "
           rf"\multicolumn{{3}}{{l}}{{$\times${thor['enhancement_at_152mm_D-0.4']:.2f} / "
           rf"$\times${thor['enhancement_at_152mm_D-0.5']:.2f}}} \\",

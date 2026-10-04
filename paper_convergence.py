@@ -41,18 +41,18 @@ STAGES = [
     ("JOS-3 core", "JOS-3"),
 ]
 CONVERGENCE = [
-    ("conv_rays48x36", r"Selection rays $48 \times 36$ (ref.\ $24 \times 18$)"),
-    ("conv_stride4", "Traced-point stride 4 (ref.\\ 8)"),
-    ("conv_range150", "Distance cap \\SI{150}{\\metre} (ref.\\ 300)"),
-    ("conv_range600", "Distance cap \\SI{600}{\\metre} (ref.\\ 300)"),
-    ("conv_fullscene", "Full-scene energy balance"),
+    ("conv_rays48x36", r"Rays $48 \times 36$ ($24 \times 18$)"),
+    ("conv_stride4", "Point stride 4 (8)"),
+    ("conv_range150", "Cap \\SI{150}{\\metre} (300)"),
+    ("conv_range600", "Cap \\SI{600}{\\metre} (300)"),
+    ("conv_fullscene", "Full-scene balance"),
 ]
 ABLATION = [
-    ("abl_surfaces_at_ta", "Surfaces at air temperature"),
-    ("abl_steady_state", "Steady-state surfaces (no storage)"),
+    ("abl_surfaces_at_ta", "Surfaces at $T_a$"),
+    ("abl_steady_state", "Steady-state surfaces"),
     ("abl_hemisphere_crowns", "Hemisphere crowns"),
-    ("abl_global_reflected", "Global ground-reflected shortwave"),
-    ("abl_generic_paving", "Generic paving instead of limestone"),
+    ("abl_global_reflected", "Global ground albedo"),
+    ("abl_generic_paving", "Generic paving"),
 ]
 
 
@@ -142,7 +142,7 @@ def convergence(root: Path, case: str = "lisbon1") -> list[dict]:
     ref = np.load(ref_dir / "tmrt_matrix_C.npy").astype(float)
     day = daytime_mask(ref_dir / "times.csv")
     ref_stats = day_stats(variant_points(root, case))
-    rows = [{"variant": "reference", "label": "Reference (as reported)",
+    rows = [{"variant": "reference", "label": "Reference",
              "max_dT": 0.0, "rms_dT": 0.0, "facets": facet_counts(root).get(case),
              **ref_stats}]
     for name, label in CONVERGENCE:
@@ -176,9 +176,10 @@ def convergence(root: Path, case: str = "lisbon1") -> list[dict]:
 
 def table_convergence(rows) -> str:
     L = [r"\begin{tabular}{lrrrrrr}", r"\toprule",
-         r"Variant & Facets & $\max|\Delta T_{\mathrm{mrt}}|$ & RMS $\Delta T_{\mathrm{mrt}}$ & "
-         r"Globe MBE/RMSE & $L\!\uparrow$ RMSE & $K\!\downarrow$ RMSE \\",
-         r" & & (K) & (K) & (K) & (\si{\watt\per\metre\squared}) & (\si{\watt\per\metre\squared}) \\",
+         r" & & \multicolumn{2}{c}{$\Delta T_{\mathrm{mrt}}$ (K)} & Globe (K) & "
+         r"\multicolumn{2}{c}{RMSE (\si{\watt\per\metre\squared})} \\",
+         r"\cmidrule(lr){3-4} \cmidrule(lr){5-5} \cmidrule(lr){6-7}",
+         r"Variant & Facets & max & RMS & MBE / RMSE & $L\!\uparrow$ & $K\!\downarrow$ \\",
          r"\midrule"]
     for r in rows:
         L.append(f"{r['label']} & {r['facets'] or '':,} & {r['max_dT']:.2f} & {r['rms_dT']:.3f} & "
@@ -208,10 +209,10 @@ def ablation(root: Path) -> list[dict]:
 
 def table_ablation(rows) -> str:
     L = [r"\begin{tabular}{lrrrrrr}", r"\toprule",
-         r"Variant & \multicolumn{2}{c}{Globe, day} & Globe, night & $L\!\uparrow$ RMSE & "
-         r"$L\!\downarrow$ MBE & $K\!\downarrow$ RMSE \\",
-         r" & MBE (K) & RMSE (K) & MBE (K) & (\si{\watt\per\metre\squared}) & "
-         r"(\si{\watt\per\metre\squared}) & (\si{\watt\per\metre\squared}) \\", r"\midrule"]
+         r" & \multicolumn{3}{c}{Globe (K)} & \multicolumn{3}{c}{Radiometer (\si{\watt\per\metre\squared})} \\",
+         r"\cmidrule(lr){2-4} \cmidrule(lr){5-7}",
+         r" & \multicolumn{2}{c}{Day} & Night & $L\!\uparrow$ & $L\!\downarrow$ & $K\!\downarrow$ \\",
+         r"Variant & MBE & RMSE & MBE & RMSE & MBE & RMSE \\", r"\midrule"]
     for r in rows:
         L.append(f"{r['label']} & {r['globe_day_mbe']:+.2f} & {r['globe_day_rmse']:.2f} & "
                  f"{r['globe_night_mbe']:+.2f} & {r['lup_rmse']:.1f} & {r['ldn_mbe']:+.1f} & "
