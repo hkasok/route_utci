@@ -4,6 +4,7 @@ written by paper_solweig_compare.py (same samples, same QC, spin-up excluded
 for the globe) and print the pooled and per-campaign statistics."""
 from __future__ import annotations
 import json
+import argparse
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -19,7 +20,45 @@ def stats(model, meas):
                 r=float(np.corrcoef(model[m], meas[m])[0, 1]) if m.sum() > 2 and np.std(model[m]) > 0 else float("nan"))
 
 
+def write_tables(out, paper_dir: Path):
+    def cell(sx, unit_k=False):
+        f = "{:+.2f}" if unit_k else "{:+.1f}"
+        g = "{:.2f}" if unit_k else "{:.1f}"
+        return f.format(sx["mbe"]), g.format(sx["rmse"])
+    rows = [("$K\\!\\downarrow$ (\\si{\\watt\\per\\metre\\squared})", "K_down", ("day",), False),
+            ("$K\\!\\uparrow$ (\\si{\\watt\\per\\metre\\squared})", "K_up", ("day",), False),
+            ("$L\\!\\downarrow$ (\\si{\\watt\\per\\metre\\squared})", "L_down", ("day", "night"), False),
+            ("$L\\!\\uparrow$ (\\si{\\watt\\per\\metre\\squared})", "L_up", ("day", "night"), False),
+            ("Emulated globe (\\si{\\kelvin})", "globe (emulated)", ("day", "night"), True),
+            ("Conventional $T_{\\mathrm{mrt}}$ (\\si{\\kelvin})",
+             "conventional: cylinder Tmrt vs ISO-converted globe", ("day", "night"), True)]
+    L = [r"\begin{tabular}{llrrrrr}", r"\toprule",
+         r" & & & \multicolumn{2}{c}{TREC-Route} & \multicolumn{2}{c}{SOLWEIG} \\",
+         r"\cmidrule(lr){4-5} \cmidrule(lr){6-7}",
+         r"Quantity & Period & $n$ & MBE & RMSE & MBE & RMSE \\", r"\midrule"]
+    for label, key, periods, k in rows:
+        for j, per in enumerate(periods):
+            a, b = out[per][key]["TREC-Route"], out[per][key]["SOLWEIG"]
+            L.append(f"{label if j == 0 else ''} & {per} & {a['n']} & {' & '.join(cell(a, k))} & {' & '.join(cell(b, k))} \\\\")
+    L += [r"\bottomrule", r"\end{tabular}"]
+    (paper_dir / "table_solweig.tex").write_text("\n".join(L) + "\n")
+    C = [r"\begin{tabular}{llrrrr}", r"\toprule",
+         r" & & \multicolumn{2}{c}{TREC-Route} & \multicolumn{2}{c}{SOLWEIG} \\",
+         r"\cmidrule(lr){3-4} \cmidrule(lr){5-6}",
+         r"Case & Period & MBE (K) & RMSE (K) & MBE (K) & RMSE (K) \\", r"\midrule"]
+    for case in sorted(out["day"]["per_case_globe"]):
+        for per in ("day", "night"):
+            a, b = out[per]["per_case_globe"][case]["TREC-Route"], out[per]["per_case_globe"][case]["SOLWEIG"]
+            name = f"Lisbon~{case[-1]}" if per == "day" else ""
+            C.append(f"{name} & {per} & {a['mbe']:+.2f} & {a['rmse']:.2f} & {b['mbe']:+.2f} & {b['rmse']:.2f} \\\\")
+    C += [r"\bottomrule", r"\end{tabular}"]
+    (paper_dir / "table_solweig_cases.tex").write_text("\n".join(C) + "\n")
+
+
 def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--paper-dir", type=Path, default=Path("/home/harshin/files/fastUTEC paper"))
+    args = ap.parse_args()
     P = pd.concat([pd.read_csv(ROOT / "run_output" / f"lisbon{i}" / "solweig" / "solweig_comparison_points.csv")
                    for i in range(1, 7)], ignore_index=True)
     tg = P.measured_black_globe_temperature_c.to_numpy(float)
@@ -50,6 +89,8 @@ def main():
                                for c, g in G.groupby("case_id")}
         out[per] = o
     (ROOT / "run_output" / "solweig_lisbon_pooled.json").write_text(json.dumps(out, indent=1))
+    (args.paper_dir / "solweig_lisbon_pooled.json").write_text(json.dumps(out, indent=1))
+    write_tables(out, args.paper_dir)
     for per in ("day", "night"):
         print(f"\n===== pooled {per}")
         for k, v in out[per].items():
