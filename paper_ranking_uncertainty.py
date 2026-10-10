@@ -126,7 +126,7 @@ def latex_table(summary: dict, flip_rate, length_m, offsets) -> str:
         hh = f"{float(d):02.0f}:00"
         L.append(f"{hh} & Best route & R{e['baseline_order'][0]} & --- & "
                  f"{100 * e['p_best_unchanged']:.0f}\\,\\% \\\\")
-        L.append(f" & Complete ranking & R{'$>$R'.join(str(r) for r in e['baseline_order'])} & --- & "
+        L.append(f" & Ranking, lowest first & R{', R'.join(str(r) for r in e['baseline_order'])} & --- & "
                  f"{100 * e['p_ranking_unchanged']:.0f}\\,\\% \\\\")
         order = e["baseline_order"]
         for k in range(len(order) - 1):

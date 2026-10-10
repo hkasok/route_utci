@@ -863,9 +863,11 @@ def plot_day_radiometer_along_route(frame: pd.DataFrame, output: Path,
             ax.grid(alpha=0.25)
         axes[0].legend(fontsize=8)
         axes[-1].set_xlabel("Distance along measured route (m)")
-        fig.suptitle(
-            f"{frame['case_id'].iloc[0]}, Route {int(route_id)} ({route_name}): "
-            "radiometer channels along the route (like-for-like)", y=1.002)
+        case = str(frame['case_id'].iloc[0])
+        case_label = (f"Lisbon {case[len('lisbon'):]}" if case.startswith("lisbon")
+                      else case)
+        fig.suptitle(f"{case_label}, daytime walk: radiometer channels along "
+                     "the route (like-for-like)", y=1.002)
         save_figure(
             fig, output / (f"route_{int(route_id)}_{safe_filename(route_name)}_"
                            "radiometer_along_route_comparison"), dpi)

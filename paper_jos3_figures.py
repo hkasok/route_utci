@@ -156,7 +156,8 @@ def figure_map(case_dir, summary, traces, out):
                      color=ROUTE_COLORS.get(rid, "black"))
         ax.set_xlim(lo[0], hi[0]); ax.set_ylim(lo[1], hi[1])
         ax.set_aspect("equal"); ax.set_xticks([]); ax.set_yticks([])
-    add_scale_bar(axes[0, 0], 200.0, lo[0] + 30, lo[1] + 30, "200 m")
+    # lower right, beside the north arrow: the start marker sits lower left
+    add_scale_bar(axes[0, 0], 200.0, hi[0] - 320, lo[1] + 30, "200 m")
     add_north_arrow(axes[0, 0], hi[0] - 40, lo[1] + 40, 70)
     cb = fig.colorbar(sc, ax=axes, shrink=0.8, pad=0.01)
     cb.set_label("$T_{mrt}$ at arrival time (°C)")
@@ -208,6 +209,9 @@ def figure_strain(summary, traces, out):
     ax_c.set_title("(c)", loc="right", fontsize=8, pad=2)
     cb = fig.colorbar(mesh, ax=ax_c, pad=0.01, aspect=12)
     cb.set_label("$T_{mrt}$ (°C)")
+    # room for the arrival markers of the longest walk
+    t_end = max(t.elapsed_min.iloc[-1] for t in traces.values())
+    ax_a.set_xlim(0.0, t_end * 1.02)
     plt.setp(ax_a.get_xticklabels(), visible=False)
     plt.setp(ax_b.get_xticklabels(), visible=False)
     for ext in ("png", "pdf"):
@@ -338,7 +342,7 @@ def figure_sweep(sweep, out, name="jos3_departure_sweep"):
     ax_a.axhline(0, color="grey", lw=0.5)
     ax_a.legend(ncol=4, frameon=False, loc="lower center")
     ax_b.set_ylabel("Core temperature\nrise (°C)")
-    ax_b.legend(frameon=False, loc="upper right")
+    ax_b.legend(frameon=False, loc="lower center")
     ax_b.set_xlabel("Departure time (h, local)")
     ax_b.set_xticks(np.arange(7, 20, 1))
     ax_a.text(0.005, 0.92, "(a)", transform=ax_a.transAxes)
