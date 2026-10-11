@@ -113,6 +113,11 @@ def parse_args():
                          "the nearest open-air point at least this far from any "
                          "footprint, meters (default 0.5 -- about half a shoulder "
                          "width). The route itself is unchanged.")
+    p.add_argument("--receptor-max-relocation-m", type=float, default=10.0,
+                    help="Largest move to open air, meters (default 10, a bound on "
+                         "street-canyon GNSS and footprint error). A sample deeper "
+                         "inside a footprint is in a covered passage: it stays and "
+                         "is traced from there, fully shaded.")
     p.add_argument("--z-height", type=float, default=1.1,
                     help="Pedestrian body height above local ground at which MRT is sampled, "
                          "meters. 1.1 m = ISO 7726 / UTCI standing-adult center-of-gravity "
@@ -525,9 +530,10 @@ def inside_building_footprint(xy, z_ground, building_intersector, batch_size=200
 
 def place_receptors_in_open_air(path_xy, z_ground, building_intersector,
                                 ground_intersector, clearance_m=0.5,
-                                step_m=0.25, max_radius_m=30.0, n_directions=32):
+                                step_m=0.25, max_radius_m=10.0, n_directions=32):
     """Move every route sample that falls inside a building solid to the
-    nearest open-air position at least ``clearance_m`` from any footprint.
+    nearest open-air position at least ``clearance_m`` from any footprint,
+    provided that position is within ``max_radius_m``.
 
     A route sample can land inside a building for three reasons: GPS error
     on a measured traverse (several metres in Lisbon's narrow streets), a
@@ -536,6 +542,17 @@ def place_receptors_in_open_air(path_xy, z_ground, building_intersector,
     and no sun and is surrounded by the backs of walls, so its result is
     meaningless; the earlier pipeline kept it (3.3 % of daytime and 8.4 % of
     night Lisbon samples, about 40 % of the daytime K-down bias).
+
+    The bound separates the two cases. A positional error is bounded --
+    consumer GNSS in a street canyon, a footprint taken from roof outlines
+    with their eaves -- so a sample within max_radius_m (10 m) of open air is
+    moved there. A sample farther inside is not misplaced: the route really
+    runs through the building (a covered walkway, a passage), the walker is
+    under cover, and the sample keeps its position and is traced from there,
+    fully shaded. On the Lisbon walks every measured fix inside a footprint was
+    within 6.5 m of open air, and the moved fixes then matched the measured
+    sun/shade state (59 % modelled sunlit against 61 % measured) where the
+    in-solid receptors had read 14 %.
 
     Search: rings of radius step_m, 2*step_m, ... up to max_radius_m; on the
     first ring with an admissible position the one nearest the circular mean
@@ -1198,6 +1215,10 @@ class FacetLongwave:
             uw = np.load(up_weights)
             self.w_sky_up = uw["w_sky"]
             self.w_veg_up = uw["w_veg"]
+            # back-of-face view from receptors inside a solid (05a), filled by
+            # the environment radiosity; absent in older thermal folders
+            self.w_def_up = (uw["w_default"] if "w_default" in uw.files
+                             else np.zeros_like(self.w_sky_up))
             if self.W_up.shape != self.W.shape:
                 raise ValueError("up-facing sensor view does not match the "
                                  "05a view matrix")
@@ -1766,10 +1787,11 @@ class FacetLongwave:
         Vegetation reflection of shortwave is not represented (the canopy
         underside a sensor sees from below is largely shaded).
         """
-        J_facet, J_veg, _ = self._radiosities(
+        J_facet, J_veg, J_env = self._radiosities(
             it, air_temp_C, elevation_deg, sky_longwave_Wm2)
         lw = (self.w_sky_up * float(sky_longwave_Wm2)
-              + self.W_up @ J_facet + self.w_veg_up * J_veg)
+              + self.W_up @ J_facet + self.w_veg_up * J_veg
+              + getattr(self, "w_def_up", 0.0) * J_env)
         if facet_incident_sw is None or self.facet_albedo is None:
             sw = np.zeros_like(lw)
         else:
@@ -1974,7 +1996,8 @@ def main():
     receptor_xy, receptor_zg, relocation_m, inside_building, unresolved = (
         place_receptors_in_open_air(
             path_xy, z_ground, building_intersector, ground_intersector,
-            clearance_m=args.receptor_clearance_m))
+            clearance_m=args.receptor_clearance_m,
+            max_radius_m=args.receptor_max_relocation_m))
     receptor_xyz = np.column_stack([receptor_xy, receptor_zg + args.z_height])
     receptor_xyz_file = out_dir / "receptor_xyz.npy"
     np.save(receptor_xyz_file, receptor_xyz)
@@ -1985,8 +2008,10 @@ def main():
         "n_inside_building_solid": int(inside_building.sum()),
         "fraction_inside_building_solid": float(inside_building.mean()),
         "n_relocated": int(moved.sum()),
-        "n_unresolved": int(unresolved.sum()),
+        "n_covered_kept_in_place": int(unresolved.sum()),
+        "fraction_covered_kept_in_place": float(unresolved.mean()),
         "clearance_m": float(args.receptor_clearance_m),
+        "max_relocation_m": float(args.receptor_max_relocation_m),
         "displacement_m": ({
             "median": float(np.median(relocation_m[moved])),
             "p90": float(np.percentile(relocation_m[moved], 90)),
@@ -1999,7 +2024,9 @@ def main():
           f"{moved.sum():,} moved to open air"
           + (f" (median {np.median(relocation_m[moved]):.2f} m, "
              f"max {relocation_m[moved].max():.2f} m)" if moved.any() else "")
-          + (f"; {unresolved.sum():,} UNRESOLVED within 30 m" if unresolved.any() else ""))
+          + (f"; {unresolved.sum():,} more than {args.receptor_max_relocation_m:g} m "
+             f"inside (covered passage) kept in place, fully shaded"
+             if unresolved.any() else ""))
 
     print("\n" + "=" * 70)
     print("Computing static effective sky-view factor...")

@@ -101,6 +101,22 @@ def main():
     P = P[~qc].reset_index(drop=True)
     xl = P.x_projected_m.to_numpy(float) - ox
     yl = P.y_projected_m.to_numpy(float) - oy
+    # Sample SOLWEIG where TREC-Route traced the receptor: a walk sample that
+    # falls inside a building solid was moved to the nearest open air by
+    # stage 05 (receptor_xyz.npy), and SOLWEIG has no meaningful pedestrian
+    # value inside a building either. Same position for both models.
+    receptor_file = run / "mrt_facet_out" / "receptor_xyz.npy"
+    n_moved = 0
+    if receptor_file.is_file():
+        from scipy.spatial import cKDTree
+        route = np.load(run / "mrt_facet_out" / "path_xyz.npy")[:, :2]
+        receptor = np.load(receptor_file)[:, :2]
+        _, nearest = cKDTree(route).query(np.column_stack([xl, yl]))
+        moved = np.any(receptor[nearest] != route[nearest], axis=1)
+        n_moved = int(moved.sum())
+        xl = np.where(moved, receptor[nearest, 0], xl)
+        yl = np.where(moved, receptor[nearest, 1], yl)
+    print(f"  {n_moved} of {len(P)} samples sampled at the relocated open-air receptor")
     px = meta["pixel_size"]
     rows, cols = meta["shape"]
     col = np.clip(((xl - meta["x_min"]) / px).astype(int), 0, cols - 1)

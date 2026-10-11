@@ -207,6 +207,8 @@ def main():
     w_def_g = np.zeros(n_coarse)
     w_sky_up = np.zeros(n_coarse)
     w_veg_up = np.zeros(n_coarse)
+    w_def_up = np.zeros(n_coarse)
+    back_faces_seen = set()
     w_sky = np.zeros(n_coarse)
     w_veg = np.zeros(n_coarse)
     w_default = np.zeros(n_coarse)
@@ -241,16 +243,25 @@ def main():
         np.add.at(w_def_g, pt_of_ray[no_hit & ~up], wts_g[no_hit & ~up])
         np.add.at(w_veg_g, pt_of_ray[veg], wts_g[veg])
 
-        solid = (hit_mesh == MESH_BUILDINGS) | (hit_mesh == MESH_GROUND)
-        s_idx = np.where(solid)[0]
-        # A building face seen from behind means the receptor is inside a
-        # solid or the surface has a gap; it is recorded, not hidden.
+        # A building face seen from BEHIND: the receptor is inside a solid --
+        # a sample left in a covered passage by 05 (more than 10 m from open
+        # air). The outer facade's temperature is not what such a walker sees,
+        # so the ray takes the enclosure-mean environment (the w_def term), not
+        # the facet, and the face is not selected through it. Recorded, so it
+        # can be reported.
+        behind = np.zeros(len(hit_mesh), dtype=bool)
         bld = np.where(hit_mesh == MESH_BUILDINGS)[0]
         if len(bld):
             facing = np.einsum("ij,ij->i", face_normals[MESH_BUILDINGS][hit_face[bld]],
                                dirs[bld])
-            behind = bld[facing > 0.0]
+            behind[bld[facing > 0.0]] = True
             np.add.at(back_hit_weight, pt_of_ray[behind], wts[behind])
+            np.add.at(w_default, pt_of_ray[behind], wts[behind])
+            np.add.at(w_def_g, pt_of_ray[behind], wts_g[behind])
+            np.add.at(w_def_up, pt_of_ray[behind & up], wts_up[behind & up])
+            back_faces_seen.update(hit_face[behind].tolist())
+        solid = ((hit_mesh == MESH_BUILDINGS) | (hit_mesh == MESH_GROUND)) & ~behind
+        s_idx = np.where(solid)[0]
         for ri in s_idx:
             key = (int(hit_mesh[ri]), int(hit_face[ri]))
             col = facet_key_to_col.get(key)
@@ -308,7 +319,7 @@ def main():
     err = np.abs(total - 1.0).max()
     print(f"\n  Weight-partition check: max |sum - 1| = {err:.2e}")
     assert err < 1e-9, "View weights do not partition unity -- bug upstream"
-    total_up = np.asarray(W_up.sum(axis=1)).ravel() + w_sky_up + w_veg_up
+    total_up = np.asarray(W_up.sum(axis=1)).ravel() + w_sky_up + w_veg_up + w_def_up
     err_up = np.abs(total_up - 1.0).max()
     print(f"  Up-facing sensor partition check: max |sum - 1| = {err_up:.2e}")
     assert err_up < 1e-9, "Up-facing sensor weights do not partition unity"
@@ -334,11 +345,9 @@ def main():
     ground_sel = mesh_id == MESH_GROUND
     gz = np.asarray(meshes[MESH_GROUND].face_normals)[face_id[ground_sel], 2]
     sign[ground_sel] = np.where(gz < 0.0, -1.0, 1.0)
-    first_hit = np.asarray(facet_first_hit_sign)
-    disagree = (first_hit != sign) & (mesh_id == MESH_BUILDINGS)
-    print(f"  Facet orientation: mesh normals; the old first-hit rule would have "
-          f"turned {int(disagree.sum()):,} of {int((mesh_id == MESH_BUILDINGS).sum()):,} "
-          f"building facets inward")
+    print(f"  Facet orientation: mesh normals; {len(back_faces_seen):,} building faces "
+          f"seen only or also from inside a solid (covered-passage receptors), "
+          f"{int((back_hit_weight > 0).sum()):,} traced points with such a view")
 
     centroids = np.empty((n_facets, 3))
     normals = np.empty((n_facets, 3))
@@ -461,7 +470,7 @@ def main():
              w_default=w_default)
     sp.save_npz(out_dir / "sensor_up_view_matrix.npz", W_up)
     np.savez(out_dir / "sensor_up_point_weights.npz", w_sky=w_sky_up,
-             w_veg=w_veg_up)
+             w_veg=w_veg_up, w_default=w_def_up)
     sp.save_npz(out_dir / "globe_view_matrix.npz", W_g)
     np.savez(out_dir / "globe_point_weights.npz", w_sky=w_sky_g, w_veg=w_veg_g,
              w_default=w_def_g)
@@ -493,8 +502,8 @@ def main():
         f"surfaces {np.asarray(W.sum(axis=1)).mean():.3f}, "
         f"default {w_default.mean():.3f}\n"
         f"  max |weight sum - 1| : {err:.2e}\n"
-        f"  facet orientation    : mesh outward normals; first-hit rule would "
-        f"have flipped {int(disagree.sum()):,} building facets\n"
+        f"  facet orientation    : mesh outward normals; building faces seen "
+        f"from inside a solid: {len(back_faces_seen):,} (to the environment term)\n"
         f"  view on face backs   : mean {back_hit_weight.mean():.2e}, "
         f"points with any {int((back_hit_weight > 0).sum()):,} of {n_coarse:,}\n")
     (out_dir / "selection_report.txt").write_text(report)

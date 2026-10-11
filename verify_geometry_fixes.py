@@ -141,7 +141,13 @@ check("each receptor moves to the NEAREST wall (within one search step)",
       abs(disp[1] - (1.0 + 0.5)) <= 0.26 and abs(disp[2] - (0.5 + 0.5)) <= 0.26,
       f"displacements {np.round(disp[:3], 2).tolist()} m")
 check("an open-air sample is left exactly where it is", disp[3] == 0.0 and (rxy[3] == xy[3]).all())
-check("nothing unresolved", not unresolved.any())
+check("nothing left in place (all within 10 m of open air)", not unresolved.any())
+big = trimesh.creation.box(extents=[60, 60, 12]); big.apply_translation([40, 40, 6.0])
+_, _, dbig, ins_big, kept = m05.place_receptors_in_open_air(
+    np.array([[40.0, 40.0], [12.0, 40.0]]), np.zeros(2), RayMeshIntersector(big), gi)
+check("a sample deep inside a large building (covered passage) stays in place",
+      kept.tolist() == [True, False] and dbig[0] == 0.0 and 0 < dbig[1] <= 10.0,
+      f"moves {np.round(dbig, 2).tolist()} m")
 
 # ----------------------------------------------------------------------------
 print("=" * 70)
@@ -179,9 +185,12 @@ with tempfile.TemporaryDirectory() as tmp:
         back = np.load(work / "th" / "back_face_view_weight.npy")
         check("the receptor inside the solid is flagged by its view of face backs",
               back[1] > 0.9 and back[0] == 0 and back[2] == 0, f"{np.round(back, 3).tolist()}")
+        lw = np.load(work / "th" / "lw_point_weights.npz")
+        check("that view goes to the environment term, not to the outer facets",
+              lw["w_default"][1] >= back[1] - 1e-12)
         report = (work / "th" / "selection_report.txt").read_text()
-        check("the report states what the old first-hit rule would have flipped",
-              "first-hit rule would have flipped" in report)
+        check("the report records faces seen from inside a solid",
+              "seen from inside a solid" in report)
 
 # ----------------------------------------------------------------------------
 print("=" * 70)
