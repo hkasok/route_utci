@@ -11,3 +11,8 @@
 !RADIANT_FLUX_CONTRIBUTIONS.md
 *.md
 *.md
+# scripts kept in sub-folders (only *.py / *.sh inside are tracked)
+!paper_adhoc/
+!paper_adhoc/**/
+!geometry_rebuild_20261011/
+!geometry_rebuild_20261011/tools/

@@ -72,6 +72,7 @@ from thermal_common import (CLASS_GROUND, CLASS_NAMES, CLASS_ROOF, CLASS_WALL,
                             get_intersector, load_materials,
                             make_hemisphere_directions_about_normal,
                             solve_route_visible_grey_radiosity,
+                            solve_route_visible_shortwave_enclosure,
                             sky_longwave_down, solve_tridiagonal_batched,
                             sun_vector_enu,
                             vegetation_transmission_from_intersections)
@@ -188,11 +189,20 @@ def parse_args():
                         "closure. 'legacy' reproduces the earlier emitted-only "
                         "pedestrian radiosity and mean-temperature surface "
                         "irradiation for comparison only.")
+    p.add_argument("--shortwave-reflection", choices=["enclosure", "environment-albedo"],
+                   default="enclosure",
+                   help="Sunlight reflected between the route-visible facets. "
+                        "'enclosure' (default) is the shortwave twin of the grey "
+                        "longwave closure: the non-sky part of each facet's "
+                        "hemisphere is filled by the enclosure-mean reflected "
+                        "radiosity of the selected facets, formed from EACH "
+                        "facet's own albedo and own irradiance and solved with "
+                        "repeated reflection. 'environment-albedo' is the "
+                        "earlier rule -- one generic albedo times the facet's "
+                        "OWN horizontal irradiance -- kept for comparison.")
     p.add_argument("--environment-albedo", type=float, default=None,
-                   help="Albedo of surroundings reflecting SW onto facets. "
-                        "Default: the resolved ground albedo, since at "
-                        "pedestrian level the reflecting surround is "
-                        "predominantly ground.")
+                   help="--shortwave-reflection environment-albedo only: albedo "
+                        "of the surroundings. Default: the resolved ground albedo.")
     p.add_argument("--cloud-cover-fraction", type=float, default=0.0,
                    help="MUST match the value used in 05 (times.csv stores "
                         "cloud-adjusted DNI/DHI but L_sky needs the fraction)")
@@ -503,6 +513,14 @@ def main():
         for name, m in materials.items()
     }
     manifest["_environment_albedo"] = float(args.environment_albedo)
+    manifest["_shortwave_reflection"] = {
+        "model": args.shortwave_reflection,
+        "scope": "stage-05a first-hit route-visible facets within max_distance",
+        "closure": ("SW_in = D + (1-f_sky)*J_sw; J_sw = sum(w*albedo*D)/"
+                    "(sum(w) - sum(w*albedo*(1-f_sky))), w = area*(1-f_sky)"
+                    if args.shortwave_reflection == "enclosure" else
+                    "SW_in = D + (1-f_sky)*environment_albedo*(tau*DNI*sin(h) + f_sky*DHI)"),
+    }
     selection_config_path = facets_dir / "config.json"
     selection_config = {}
     if selection_config_path.is_file():
@@ -829,6 +847,22 @@ def main():
         raise ValueError("material evaporative_efficiency must lie in [0, 1]")
 
     area = fz["area"]
+    # Shortwave reflected among the facets (thermal_common), shared by the
+    # energy balance here and the receptors in 05.
+    J_sw_environment = np.zeros(nt)
+
+    def facet_shortwave_in(it):
+        """Global shortwave incident on every facet at step it."""
+        direct_and_sky = tau_dir[it] * dni[it] * cos_theta[it] + f_sky * dhi[it]
+        if args.shortwave_reflection == "enclosure":
+            E, J_sw = solve_route_visible_shortwave_enclosure(
+                direct_and_sky, alb_facet, f_sky, area)
+            J_sw_environment[it] = J_sw
+            return E
+        K_local = tau_dir[it] * dni[it] * sin_el[it] + f_sky * dhi[it]
+        J_sw_environment[it] = np.nan
+        return direct_and_sky + (1.0 - f_sky) * args.environment_albedo * K_local
+
     T_surf = np.full(nf, float(air_K.mean()))
     T_env = float(air_K.mean())        # legacy-only lagged mean temperature
     facet_T = np.zeros((nt, nf), dtype=np.float32)
@@ -852,10 +886,7 @@ def main():
                 L_in = (f_sky * L_sky_t[it]
                         + (1.0 - f_sky) * args.env_emissivity
                         * SIGMA * T_env ** 4)
-            K_local = tau_dir[it] * dni[it] * sin_el[it] + f_sky * dhi[it]
-            SW_in = (tau_dir[it] * dni[it] * cos_theta[it]
-                     + f_sky * dhi[it]
-                     + (1.0 - f_sky) * args.environment_albedo * K_local)
+            SW_in = facet_shortwave_in(it)
             latent_all = np.zeros(nf)
             for name, sol in solvers.items():
                 mem = members[name]
@@ -904,6 +935,15 @@ def main():
     np.save(out_dir / "facet_albedo.npy", alb_facet)
     np.save(out_dir / "facet_material_name.npy", facet_material_name)
     np.save(out_dir / "tau_dir_facet.npy", tau_dir)
+    # Enclosure-mean reflected shortwave radiosity per step: 05 adds the same
+    # (1 - f_sky) * J_sw to each facet's irradiance before reflecting it to
+    # the receptors, so the sunlight a facet reflects is the sunlight it
+    # absorbs the complement of.
+    sw_environment_path = out_dir / "sw_radiosity_environment_Wm2.npy"
+    if args.shortwave_reflection == "enclosure":
+        np.save(sw_environment_path, J_sw_environment.astype(np.float32))
+    elif sw_environment_path.exists():
+        sw_environment_path.unlink()      # never leave a stale enclosure behind
     np.save(out_dir / "facet_latent_heat_matrix_Wm2.npy", facet_latent)
     np.save(out_dir / "facet_evaporative_efficiency.npy", evaporation_facet)
     if microclimate is not None:

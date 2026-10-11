@@ -67,7 +67,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--chunk-size", type=int, default=1_000_000)
     parser.add_argument("--ground-point-spacing-m", type=float, default=1.5)
     parser.add_argument("--building-point-spacing-m", type=float, default=0.35)
-    parser.add_argument("--vegetation-point-spacing-m", type=float, default=0.50)
+    # Vegetation is NOT thinned by default. The reduction keeps the highest
+    # return per cell, which is right for a roof but strips a crown down to
+    # its canopy surface: on a Lisbon 3 crop it removed every return below
+    # the top, cut crown volume by a third and the beam path through a crown
+    # by a quarter. Pass a positive spacing only for a quick preview.
+    parser.add_argument("--vegetation-point-spacing-m", type=float, default=0.0,
+                        help="0 (default) keeps every vegetation return")
     # Named explicitly so a case records which crown model built it. "field"
     # is the only model without a shape prior; "radial" is a star-shaped hull
     # about a vertical axis, which reads as a field of circles from above.
@@ -75,6 +81,10 @@ def parse_args() -> argparse.Namespace:
                         default="field",
                         help="Crown geometry model passed to 02_vegetation_to_stl.py "
                              "(default: field -- no shape prior)")
+    parser.add_argument("--lod1-model", choices=["segmented", "block"], default="segmented",
+                        help="Building model passed to 03_buildings_to_stl.py (default: "
+                             "segmented -- one roof per building part; 'block' "
+                             "reproduces the pre-11-Oct-2026 geometry)")
     parser.add_argument("--ground-raster-res-m", type=float, default=2.0)
     parser.add_argument("--allow-incomplete-coverage", action="store_true",
                         help="build clipped geometry despite missing LAZ coverage (not recommended)")
@@ -206,11 +216,15 @@ def tile_coverage(scene_bbox: tuple[float, float, float, float], tiles: list[dic
 
 
 def reduce_xy_grid(points: np.ndarray, spacing: float, prefer_high: bool) -> np.ndarray:
-    """Keep one deterministic point per horizontal grid cell."""
+    """Keep one deterministic point per horizontal grid cell.
+
+    A spacing of exactly 0 disables the reduction and returns every point."""
     if len(points) == 0:
         return np.empty((0, 3), dtype=np.float64)
-    if not math.isfinite(spacing) or spacing <= 0:
-        raise ValueError("point-reduction spacing must be finite and positive")
+    if spacing == 0:
+        return np.asarray(points, dtype=np.float64)
+    if not math.isfinite(spacing) or spacing < 0:
+        raise ValueError("point-reduction spacing must be finite and non-negative")
     xmin, ymin = points[:, :2].min(axis=0)
     ix = np.floor((points[:, 0] - xmin) / spacing).astype(np.int64)
     iy = np.floor((points[:, 1] - ymin) / spacing).astype(np.int64)
@@ -428,6 +442,8 @@ def write_case_metadata(case_dir: Path, area: int, frames, layers, scene_bbox, o
             "vegetation": args.vegetation_point_spacing_m,
         },
         "ground_raster_resolution_m": args.ground_raster_res_m,
+        "crown_model": args.crown_model,
+        "lod1_model": args.lod1_model,
         "note": "Original measurements and point clouds were not modified.",
     }
     geometry_dir = case_dir / "geometry"
@@ -532,18 +548,22 @@ def build_case(area: int, gpkg: Path, tiles: list[dict], args) -> bool:
         "--ground-npy", str(split_dir / "ground_and_water_points.npy"),
         "--crown-model", args.crown_model,
     ], "vegetation STL")
-    run_checked([
-        python, str(SCRIPT_DIR / "03_buildings_to_stl.py"),
-        "--input", str(split_dir / "building_points.npy"),
-        "--output", str(case_dir / "geometry" / "building_final.stl"),
-        "--ground-npy", str(split_dir / "ground_and_water_points.npy"),
-    ], "building STL")
+    # Terrain first: the building walls are taken down below THIS mesh, so no
+    # ray can pass beneath a building on a slope.
     run_checked([
         python, str(SCRIPT_DIR / "04_ground_to_stl.py"),
         "--input", str(split_dir / "ground_and_water_points.npy"),
         "--output", str(case_dir / "geometry" / "ground_and_water_final.stl"),
         "--raster-res", str(args.ground_raster_res_m),
     ], "ground/water STL")
+    run_checked([
+        python, str(SCRIPT_DIR / "03_buildings_to_stl.py"),
+        "--input", str(split_dir / "building_points.npy"),
+        "--output", str(case_dir / "geometry" / "building_final.stl"),
+        "--ground-npy", str(split_dir / "ground_and_water_points.npy"),
+        "--ground-stl", str(case_dir / "geometry" / "ground_and_water_final.stl"),
+        "--lod1-model", args.lod1_model,
+    ], "building STL")
     build_path = case_dir / "geometry" / "geometry_build.json"
     build = json.loads(build_path.read_text(encoding="utf-8"))
     build["source_point_counts"] = raw_counts

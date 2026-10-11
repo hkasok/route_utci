@@ -29,7 +29,11 @@ against buildings + ground + vegetation:
 
 The union of all hit triangles IS the route-relevant facet set: nothing
 invisible from the route is ever solved. Facet outward normals are
-oriented toward the side the rays arrived from (i.e., toward the air).
+the meshes' own outward normals (buildings: as wound by
+03_buildings_to_stl.py, checked here; terrain: turned to point up). They were
+previously taken from whichever side the FIRST ray to reach the face came
+from, which turned a facade inward whenever that ray started inside a
+building -- the facet then never saw sky or sun in 05b.
 
 Outputs (in --output-dir)
 -------------------------
@@ -154,7 +158,12 @@ def main():
     }
     intersectors = [(mid, get_intersector(m)) for mid, m in meshes.items()]
 
-    path_xyz = np.load(mrt_dir / "path_xyz.npy")
+    # Rays start at the RECEPTORS: the route samples, except that a sample
+    # inside a building solid has been moved to the nearest open air by 05
+    # (receptor_xyz.npy). Older 05 outputs without it use the route itself.
+    receptor_file = mrt_dir / "receptor_xyz.npy"
+    path_xyz = np.load(receptor_file if receptor_file.is_file()
+                       else mrt_dir / "path_xyz.npy")
     n_full = len(path_xyz)
     coarse_idx = np.arange(0, n_full, max(1, args.point_stride))
     coarse_xyz = path_xyz[coarse_idx]
@@ -190,7 +199,8 @@ def main():
     # Full-sphere raytrace, accumulating the sparse view matrix
     # ------------------------------------------------------------------
     facet_key_to_col = {}          # (mesh_id, face_id) -> compact column
-    facet_orient_sign = []         # +1 keep mesh normal, -1 flip (per facet)
+    facet_first_hit_sign = []      # side of the first ray to reach the facet
+    back_hit_weight = np.zeros(n_coarse)   # view weight landing on a face's back
     rows, cols, vals, vals_up, vals_g = [], [], [], [], []
     w_sky_g = np.zeros(n_coarse)
     w_veg_g = np.zeros(n_coarse)
@@ -233,17 +243,22 @@ def main():
 
         solid = (hit_mesh == MESH_BUILDINGS) | (hit_mesh == MESH_GROUND)
         s_idx = np.where(solid)[0]
+        # A building face seen from behind means the receptor is inside a
+        # solid or the surface has a gap; it is recorded, not hidden.
+        bld = np.where(hit_mesh == MESH_BUILDINGS)[0]
+        if len(bld):
+            facing = np.einsum("ij,ij->i", face_normals[MESH_BUILDINGS][hit_face[bld]],
+                               dirs[bld])
+            behind = bld[facing > 0.0]
+            np.add.at(back_hit_weight, pt_of_ray[behind], wts[behind])
         for ri in s_idx:
             key = (int(hit_mesh[ri]), int(hit_face[ri]))
             col = facet_key_to_col.get(key)
             if col is None:
                 col = len(facet_key_to_col)
                 facet_key_to_col[key] = col
-                # Orient outward normal toward the ray origin side: the ray
-                # travels along dirs[ri] and hits the face, so the outward
-                # (air-side) normal must oppose the ray direction.
                 nrm = face_normals[key[0]][key[1]]
-                facet_orient_sign.append(
+                facet_first_hit_sign.append(
                     -1.0 if float(np.dot(nrm, dirs[ri])) > 0.0 else 1.0)
             rows.append(pt_of_ray[ri])
             cols.append(col)
@@ -267,7 +282,7 @@ def main():
                 key = (mid, fid)
                 if key not in facet_key_to_col:
                     facet_key_to_col[key] = len(facet_key_to_col)
-                    facet_orient_sign.append(1.0)
+                    facet_first_hit_sign.append(1.0)
         print(f"  --select-all: {n_hit:,} route-visible facets plus "
               f"{len(facet_key_to_col) - n_hit:,} unseen faces")
 
@@ -306,7 +321,24 @@ def main():
     keys = sorted(facet_key_to_col, key=facet_key_to_col.get)
     mesh_id = np.array([k[0] for k in keys], dtype=np.int32)
     face_id = np.array([k[1] for k in keys], dtype=np.int64)
-    sign = np.asarray(facet_orient_sign)
+    # Outward normals from the meshes themselves. Buildings must be wound
+    # outward (03_buildings_to_stl.py builds them so); a mesh with negative
+    # enclosed volume is wound inward throughout and is flipped as a whole.
+    # Terrain faces are turned to point up.
+    sign = np.ones(n_facets)
+    building_volume = float(meshes[MESH_BUILDINGS].volume) \
+        if len(meshes[MESH_BUILDINGS].faces) else 0.0
+    if building_volume < 0:
+        sign[mesh_id == MESH_BUILDINGS] = -1.0
+        print("  NOTE: building mesh is wound inward; its normals are flipped")
+    ground_sel = mesh_id == MESH_GROUND
+    gz = np.asarray(meshes[MESH_GROUND].face_normals)[face_id[ground_sel], 2]
+    sign[ground_sel] = np.where(gz < 0.0, -1.0, 1.0)
+    first_hit = np.asarray(facet_first_hit_sign)
+    disagree = (first_hit != sign) & (mesh_id == MESH_BUILDINGS)
+    print(f"  Facet orientation: mesh normals; the old first-hit rule would have "
+          f"turned {int(disagree.sum()):,} of {int((mesh_id == MESH_BUILDINGS).sum()):,} "
+          f"building facets inward")
 
     centroids = np.empty((n_facets, 3))
     normals = np.empty((n_facets, 3))
@@ -434,6 +466,7 @@ def main():
     np.savez(out_dir / "globe_point_weights.npz", w_sky=w_sky_g, w_veg=w_veg_g,
              w_default=w_def_g)
     np.save(out_dir / "point_map.npy", point_map)
+    np.save(out_dir / "back_face_view_weight.npy", back_hit_weight)
     np.save(out_dir / "coarse_index.npy", coarse_idx)
     with open(out_dir / "config.json", "w") as f:
         json.dump(vars(args), f, indent=2)
@@ -459,7 +492,11 @@ def main():
         f"  mean weights         : sky {w_sky.mean():.3f}, veg {w_veg.mean():.3f}, "
         f"surfaces {np.asarray(W.sum(axis=1)).mean():.3f}, "
         f"default {w_default.mean():.3f}\n"
-        f"  max |weight sum - 1| : {err:.2e}\n")
+        f"  max |weight sum - 1| : {err:.2e}\n"
+        f"  facet orientation    : mesh outward normals; first-hit rule would "
+        f"have flipped {int(disagree.sum()):,} building facets\n"
+        f"  view on face backs   : mean {back_hit_weight.mean():.2e}, "
+        f"points with any {int((back_hit_weight > 0).sum()):,} of {n_coarse:,}\n")
     (out_dir / "selection_report.txt").write_text(report)
     print("\n" + report)
     print(f"[facet_selection] n_facets={n_facets} output_dir={out_dir}")

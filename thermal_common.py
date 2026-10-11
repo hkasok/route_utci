@@ -229,6 +229,49 @@ def solve_route_visible_grey_radiosity(
         return radiosity[0], irradiation[0], float(j_bar[0])
     return radiosity, irradiation, j_bar
 
+def solve_route_visible_shortwave_enclosure(direct_and_sky_Wm2, albedo,
+                                            sky_fraction, area):
+    """Sunlight reflected among the route-visible facets: the shortwave twin
+    of ``solve_route_visible_grey_radiosity``.
+
+    Each facet receives its own direct beam and sky diffuse D_i, and the
+    non-sky part of its hemisphere is filled by the enclosure-mean reflected
+    radiosity J of the selected facets:
+
+        E_i = D_i + (1 - f_sky_i) * J
+        J   = sum_i w_i * albedo_i * E_i / sum_i w_i,   w_i = area_i (1 - f_sky_i)
+
+    which includes every repeated reflection and solves to
+
+        J = sum(w * albedo * D) / (sum(w) - sum(w * albedo * (1 - f_sky))).
+
+    The weights are those of the longwave closure, so both bands see one
+    enclosure. It replaces a rule that filled the non-sky hemisphere with ONE
+    generic albedo times the facet's OWN horizontal irradiance -- wrong for a
+    shaded facet facing sunlit ones, and blind to the facets' own albedos.
+
+    ``direct_and_sky_Wm2`` may be (n_facets,) or (n_times, n_facets).
+    Returns ``(E, J)``.
+    """
+    D = np.asarray(direct_and_sky_Wm2, dtype=float)
+    rho = np.asarray(albedo, dtype=float)
+    f = np.asarray(sky_fraction, dtype=float)
+    a = np.asarray(area, dtype=float)
+    if np.any((rho < 0) | (rho > 1)) or np.any((f < 0) | (f > 1)) or np.any(a <= 0):
+        raise ValueError("albedo and sky fraction must lie in [0, 1], areas be positive")
+    w = a * (1.0 - f)
+    if float(w.sum()) <= 0.0:
+        # Every facet sees only sky: no surface-to-surface exchange.
+        J = np.zeros(D.shape[:-1]) if D.ndim > 1 else 0.0
+        return D.copy(), J
+    denominator = float(w.sum() - np.sum(w * rho * (1.0 - f)))
+    if not denominator > 0:
+        raise ValueError("shortwave enclosure is singular")
+    J = (D * (w * rho)).sum(axis=-1) / denominator
+    E = D + (1.0 - f) * np.expand_dims(J, -1)
+    return E, J
+
+
 # Facet class codes (kept as small ints so they can live in compact arrays)
 CLASS_GROUND = 0
 CLASS_WALL = 1
@@ -373,12 +416,28 @@ def vegetation_transmission_from_intersections(vegetation_intersector, origins,
                                                min_distance=1e-6,
                                                unique_tol=1e-5):
     """Beer-Lambert transmission through vegetation along each ray.
-    IDENTICAL algorithm to the version already validated byte-for-byte in
-    05_mrt_network_raytrace.py (kept here so 05a/05b can share it)."""
+
+    L is the length of the ray that lies inside the canopy, i.e. inside at
+    least one crown. Each crossing's SIDE is read from the outward face normal
+    (n . d < 0 entering a crown, > 0 leaving one), and a running count of the
+    crowns the ray is in is kept along it. The count at the origin is the
+    number of crowns the origin lies in (exits minus entries along the whole
+    ray), so a ray that starts INSIDE a crown -- a receptor under a low crown,
+    a facet centroid in a hedge -- is credited with the stretch from its origin
+    to the exit. The earlier rule paired crossings (1st, 2nd), (3rd, 4th), ...,
+    which measured such a ray from its exit to the next crown instead
+    (0.1-0.7 % of Lisbon receptors), and where two crowns overlapped it
+    returned neither their union nor the sum of their chords. Overlapping
+    crowns are counted once: the canopy has one leaf-area density.
+
+    Crowns must be closed surfaces with outward normals, which
+    02_vegetation_to_stl.py writes. Near-coincident crossings of one ray on the
+    same side (a hit on an edge shared by two triangles is reported twice) are
+    de-duplicated first."""
     n_rays = origins.shape[0]
     L_veg = np.zeros(n_rays, dtype=float)
 
-    locations, index_ray, _ = vegetation_intersector.intersects_location(
+    locations, index_ray, index_tri = vegetation_intersector.intersects_location(
         origins, directions, multiple_hits=True)
     if len(index_ray) == 0:
         return np.ones(n_rays, dtype=float), L_veg
@@ -386,36 +445,41 @@ def vegetation_transmission_from_intersections(vegetation_intersector, origins,
     dist = np.einsum("ij,ij->i", locations - origins[index_ray],
                      directions[index_ray])
     valid = dist > min_distance
-    index_ray, dist = index_ray[valid], dist[valid]
+    index_ray, index_tri, dist = index_ray[valid], index_tri[valid], dist[valid]
     if len(index_ray) == 0:
         return np.ones(n_rays, dtype=float), L_veg
 
     order = np.lexsort((dist, index_ray))
-    index_ray, dist = index_ray[order], dist[order]
+    index_ray, index_tri, dist = index_ray[order], index_tri[order], dist[order]
+    face_normals = np.asarray(vegetation_intersector.mesh.face_normals)
+    exiting = np.einsum("ij,ij->i", face_normals[index_tri],
+                        directions[index_ray]) > 0.0
 
     same_ray_as_prev = np.concatenate(([False], index_ray[1:] == index_ray[:-1]))
     close_to_prev = np.concatenate(([False], (dist[1:] - dist[:-1]) <= unique_tol))
-    keep = ~(same_ray_as_prev & close_to_prev)
-    index_ray, dist = index_ray[keep], dist[keep]
-    if len(index_ray) == 0:
-        return np.ones(n_rays, dtype=float), L_veg
+    same_side = np.concatenate(([False], exiting[1:] == exiting[:-1]))
+    keep = ~(same_ray_as_prev & close_to_prev & same_side)
+    index_ray, dist, exiting = index_ray[keep], dist[keep], exiting[keep]
 
+    # Depth (number of crowns the ray is inside) just after each crossing.
+    step = np.where(exiting, -1, 1)
+    net_exits = np.bincount(index_ray, weights=-step, minlength=n_rays)
+    depth0 = np.maximum(net_exits, 0.0)                 # at the origin
     group_change = np.concatenate(([True], index_ray[1:] != index_ray[:-1]))
-    idx_arr = np.arange(len(index_ray))
-    group_start = np.maximum.accumulate(np.where(group_change, idx_arr, 0))
-    position_in_group = idx_arr - group_start
-
-    group_ids, group_counts = np.unique(index_ray, return_counts=True)
-    size_lookup = np.zeros(n_rays, dtype=int)
-    size_lookup[group_ids] = group_counts
-    group_size = size_lookup[index_ray]
-    is_last_in_odd_group = ((position_in_group == group_size - 1)
-                            & (group_size % 2 == 1))
-
-    sign = np.where(position_in_group % 2 == 0, -1.0, 1.0)
-    sign[is_last_in_odd_group] = 0.0
-    L_veg = np.bincount(index_ray, weights=sign * dist, minlength=n_rays)
-    L_veg = np.maximum(L_veg, 0.0)
+    cumulative = np.cumsum(step)
+    group_offset = np.maximum.accumulate(
+        np.where(group_change, np.arange(len(step)), 0))
+    before_group = cumulative[group_offset] - step[group_offset]
+    depth_after = depth0[index_ray] + cumulative - before_group
+    # Inside length: [origin, first crossing] when the origin is in a crown,
+    # then every interval between consecutive crossings with depth > 0.
+    first_dist = np.where(group_change, dist, 0.0)
+    L_veg = np.bincount(index_ray, weights=first_dist * (depth0[index_ray] > 0)
+                        * group_change, minlength=n_rays)
+    next_same = np.concatenate((index_ray[1:] == index_ray[:-1], [False]))
+    gap = np.where(next_same, np.concatenate((dist[1:], [0.0])) - dist, 0.0)
+    L_veg += np.bincount(index_ray, weights=gap * (depth_after > 0),
+                         minlength=n_rays)
     return np.exp(-k_lad * L_veg), L_veg
 
 

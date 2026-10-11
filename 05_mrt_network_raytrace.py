@@ -108,6 +108,11 @@ def parse_args():
     p.add_argument("--ds-path", type=float, default=0.25,
                     help="Path sampling spacing, meters (default: 0.25). Larger = fewer "
                          "points = faster; 0.25 was benchmarked safe up to ~600K points.")
+    p.add_argument("--receptor-clearance-m", type=float, default=0.5,
+                    help="A route sample inside a building solid is ray traced from "
+                         "the nearest open-air point at least this far from any "
+                         "footprint, meters (default 0.5 -- about half a shoulder "
+                         "width). The route itself is unchanged.")
     p.add_argument("--z-height", type=float, default=1.1,
                     help="Pedestrian body height above local ground at which MRT is sampled, "
                          "meters. 1.1 m = ISO 7726 / UTCI standing-adult center-of-gravity "
@@ -321,7 +326,10 @@ def parse_args():
 
 
 SIGMA = 5.670374419e-8
-SVF_CACHE_SCHEMA_VERSION = 2
+# 3: terrain occludes the sky and the sun (it did not before 11 Oct 2026), the
+#    crown path length counts the canopy union and origins inside crowns, and
+#    the receptors are the relocated ones (receptor_xyz.npy).
+SVF_CACHE_SCHEMA_VERSION = 3
 SVF_CACHE_METADATA = "svf_cache_metadata.json"
 SVF_CACHE_ARRAYS = (
     "svf_building_only.npy",
@@ -371,7 +379,7 @@ def build_svf_cache_metadata(args, path_xyz, path_xyz_file):
     """Describe every input that can change the geometry-only SVF fields."""
     return {
         "schema_version": SVF_CACHE_SCHEMA_VERSION,
-        "algorithm": "compute_effective_svf_batched",
+        "algorithm": "compute_effective_svf_batched; terrain occludes; canopy-union path",
         "meshes": {
             "buildings": _stl_cache_identity(args.buildings_stl),
             "vegetation": _stl_cache_identity(args.vegetation_stl),
@@ -496,6 +504,88 @@ def ground_height_lookup(xy_points, ground_intersector, batch_size=50000, z_prob
     return z_ground
 
 
+def inside_building_footprint(xy, z_ground, building_intersector, batch_size=200000):
+    """True where a building roof stands above the terrain at xy.
+
+    Buildings are vertical extrusions (LoD1), so a point lies within a
+    footprint exactly when a downward ray from far above hits a roof that is
+    higher than the terrain there."""
+    inside = np.zeros(len(xy), dtype=bool)
+    for start in range(0, len(xy), batch_size):
+        end = min(start + batch_size, len(xy))
+        origins = np.column_stack([xy[start:end], np.full(end - start, 1.0e5)])
+        down = np.tile([0.0, 0.0, -1.0], (end - start, 1))
+        loc, ray, _ = building_intersector.intersects_location(
+            origins, down, multiple_hits=False)
+        roof = np.full(end - start, -np.inf)
+        roof[ray] = loc[:, 2]
+        inside[start:end] = roof > z_ground[start:end] + 0.05
+    return inside
+
+
+def place_receptors_in_open_air(path_xy, z_ground, building_intersector,
+                                ground_intersector, clearance_m=0.5,
+                                step_m=0.25, max_radius_m=30.0, n_directions=32):
+    """Move every route sample that falls inside a building solid to the
+    nearest open-air position at least ``clearance_m`` from any footprint.
+
+    A route sample can land inside a building for three reasons: GPS error
+    on a measured traverse (several metres in Lisbon's narrow streets), a
+    footprint generalised from roof returns that includes the eaves, and a
+    mapped passage through a building. A receptor inside a solid sees no sky
+    and no sun and is surrounded by the backs of walls, so its result is
+    meaningless; the earlier pipeline kept it (3.3 % of daytime and 8.4 % of
+    night Lisbon samples, about 40 % of the daytime K-down bias).
+
+    Search: rings of radius step_m, 2*step_m, ... up to max_radius_m; on the
+    first ring with an admissible position the one nearest the circular mean
+    of the admissible directions is taken (it points away from the building).
+    A position is admissible when it and n=8 points around it at clearance_m
+    lie outside every footprint. The route itself (path_xyz.npy) is NOT
+    changed -- downstream stages still find each route sample by its own
+    position -- only the receptor that is ray traced moves.
+
+    Returns (receptor_xy, receptor_z_ground, displacement_m, inside_mask,
+    unresolved_mask).
+    """
+    xy = np.asarray(path_xy, dtype=float)
+    inside = inside_building_footprint(xy, z_ground, building_intersector)
+    receptor_xy = xy.copy()
+    receptor_zg = np.asarray(z_ground, dtype=float).copy()
+    pending = np.flatnonzero(inside)
+    angles = 2.0 * np.pi * (np.arange(n_directions) + 0.5) / n_directions
+    ring = np.column_stack([np.cos(angles), np.sin(angles)])
+    guard_angles = 2.0 * np.pi * np.arange(8) / 8
+    guard = clearance_m * np.column_stack([np.cos(guard_angles), np.sin(guard_angles)])
+    radius = step_m
+    while len(pending) and radius <= max_radius_m + 1e-9:
+        cand = xy[pending][:, None, :] + radius * ring[None, :, :]
+        flat = cand.reshape(-1, 2)
+        zg = ground_height_lookup(flat, ground_intersector)
+        ok = ~inside_building_footprint(flat, zg, building_intersector)
+        if clearance_m > 0 and ok.any():
+            for g in guard:
+                test = np.flatnonzero(ok)
+                gxy = flat[test] + g
+                gz = ground_height_lookup(gxy, ground_intersector)
+                ok[test] &= ~inside_building_footprint(gxy, gz, building_intersector)
+        ok = ok.reshape(len(pending), n_directions)
+        found = ok.any(axis=1)
+        for row in np.flatnonzero(found):
+            dirs = np.flatnonzero(ok[row])
+            mean = np.arctan2(np.sin(angles[dirs]).mean(), np.cos(angles[dirs]).mean())
+            pick = dirs[np.argmin(np.abs(np.angle(np.exp(1j * (angles[dirs] - mean)))))]
+            point = pending[row]
+            receptor_xy[point] = cand[row, pick]
+            receptor_zg[point] = zg.reshape(len(pending), n_directions)[row, pick]
+        pending = pending[~found]
+        radius += step_m
+    displacement = np.hypot(*(receptor_xy - xy).T)
+    unresolved = np.zeros(len(xy), dtype=bool)
+    unresolved[pending] = True
+    return receptor_xy, receptor_zg, displacement, inside, unresolved
+
+
 def make_sky_directions(n_azimuth, n_elevation):
     """Upper-hemisphere sky directions plus TWO normalized weightings:
 
@@ -534,82 +624,24 @@ def make_sky_directions(n_azimuth, n_elevation):
             w_sph / w_sph.sum())
 
 
-def vegetation_transmission_from_intersections(vegetation_intersector, origins, directions,
-                                                k_lad, min_distance=1e-6, unique_tol=1e-5):
-    """
-    Fully vectorized (no per-ray Python loop). An earlier loop-based version
-    of this function (`for r in np.unique(index_ray): ...`) was found to be
-    the actual bottleneck at real scale: in a realistic 2000-point x 576
-    sky-direction batch, ~190,000 individual rays hit the vegetation mesh,
-    and looping over each in pure Python reduced effective throughput to
-    ~10 points/sec (a projected multi-day runtime for a full network).
-    This vectorized version was verified to produce BYTE-IDENTICAL results
-    on the same test batch, at ~1800 points/sec -- roughly 180x faster.
-    """
-    n_rays = origins.shape[0]
-    L_veg = np.zeros(n_rays, dtype=float)
-
-    locations, index_ray, index_tri = vegetation_intersector.intersects_location(
-        origins, directions, multiple_hits=True
-    )
-    if len(index_ray) == 0:
-        return np.ones(n_rays, dtype=float), L_veg
-
-    dist = np.einsum("ij,ij->i", locations - origins[index_ray], directions[index_ray])
-    valid = dist > min_distance
-    index_ray = index_ray[valid]
-    dist = dist[valid]
-    if len(index_ray) == 0:
-        return np.ones(n_rays, dtype=float), L_veg
-
-    order = np.lexsort((dist, index_ray))
-    index_ray = index_ray[order]
-    dist = dist[order]
-
-    # Deduplicate near-identical consecutive hit distances within the same
-    # ray (vectorized: compare each entry to the previous one).
-    same_ray_as_prev = np.concatenate(([False], index_ray[1:] == index_ray[:-1]))
-    close_to_prev = np.concatenate(([False], (dist[1:] - dist[:-1]) <= unique_tol))
-    keep = ~(same_ray_as_prev & close_to_prev)
-    index_ray = index_ray[keep]
-    dist = dist[keep]
-    if len(index_ray) == 0:
-        return np.ones(n_rays, dtype=float), L_veg
-
-    # Position of each hit within its ray's group (0,1,2,3,...), vectorized.
-    group_change = np.concatenate(([True], index_ray[1:] != index_ray[:-1]))
-    idx_arr = np.arange(len(index_ray))
-    group_start = np.maximum.accumulate(np.where(group_change, idx_arr, 0))
-    position_in_group = idx_arr - group_start
-
-    # Group sizes (to drop a trailing unpaired hit from an odd-count group --
-    # a grazing/tangent ray hit with no matching exit point).
-    group_ids, group_sizes_per_entry = np.unique(index_ray, return_counts=True)
-    size_lookup = np.zeros(n_rays, dtype=int)
-    size_lookup[group_ids] = group_sizes_per_entry
-    group_size = size_lookup[index_ray]
-    is_last_in_odd_group = (position_in_group == group_size - 1) & (group_size % 2 == 1)
-
-    # Entering (even position) contributes -dist, exiting (odd) contributes
-    # +dist; summed per ray this equals the sum of paired (exit - entry)
-    # path lengths through vegetation, with no per-ray Python loop needed.
-    sign = np.where(position_in_group % 2 == 0, -1.0, 1.0)
-    sign[is_last_in_odd_group] = 0.0
-    signed_dist = sign * dist
-
-    L_veg = np.bincount(index_ray, weights=signed_dist, minlength=n_rays)
-    L_veg = np.maximum(L_veg, 0.0)
-
-    tau = np.exp(-k_lad * L_veg)
-    return tau, L_veg
+# Beer-Lambert transmission through the crowns: ONE implementation, shared
+# with 05a/05b (thermal_common). It reads each crossing's side from the
+# outward crown normal, so a receptor that starts inside a crown is handled.
+from thermal_common import vegetation_transmission_from_intersections  # noqa: E402
 
 
 def compute_effective_svf_batched(path_xyz, sky_directions, w_planar, w_cyl,
                                    building_intersector, vegetation_intersector,
-                                   k_lad_diffuse, batch_size, w_sph=None):
+                                   k_lad_diffuse, batch_size, w_sph=None,
+                                   ground_intersector=None):
     """Returns (svf_building_only, svf_planar, svf_standing, svf_sphere). The
     planar, standing and sphere sky-view factors are weightings of the SAME
-    traced sky transmission -- see make_sky_directions()."""
+    traced sky transmission -- see make_sky_directions().
+
+    Buildings and, when ``ground_intersector`` is given, the TERRAIN block the
+    sky: on Lisbon's hills a slope rising above the horizon hides sky that was
+    previously counted as open. ``svf_building_only`` remains the view past
+    buildings alone, a geometry diagnostic."""
     n = len(path_xyz)
     ndirs = len(sky_directions)
     svf_planar = np.zeros(n)
@@ -628,11 +660,14 @@ def compute_effective_svf_batched(path_xyz, sky_directions, w_planar, w_cyl,
         directions = np.tile(sky_directions, (m, 1))
 
         building_hits = building_intersector.intersects_any(origins, directions)
+        blocked = building_hits.copy()
+        if ground_intersector is not None:
+            blocked |= ground_intersector.intersects_any(origins, directions)
         tau_veg, _ = vegetation_transmission_from_intersections(
             vegetation_intersector, origins, directions, k_lad=k_lad_diffuse
         )
         sky_transmission = tau_veg.copy()
-        sky_transmission[building_hits] = 0.0
+        sky_transmission[blocked] = 0.0
         building_open = (~building_hits).astype(float)
 
         T = sky_transmission.reshape(m, ndirs)
@@ -653,7 +688,11 @@ def compute_effective_svf_batched(path_xyz, sky_directions, w_planar, w_cyl,
 
 
 def direct_solar_transmission_batched(path_xyz, sun_vec, building_intersector,
-                                       vegetation_intersector, k_lad_direct, batch_size):
+                                       vegetation_intersector, k_lad_direct, batch_size,
+                                       ground_intersector=None):
+    """Beam transmission to each receptor: 0 behind a building or, when
+    ``ground_intersector`` is given, behind the terrain (a hillside or the
+    rise of the street itself at low sun); Beer-Lambert through crowns."""
     n = len(path_xyz)
     tau_direct = np.zeros(n)
     for start in range(0, n, batch_size):
@@ -661,6 +700,8 @@ def direct_solar_transmission_batched(path_xyz, sun_vec, building_intersector,
         batch_pts = path_xyz[start:end]
         directions = np.tile(sun_vec, (len(batch_pts), 1))
         building_hits = building_intersector.intersects_any(batch_pts, directions)
+        if ground_intersector is not None:
+            building_hits |= ground_intersector.intersects_any(batch_pts, directions)
         tau_veg, _ = vegetation_transmission_from_intersections(
             vegetation_intersector, batch_pts, directions, k_lad=k_lad_direct
         )
@@ -783,6 +824,9 @@ def estimate_mrt_from_radiation(dni, dhi, ghi, elevation_deg, tau_direct,
                                  L_sky_override=None,
                                  wall_reflected_incident=None,
                                  wall_reflected_parts=None,
+                                 ground_reflected_incident=None,
+                                 ground_reflected_parts=None,
+                                 ground_default_weight=None,
                                  return_contributions=False):
     # lw_sky_frac: FULL-SPHERE sky fraction for the LONGWAVE blend (from 05a's
     #   cylinder view, ground-inclusive). When None the blend falls back to the
@@ -875,6 +919,14 @@ def estimate_mrt_from_radiation(dni, dhi, ghi, elevation_deg, tau_direct,
     # In open sun (tau=1, svf~0.95) this reduces to ~GHI, matching the old
     # behavior; in deep shade it correctly collapses toward near-zero.
     # ------------------------------------------------------------------
+    #
+    # With the facet path (ground_reflected_incident given) the ground term is
+    # built like the wall term: each route-visible ground facet's view weight
+    # x albedo x its OWN irradiance (FacetLongwave.ground_reflected_shortwave).
+    # Only the directions that reach no resolved surface (ground_default_weight)
+    # keep the local estimate below. The fixed f = 0.5 is used only without
+    # facet data, and by the 'global' ablation.
+    # ------------------------------------------------------------------
     if args.reflected_model == "global":
         # legacy/comparison mode -- reproduces the old (incorrect) behavior
         k_global_local = np.full_like(np.asarray(tau_direct, dtype=float), ghi)
@@ -887,8 +939,16 @@ def estimate_mrt_from_radiation(dni, dhi, ghi, elevation_deg, tau_direct,
     if (not np.isfinite(reflecting_albedo).all()
             or np.any((reflecting_albedo < 0) | (reflecting_albedo > 1))):
         raise ValueError("local ground albedo must be finite and in [0,1]")
-    K_ground_reflected_abs = (args.person_sw_absorptivity * args.f_ground_reflected
-                              * reflecting_albedo * k_global_local)
+    facet_ground = (ground_reflected_incident is not None
+                    and args.reflected_model != "global")
+    if facet_ground:
+        ground_default_part = (np.asarray(ground_default_weight, dtype=float)
+                               * reflecting_albedo * k_global_local)
+        K_ground_reflected_abs = args.person_sw_absorptivity * (
+            np.asarray(ground_reflected_incident, dtype=float) + ground_default_part)
+    else:
+        K_ground_reflected_abs = (args.person_sw_absorptivity * args.f_ground_reflected
+                                  * reflecting_albedo * k_global_local)
 
     # Wall/roof reflected shortwave. Sunlit facades are a genuine shortwave
     # source in a street canyon; omitting them (the previous behaviour) leaves
@@ -938,13 +998,24 @@ def estimate_mrt_from_radiation(dni, dhi, ghi, elevation_deg, tau_direct,
     # the 05a view weights of those facets. Together they close exactly onto
     # sw_reflected_total_absorbed_Wm2.
     ground_template = np.asarray(K_ground_reflected_abs, dtype=float)
-    sw_fractions = reflected_source_fractions or {
-        "sw_reflected_generic_ground_absorbed_Wm2": np.ones_like(ground_template)
-    }
-    for key in SW_SOURCE_COLUMNS:
-        fraction = np.asarray(sw_fractions.get(key, np.zeros_like(ground_template)),
-                              dtype=float)
-        contributions[key] = ground_template * fraction
+    if facet_ground:
+        absorptivity = args.person_sw_absorptivity
+        parts = ground_reflected_parts or {}
+        for key in SW_SOURCE_COLUMNS:
+            contributions[key] = absorptivity * np.asarray(
+                parts.get(key, np.zeros_like(ground_template)), dtype=float) \
+                * np.ones_like(ground_template)
+        generic = "sw_reflected_generic_ground_absorbed_Wm2"
+        contributions[generic] = (contributions[generic]
+                                  + absorptivity * ground_default_part)
+    else:
+        sw_fractions = reflected_source_fractions or {
+            "sw_reflected_generic_ground_absorbed_Wm2": np.ones_like(ground_template)
+        }
+        for key in SW_SOURCE_COLUMNS:
+            fraction = np.asarray(sw_fractions.get(key, np.zeros_like(ground_template)),
+                                  dtype=float)
+            contributions[key] = ground_template * fraction
     if wall_reflected_parts is not None:
         absorptivity = args.person_sw_absorptivity
         contributions["sw_reflected_building_wall_absorbed_Wm2"] = (
@@ -1273,6 +1344,25 @@ class FacetLongwave:
                         "re-run 05b for this thermal folder")
                 normals = facet_meta["normal"].astype(float)
                 self.facet_normal = normals
+            # Enclosure-mean reflected shortwave radiosity from 05b, added to
+            # each facet's irradiance so a facet reflects the same sunlight
+            # whose complement it absorbed there.
+            self.J_sw = None
+            jsw_path = d / "sw_radiosity_environment_Wm2.npy"
+            if jsw_path.is_file():
+                self.J_sw = np.load(jsw_path).astype(float)
+                if self.J_sw.shape != (n_times,):
+                    raise ValueError("sw_radiosity_environment does not match "
+                                     "this run's times; re-run 05b")
+            # Ground facets grouped by reflected-shortwave source column, for
+            # the ground-reflected term built from the facets themselves.
+            self._ground_source_masks = {}
+            ground_facets = facet_class == 0
+            for material in sorted(set(self.facet_material_name[ground_facets])):
+                source = canonical_sw_source(material)
+                mask = ground_facets & (self.facet_material_name == material)
+                self._ground_source_masks[source] = (
+                    self._ground_source_masks.get(source, np.zeros_like(mask)) | mask)
             # Local ground state beneath the receptor, view-weighted over the
             # same route-visible ground facets that set local_ground_albedo.
             ground_mask = facet_class == 0
@@ -1393,15 +1483,18 @@ class FacetLongwave:
     def facet_incident_shortwave(self, it, dni, dhi, sun_vec):
         """Global shortwave incident on every route-visible facet, W m^-2.
 
-        Same construction 05b uses to heat those facets: attenuated direct
-        beam on the facet's own tilt, plus its sky-view share of the diffuse.
-        The second-bounce (environment-reflected) term 05b adds is deliberately
-        omitted here, so this stays a single-bounce reflection to the
-        pedestrian rather than an unbounded inter-reflection series.
+        The same irradiance 05b heats the facets with: attenuated direct beam
+        on the facet's own tilt, its sky-view share of the diffuse, and -- when
+        05b solved the shortwave enclosure -- the sunlight reflected onto it by
+        the other facets, (1 - f_sky) * J_sw. A facet then reflects
+        albedo * this to the receptors, which is exactly the part of its
+        irradiance that 05b did not let it absorb.
         """
         if self.facet_tau_dir is None:
             return None
         incident = self.facet_f_sky * float(dhi)
+        if getattr(self, "J_sw", None) is not None:
+            incident = incident + (1.0 - self.facet_f_sky) * float(self.J_sw[it])
         if sun_vec is not None and dni > 0.0:
             cos_theta = np.clip(self.facet_normal @ np.asarray(sun_vec, float),
                                 0.0, None)
@@ -1409,7 +1502,7 @@ class FacetLongwave:
                                    * float(dni) * cos_theta)
         return incident
 
-    def wall_reflected_shortwave(self, it, dni, dhi, sun_vec):
+    def wall_reflected_shortwave(self, it, dni, dhi, sun_vec, incident=None):
         """Shortwave reflected off walls/roofs onto each route point, W m^-2.
 
         Mirrors the longwave surround exactly: the 05a view weight of a facet
@@ -1419,7 +1512,8 @@ class FacetLongwave:
         as incident radiance at the body (absorptivity is applied by the
         caller, as for the ground term).
         """
-        incident = self.facet_incident_shortwave(it, dni, dhi, sun_vec)
+        if incident is None:
+            incident = self.facet_incident_shortwave(it, dni, dhi, sun_vec)
         if incident is None or self.wall_reflect_mask is None:
             return None, None
         reflected = self.facet_albedo * incident
@@ -1437,6 +1531,41 @@ class FacetLongwave:
             parts[label] = fine
             totals = totals + fine
         return totals, parts
+
+    def ground_reflected_shortwave(self, incident, view="body"):
+        """Sunlight reflected by the GROUND facets onto each route point.
+
+        ``view`` selects the receptor weighting: 'body' (the standing
+        cylinder of 05a) or 'globe' (05a's sphere weights). Each ground facet
+        contributes its own view weight times albedo times its OWN irradiance,
+        exactly as the walls do. This replaces the earlier rule, which took
+        half the receptor's field of view as ground (f = 0.5) lit like the
+        receptor itself: in a street canyon part of that lower half is wall,
+        already counted by the wall term, so the canyon floor was counted
+        twice. Directions that reach no resolved surface (w_default) keep the
+        earlier local estimate, applied by the caller.
+
+        Returns ``(total, parts_by_source, default_weight)`` per full point,
+        or ``(None, None, None)`` without facet shortwave data.
+        """
+        if (incident is None or self.facet_albedo is None
+                or not getattr(self, "_ground_source_masks", None)):
+            return None, None, None
+        if view == "globe":
+            if self.W_g is None:
+                return None, None, None
+            W, w_default = self.W_g, self.w_def_g
+        else:
+            W, w_default = self.W, self.w_def
+        reflected = self.facet_albedo * np.asarray(incident, dtype=float)
+        pm = self.point_map
+        parts = {}
+        total = np.zeros(len(pm), dtype=float)
+        for source, mask in self._ground_source_masks.items():
+            fine = np.asarray(W[:, mask] @ reflected[mask]).ravel()[pm]
+            parts[source] = parts.get(source, 0.0) + fine
+            total = total + fine
+        return total, parts, np.asarray(w_default, dtype=float)[pm]
 
     def build_sensor_ground_footprint(self, path_xyz, sensor_height_m,
                                       receptor_height_m,
@@ -1836,6 +1965,42 @@ def main():
     np.save(path_xyz_file, path_xyz)
     np.save(out_dir / "path_segment_id.npy", segment_id)
 
+    # The RECEPTOR is the point that is ray traced. It is the route sample
+    # itself except where that sample lies inside a building solid, where it
+    # is moved to the nearest open air (place_receptors_in_open_air). path_xyz
+    # stays the route, so every later stage still finds a route sample by its
+    # own position.
+    print("\nPlacing receptors in open air (route samples inside building solids)...")
+    receptor_xy, receptor_zg, relocation_m, inside_building, unresolved = (
+        place_receptors_in_open_air(
+            path_xy, z_ground, building_intersector, ground_intersector,
+            clearance_m=args.receptor_clearance_m))
+    receptor_xyz = np.column_stack([receptor_xy, receptor_zg + args.z_height])
+    receptor_xyz_file = out_dir / "receptor_xyz.npy"
+    np.save(receptor_xyz_file, receptor_xyz)
+    np.save(out_dir / "receptor_relocation_m.npy", relocation_m.astype(np.float32))
+    moved = relocation_m > 0
+    relocation_report = {
+        "n_route_samples": int(n_points),
+        "n_inside_building_solid": int(inside_building.sum()),
+        "fraction_inside_building_solid": float(inside_building.mean()),
+        "n_relocated": int(moved.sum()),
+        "n_unresolved": int(unresolved.sum()),
+        "clearance_m": float(args.receptor_clearance_m),
+        "displacement_m": ({
+            "median": float(np.median(relocation_m[moved])),
+            "p90": float(np.percentile(relocation_m[moved], 90)),
+            "max": float(relocation_m[moved].max())} if moved.any() else None),
+    }
+    (out_dir / "receptor_relocation.json").write_text(
+        json.dumps(relocation_report, indent=2) + "\n", encoding="utf-8")
+    print(f"  {inside_building.sum():,} of {n_points:,} route samples "
+          f"({100 * inside_building.mean():.2f} %) lie inside a building solid; "
+          f"{moved.sum():,} moved to open air"
+          + (f" (median {np.median(relocation_m[moved]):.2f} m, "
+             f"max {relocation_m[moved].max():.2f} m)" if moved.any() else "")
+          + (f"; {unresolved.sum():,} UNRESOLVED within 30 m" if unresolved.any() else ""))
+
     print("\n" + "=" * 70)
     print("Computing static effective sky-view factor...")
     sky_directions, sky_w_planar, sky_w_cyl, sky_w_sph = make_sky_directions(
@@ -1845,7 +2010,7 @@ def main():
     svf_metadata = None
     cached_svf = None
     if args.svf_cache:
-        svf_metadata = build_svf_cache_metadata(args, path_xyz, path_xyz_file)
+        svf_metadata = build_svf_cache_metadata(args, receptor_xyz, receptor_xyz_file)
         if args.force_svf:
             print("  --force-svf set; bypassing any existing SVF cache.")
         else:
@@ -1853,9 +2018,10 @@ def main():
     if cached_svf is None:
         svf_building_only, svf_planar, svf_standing, svf_sphere = (
             compute_effective_svf_batched(
-                path_xyz, sky_directions, sky_w_planar, sky_w_cyl,
+                receptor_xyz, sky_directions, sky_w_planar, sky_w_cyl,
                 building_intersector, vegetation_intersector,
-                args.k_lad_diffuse, args.svf_batch_size, w_sph=sky_w_sph))
+                args.k_lad_diffuse, args.svf_batch_size, w_sph=sky_w_sph,
+                ground_intersector=ground_intersector))
         if args.svf_cache:
             write_svf_cache(
                 args.svf_cache, svf_metadata,
@@ -2012,7 +2178,7 @@ def main():
         # The downward-facing channels need the instrument's OWN footprint, not
         # the body's cylinder view of the ground out to the culling distance.
         if facet_lw.build_sensor_ground_footprint(
-                path_xyz, args.sensor_height_m, args.z_height):
+                receptor_xyz, args.sensor_height_m, args.z_height):
             print(f"    downward footprint: half the weight within "
                   f"{args.sensor_height_m:.2f} m of the sensor, "
                   f"{facet_lw.sensor_footprint_coverage:.1%} of route points "
@@ -2055,7 +2221,7 @@ def main():
 
     t_loop_start = time.time()
     for it, (t, el, az) in enumerate(zip(times, elev, azim)):
-        local_environment = environment.sample(path_xyz, float(hour_of_day[it]))
+        local_environment = environment.sample(receptor_xyz, float(hour_of_day[it]))
         local_air_c = local_environment.air_temperature_c
         local_wind_ms = local_environment.wind_speed_ms
         local_air_min[it] = float(np.min(local_air_c))
@@ -2068,8 +2234,9 @@ def main():
         else:
             sun_vec = sun_vector_enu(az, el)
             tau_direct = direct_solar_transmission_batched(
-                path_xyz, sun_vec, building_intersector, vegetation_intersector,
+                receptor_xyz, sun_vec, building_intersector, vegetation_intersector,
                 args.k_lad_direct, args.sun_batch_size,
+                ground_intersector=ground_intersector,
             )
 
         L_surround_override = None
@@ -2079,6 +2246,10 @@ def main():
         reflected_source_fractions = None
         wall_reflected_incident = None
         wall_reflected_parts = None
+        ground_reflected_incident = None
+        ground_reflected_parts = None
+        ground_default_weight = None
+        incident_sw_now = None
         sun_vec_now = sun_vector_enu(az, el) if el > 0.0 else None
         if facet_lw is not None:
             sky_lw_current = (float(lwin_time[it]) if np.isfinite(lwin_time[it])
@@ -2098,10 +2269,17 @@ def main():
                 lw_sky_frac = facet_lw.sky_frac
             local_ground_albedo = facet_lw.local_ground_albedo
             reflected_source_fractions = facet_lw.reflected_source_fractions
+            # One irradiance per facet and step, shared by every receptor.
+            incident_sw_now = facet_lw.facet_incident_shortwave(
+                it, dni[it], dhi[it], sun_vec_now)
             if args.wall_reflected_shortwave == "on":
                 wall_reflected_incident, wall_reflected_parts = (
                     facet_lw.wall_reflected_shortwave(
-                        it, dni[it], dhi[it], sun_vec_now))
+                        it, dni[it], dhi[it], sun_vec_now,
+                        incident=incident_sw_now))
+            (ground_reflected_incident, ground_reflected_parts,
+             ground_default_weight) = facet_lw.ground_reflected_shortwave(
+                incident_sw_now, view="body")
 
         radiation_result = estimate_mrt_from_radiation(
             dni[it], dhi[it], ghi[it], el, tau_direct, svf_person, svf_ground,
@@ -2113,6 +2291,9 @@ def main():
             L_sky_override=lwin_time[it],
             wall_reflected_incident=wall_reflected_incident,
             wall_reflected_parts=wall_reflected_parts,
+            ground_reflected_incident=ground_reflected_incident,
+            ground_reflected_parts=ground_reflected_parts,
+            ground_default_weight=ground_default_weight,
             return_contributions=record_contributions,
         )
         if record_contributions:
@@ -2143,8 +2324,7 @@ def main():
                 lw_down_up = sw_refl_up = sw_up_facet = None
                 if (args.sensor_emulation == "facet"
                         and facet_lw.has_sensor_up_view):
-                    incident_sw = facet_lw.facet_incident_shortwave(
-                        it, dni[it], dhi[it], sun_vec_now)
+                    incident_sw = incident_sw_now
                     lw_down_up, sw_refl_up = facet_lw.sensor_downwelling_at(
                         it, air_temp_C_time[it], el, sky_lw_current,
                         incident_sw)
@@ -2171,15 +2351,20 @@ def main():
                 g_svf, g_L, g_sky, g_alb, g_refl = (
                     svf_person, L_surround_override, lw_sky_frac,
                     local_ground_albedo, wall_reflected_incident)
+                g_ground, g_ground_parts, g_ground_default = (
+                    ground_reflected_incident, ground_reflected_parts,
+                    ground_default_weight)
                 if (args.globe_weighting == "sphere"
                         and facet_lw.has_globe_view):
                     g_L, g_sky, g_refl = facet_lw.globe_view_at(
                         it, air_temp_C_time[it], el, sky_lw_current,
-                        facet_lw.facet_incident_shortwave(
-                            it, dni[it], dhi[it], sun_vec_now))
+                        incident_sw_now)
                     g_svf = svf_sphere
                     if facet_lw.globe_ground_albedo is not None:
                         g_alb = facet_lw.globe_ground_albedo
+                    g_ground, g_ground_parts, g_ground_default = (
+                        facet_lw.ground_reflected_shortwave(
+                            incident_sw_now, view="globe"))
                 _, globe_flux, _, _, globe_parts = estimate_mrt_from_radiation(
                     dni[it], dhi[it], ghi[it], el, tau_direct,
                     g_svf, svf_ground,
@@ -2193,6 +2378,9 @@ def main():
                     L_sky_override=lwin_time[it],
                     wall_reflected_incident=g_refl,
                     wall_reflected_parts=None,
+                    ground_reflected_incident=g_ground,
+                    ground_reflected_parts=g_ground_parts,
+                    ground_default_weight=g_ground_default,
                     return_contributions=True,
                 )
                 contributions["globe_absorbed_flux_Wm2"] = globe_flux
@@ -2296,7 +2484,7 @@ def main():
         records = []
         for it, t in enumerate(times):
             sub_environment = environment.sample(
-                path_xyz[sub_idx], float(hour_of_day[it]))
+                receptor_xyz[sub_idx], float(hour_of_day[it]))
             for local_index, ip in enumerate(sub_idx):
                 records.append({
                     "time": t.isoformat(), "point_index": int(ip),

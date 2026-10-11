@@ -155,7 +155,8 @@ def canopy_morphology(building_height_m: float, plan_area_fraction: float,
 
 def morphology_from_geometry(buildings_stl: str, cell_fluid_fraction=None,
                              wind_direction_deg: float = 270.0,
-                             domain_area_m2: float | None = None
+                             domain_area_m2: float | None = None,
+                             ground_stl: str | None = None
                              ) -> CanopyMorphology:
     """Derive the morphology from the case's own building mesh.
 
@@ -166,6 +167,17 @@ def morphology_from_geometry(buildings_stl: str, cell_fluid_fraction=None,
 
     ``lambda_f`` is the frontal area facing the wind divided by the plan area,
     computed from the mesh faces rather than assumed.
+
+    Canopy height H. With ``ground_stl`` (the case's terrain mesh) H is the
+    PLAN-AREA-WEIGHTED MEAN roof height above the terrain under the roof --
+    the mean building height of the morphometric methods this profile uses
+    (Macdonald et al. 1998; Grimmond & Oke 1999). It does not depend on how
+    the mesh happens to be split into objects. Without a terrain mesh the
+    earlier estimate is kept: the median over connected building objects of
+    their vertical extent (max - min). That estimate changes when the same
+    roofs are split into more parts, and it reads a building whose walls are
+    taken below a sloping terrain (03_buildings_to_stl.py does this so no ray
+    passes under it) as too tall.
     """
     import trimesh
 
@@ -178,9 +190,31 @@ def morphology_from_geometry(buildings_stl: str, cell_fluid_fraction=None,
     import surface_groups as sg
     labels = sg.connected_object_labels(faces, len(faces), vertices=vertices)
     heights = []
-    for index in range(int(labels.max()) + 1):
+    if ground_stl is not None:
+        from trimesh.ray.ray_pyembree import RayMeshIntersector
+        ground = trimesh.load(ground_stl, process=False, force="mesh")
+        roof = np.asarray(mesh.face_normals)[:, 2] > 0.7
+        centres = np.asarray(mesh.triangles_center)[roof]
+        origins = np.column_stack([centres[:, :2], np.full(len(centres), 1.0e5)])
+        loc, ray, _ = RayMeshIntersector(ground).intersects_location(
+            origins, np.tile([0.0, 0.0, -1.0], (len(origins), 1)),
+            multiple_hits=False)
+        terrain = np.full(len(centres), np.nan)
+        terrain[ray] = loc[:, 2]
+        above = centres[:, 2] - terrain
+        area = np.asarray(mesh.area_faces)[roof]
+        ok = np.isfinite(above)
+        if not ok.any():
+            raise WindProfileError("no roof lies over the terrain mesh")
+        area_weighted_height = float(np.sum(area[ok] * above[ok]) / area[ok].sum())
+        heights = [area_weighted_height]
+    has_roof = np.zeros(int(labels.max()) + 1, dtype=bool)
+    has_roof[labels[np.asarray(mesh.face_normals)[:, 2] > 0.7]] = True
+    for index in range(int(labels.max()) + 1 if ground_stl is None else 0):
         member = np.unique(faces[labels == index])
-        if member.size:
+        # Only objects with a roof are buildings; a detached buried floor
+        # plate (03 builds one under each part) is not.
+        if member.size and has_roof[index]:
             z = vertices[member, 2]
             # HEIGHT ABOVE ITS OWN BASE, not absolute elevation. A building mesh
             # spans from local ground to roof, so max - min is its height; the
@@ -191,8 +225,9 @@ def morphology_from_geometry(buildings_stl: str, cell_fluid_fraction=None,
             heights.append(float(z.max() - z.min()))
     if not heights:
         raise WindProfileError("no building objects found")
-    # Median rather than mean: a handful of towers should not set the
-    # neighbourhood canopy height for a low-rise district.
+    # Fallback only: median over objects, so a handful of towers does not set
+    # the canopy height. With a terrain mesh ``heights`` holds the single
+    # plan-area-weighted mean.
     height = float(np.median(heights))
     if not 2.0 <= height <= 120.0:
         raise WindProfileError(
@@ -219,7 +254,22 @@ def morphology_from_geometry(buildings_stl: str, cell_fluid_fraction=None,
     normals = np.asarray(mesh.face_normals, dtype=float)
     areas = np.asarray(mesh.area_faces, dtype=float)
     walls = np.abs(normals[:, 2]) <= 0.7
-    frontal = float(np.sum(areas[walls]
+    exposed = np.ones(int(walls.sum()))
+    if ground_stl is not None:
+        # Only the wall above the terrain faces the wind: walls are carried
+        # below a sloping terrain so that no ray passes under a building.
+        tri = np.asarray(mesh.triangles)[walls]
+        centre = tri.mean(axis=1)
+        origins = np.column_stack([centre[:, :2], np.full(len(centre), 1.0e5)])
+        loc, ray, _ = RayMeshIntersector(ground).intersects_location(
+            origins, np.tile([0.0, 0.0, -1.0], (len(origins), 1)),
+            multiple_hits=False)
+        terrain_w = np.full(len(centre), -np.inf)
+        terrain_w[ray] = loc[:, 2]
+        z_top, z_bottom = tri[:, :, 2].max(axis=1), tri[:, :, 2].min(axis=1)
+        exposed = np.clip((z_top - np.maximum(terrain_w, z_bottom))
+                          / np.maximum(z_top - z_bottom, 1e-9), 0.0, 1.0)
+    frontal = float(np.sum(areas[walls] * exposed
                            * np.abs(normals[walls, :2] @ flow)))
     plan_area = (float(np.asarray(cell_fluid_fraction).size)
                  if cell_fluid_fraction is None else None)

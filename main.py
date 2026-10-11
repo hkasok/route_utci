@@ -16,10 +16,9 @@ Pipeline:
        as a flat-side-down hemisphere (dome) fit robustly to the core crown
        mass -- tolerant of noisy/outlier LiDAR returns, base above the
        pedestrian zone, no trunk.
-    2. Buildings: DBSCAN-cluster into individual buildings, extract each
-       one's real footprint (concave-aware, NOT a convex hull -- L/U/H
-       shaped buildings are common on campuses), extrude to a closed
-       LoD1 solid.
+    2. Buildings: LoD1 solids with one flat roof per building part of
+       near-uniform height, courtyards kept, outer walls taken below the
+       final terrain mesh (built after the ground; see 03_buildings_to_stl.py).
     3. Ground+water: rasterize to a DEM mesh, then reduce via clustering
        decimation (handles huge/near-planar real terrain -- Blender's
        dissolve alone has proven pathological performance here) followed
@@ -69,7 +68,10 @@ def parse_args():
     p.add_argument("--bld-simplify-tolerance", type=float, default=0.75,
                     help="Building footprint polygon simplification tolerance, meters "
                          "(default: 0.75)")
-    p.add_argument("--bld-roof-percentile", type=float, default=90.0)
+    p.add_argument("--bld-roof-percentile", type=float, default=90.0,
+                    help="block model only")
+    p.add_argument("--bld-lod1-model", choices=["segmented", "block"], default="segmented",
+                    help="Building model (see 03_buildings_to_stl.py; default segmented)")
 
     p.add_argument("--ground-raster-res", type=float, default=0.5,
                     help="Ground DEM rasterization resolution, meters (default: 0.5)")
@@ -170,22 +172,6 @@ def main():
         log_file, f"Stage 1: vegetation -> per-crown {args.crown_model} crowns"
     )
 
-    # ---- Stage 2: buildings (footprint extrusion) ----
-    bld_out = final_dir / "building_final.stl"
-    run_logged(
-        [sys.executable, str(SCRIPT_DIR / "03_buildings_to_stl.py"),
-         "--input", str(split_dir / "building_points.npy"),
-         "--output", str(bld_out),
-         "--ground-npy", str(split_dir / "ground_and_water_points.npy"),
-         "--raster-res", str(args.bld_raster_res),
-         "--cell-size", str(args.bld_cell_size),
-         "--connect-radius", str(args.bld_connect_radius),
-         "--min-cluster-points", str(args.bld_min_cluster_points),
-         "--simplify-tolerance", str(args.bld_simplify_tolerance),
-         "--roof-percentile", str(args.bld_roof_percentile)],
-        log_file, "Stage 2: buildings -> footprint extrusion"
-    )
-
     # ---- Stage 3: ground (raster -> clustering pre-pass -> timeout-guarded planar decimate) ----
     ground_raw = raw_dir / "ground_and_water_raster.stl"
     run_logged(
@@ -225,6 +211,25 @@ def main():
         with open(log_file, "a") as lf:
             lf.write(warn + "\n")
         shutil.copyfile(str(ground_clustered), str(ground_out))
+
+    # ---- Stage 2: buildings (LoD1 solids), AFTER the ground so every outer
+    # wall can be taken below the final terrain mesh ----
+    bld_out = final_dir / "building_final.stl"
+    run_logged(
+        [sys.executable, str(SCRIPT_DIR / "03_buildings_to_stl.py"),
+         "--input", str(split_dir / "building_points.npy"),
+         "--output", str(bld_out),
+         "--ground-npy", str(split_dir / "ground_and_water_points.npy"),
+         "--ground-stl", str(ground_out),
+         "--lod1-model", args.bld_lod1_model,
+         "--raster-res", str(args.bld_raster_res),
+         "--cell-size", str(args.bld_cell_size),
+         "--connect-radius", str(args.bld_connect_radius),
+         "--min-cluster-points", str(args.bld_min_cluster_points),
+         "--simplify-tolerance", str(args.bld_simplify_tolerance),
+         "--roof-percentile", str(args.bld_roof_percentile)],
+        log_file, f"Stage 2: buildings -> {args.bld_lod1_model} LoD1 solids"
+    )
 
     t1 = time.time()
 

@@ -981,9 +981,14 @@ def build_case_inputs(case_dir: Path, *, name: str, bin_min: float,
                         metadata_path.read_text(encoding="utf-8"))["grid"]
                     domain_area = (grid["nx"] * grid["ny"]
                                    * grid["spacing_m"] ** 2)
+            ground_relative = json.loads(manifest_path.read_text(
+                encoding="utf-8")).get("files", {}).get("ground_stl")
+            ground_stl = (case_dir / ground_relative) if ground_relative else None
             morphology = wp.morphology_from_geometry(
                 str(buildings_stl), cell_fluid_fraction=fluid_fraction,
-                domain_area_m2=domain_area)
+                domain_area_m2=domain_area,
+                ground_stl=(str(ground_stl) if ground_stl is not None
+                            and ground_stl.is_file() else None))
             reference_height = (float(free_stream_height_m)
                                 if free_stream_height_m
                                 else 2.0 * morphology.building_height_m)

@@ -81,7 +81,8 @@ def edge_sun(graphml, geo, times_csv):
     tau = np.zeros((len(T), len(xyz)), np.float32)
     for i, r in T.iterrows():
         sv = s05.sun_vector_enu(r.azimuth_deg, r.elevation_deg)
-        tau[i] = s05.direct_solar_transmission_batched(xyz, sv, bi, vi, K_DIR, 20000)
+        tau[i] = s05.direct_solar_transmission_batched(xyz, sv, bi, vi, K_DIR, 20000,
+                                                       ground_intersector=gi)
     return dict(edges=edges, owner=owner, tau=tau, cover=cover, hours=hh[sel],
                 elev=T.elevation_deg.values, dni=T.DNI_Wm2.values)
 
