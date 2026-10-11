@@ -234,6 +234,7 @@ def sustained_segments(walks: list[pd.DataFrame], flag_column, label) -> dict:
     """Residual on runs of one state lasting >= SUSTAINED_S, spin-up excluded."""
     rows = {"shade": [], "sun": []}
     n_segments = {"shade": 0, "sun": 0}
+    durations = {"shade": [], "sun": []}
     for g in walks:
         state = flag_column(g).to_numpy()
         valid = ~np.isnan(state.astype(float))
@@ -251,6 +252,7 @@ def sustained_segments(walks: list[pd.DataFrame], flag_column, label) -> dict:
                         if len(seg):
                             rows[key].append(seg)
                             n_segments[key] += 1
+                            durations[key].append(duration)
                 start = i
     out = {"definition": label}
     for key in ("shade", "sun"):
@@ -263,7 +265,13 @@ def sustained_segments(walks: list[pd.DataFrame], flag_column, label) -> dict:
             "residual_mean_K": float(seg["residual_K"].mean()),
             "residual_rmse_K": float(np.sqrt((seg["residual_K"] ** 2).mean())),
             "tg_minus_ta_meas_K": float(seg["measured_tg_minus_ta_K"].mean()),
-            "excess_Wm2": float(implied_excess(seg).mean()),
+            # Steady-state inversion; kept in the summary only. The stretches
+            # are shorter than the globe's time constant, so the globe is not
+            # in steady state on them and this number is not interpretable as
+            # an absorbed-load excess.
+            "excess_Wm2_steady_state_not_valid": float(implied_excess(seg).mean()),
+            "longest_s": float(max(durations[key])),
+            "median_s": float(np.median(durations[key])),
             "model_beam_Wm2": float(seg["globe_sw_direct_Wm2"].mean())
             if seg["globe_sw_direct_Wm2"].notna().all() else float("nan"),
         }
@@ -520,7 +528,8 @@ def fmt_ci(lo, hi, nd=2):
     return f"[{lo:+.{nd}f}, {hi:+.{nd}f}]"
 
 
-def table_attribution(reg, reg_ci, seg_meas, seg_both, mc, zero, thor, globe_ci) -> str:
+def table_attribution(reg, reg_ci, seg_meas, seg_both, mc, zero, thor, globe_ci,
+                      reg_model=None) -> str:
     L = [r"\begin{tabular}{llrrr}", r"\toprule",
          r"\multicolumn{5}{l}{\textbf{(a) Regression of the daytime residual} "
          + rf"($n = {reg['n']}$, $R^2 = {reg['r2']:.2f}$)" + r"} \\",
@@ -530,19 +539,24 @@ def table_attribution(reg, reg_ci, seg_meas, seg_both, mc, zero, thor, globe_ci)
         lo, hi = reg_ci[j]
         L.append(f"\\multicolumn{{2}}{{l}}{{{label}}} & {reg['coef_per_sd_K'][j]:+.2f} & "
                  f"{fmt_ci(lo, hi)} & {reg['partial_r2'][j]:.3f} \\\\")
-    L += [r"\addlinespace", r"\multicolumn{5}{l}{\textbf{(b) Residual on sustained "
-          r"($\geq$\SI{60}{\second}) sun/shade stretches}} \\",
-          r"State & $n$ & Residual & $(T_g - T_a)_{\mathrm{meas}}$ & Excess \\",
-          r"(measured) & (segments) & (K) & (K) & (\si{\watt\per\metre\squared}) \\",
+    if reg_model is not None:
+        lo, hi = reg_model["ci"]
+        L.append(r"\multicolumn{2}{l}{\quad $(T_g - T_a)_{\mathrm{model}}$ in its place} & "
+                 f"{reg_model['coef_per_sd_K'][0]:+.2f} & {fmt_ci(lo, hi)} & "
+                 f"{reg_model['partial_r2'][0]:.3f} \\\\")
+    L += [r"\addlinespace", r"\multicolumn{5}{l}{\textbf{(b) Residual on sun/shade "
+          r"stretches of $\geq$\SI{60}{\second}}} \\",
+          r"State & $n$ & Residual & $(T_g - T_a)_{\mathrm{meas}}$ & Longest \\",
+          r"(measured) & (segments) & (K) & (K) & (\si{\second}) \\",
           r"\midrule"]
     for key, name in (("shade", "Shade"), ("sun", "Sun")):
         s = seg_meas[key]
         L.append(f"{name} & {s['n']} ({s['segments']}) & {s['residual_mean_K']:+.2f} & "
-                 f"{s['tg_minus_ta_meas_K']:.1f} & {s['excess_Wm2']:+.1f} \\\\")
+                 f"{s['tg_minus_ta_meas_K']:.1f} & {s['longest_s']:.0f} \\\\")
     for key, name in (("shade", "Shade, model agrees"), ("sun", "Sun, model agrees")):
         s = seg_both[key]
         L.append(f"{name} & {s['n']} ({s['segments']}) & {s['residual_mean_K']:+.2f} & "
-                 f"{s['tg_minus_ta_meas_K']:.1f} & {s['excess_Wm2']:+.1f} \\\\")
+                 f"{s['tg_minus_ta_meas_K']:.1f} & {s['longest_s']:.0f} \\\\")
     L += [r"\addlinespace", r"\multicolumn{5}{l}{\textbf{(c) Emulator uncertainty "
           + rf"(Monte Carlo, {mc['draws']} draws): pooled daytime bias" + r"}} \\",
           r"\multicolumn{2}{l}{Quantity} & \multicolumn{3}{l}{Value} \\", r"\midrule",
@@ -652,7 +666,20 @@ def main():
     boots = bootstrap(d, lambda s: np.asarray(fit_regression(s)["coef_per_sd_K"]),
                       args.bootstrap_reps, rng)
     reg_ci = [ci(boots[:, j]) for j in range(len(REGRESSORS))]
+    # The measured globe-air difference shares the measured globe temperature
+    # with the residual (model minus measured), which biases its coefficient
+    # negative; the modelled difference shares the modelled one, biasing it
+    # positive. Report both: neither isolates a convective error on its own.
+    # A separate generator keeps every other bootstrap draw as before.
+    d_model = d.assign(measured_tg_minus_ta_K=d["globe_transient_temperature_C"]
+                       - d["measured_air_temperature_c"])
+    reg_model = fit_regression(d_model)
+    boots_m = bootstrap(d_model, lambda s: np.asarray(fit_regression(s)["coef_per_sd_K"]),
+                        args.bootstrap_reps, np.random.default_rng(args.seed + 1))
+    reg_model["ci"] = ci(boots_m[:, 0])
     print("\n(a) REGRESSION of residual (K):  R2 = %.3f" % reg["r2"])
+    print(f"   with the MODELLED Tg - Ta instead: {reg_model['coef_per_sd_K'][0]:+.3f} K/SD "
+          f"CI {reg_model['ci']}  R2 {reg_model['r2']:.3f}")
     for j, (k, _, unit) in enumerate(REGRESSORS):
         print(f"   {k:28s} {reg['coef_per_sd_K'][j]:+.3f} K/SD  CI {reg_ci[j]}  "
               f"raw {reg['coef_raw'][j]:+.4f} K/{unit}  partial R2 {reg['partial_r2'][j]:.3f}")
@@ -668,7 +695,8 @@ def main():
             print(f"   {s['definition']:28s} {key:5s} n={s[key].get('n', 0):4d} "
                   f"seg={s[key].get('segments', 0):3d} residual {s[key].get('residual_mean_K', float('nan')):+.2f} K "
                   f"Tg-Ta {s[key].get('tg_minus_ta_meas_K', float('nan')):.1f} K "
-                  f"excess {s[key].get('excess_Wm2', float('nan')):+.1f} W/m2")
+                  f"longest {s[key].get('longest_s', float('nan')):.0f} s "
+                  f"median {s[key].get('median_s', float('nan')):.0f} s")
 
     heading = heading_bins(d)
     print("\n(b') RESIDUAL BY HEADING RELATIVE TO THE SUN  (mean cos %.2f)" % heading["mean_cos_sun_heading"])
@@ -729,6 +757,7 @@ def main():
     out = args.paper_dir
     out.mkdir(parents=True, exist_ok=True)
     summary = {"n_day": int(len(d)), "regression": reg, "regression_ci": reg_ci,
+               "regression_with_modelled_tg_minus_ta": reg_model,
                "sustained_measured": seg_meas, "sustained_both": seg_both,
                "heading_bins": heading,
                "monte_carlo": mc, "zero_bias_scale": zero, "thorsson": thor,
@@ -738,7 +767,8 @@ def main():
     (out / "table_conversion_error.tex").write_text(table_conversion(conv) + "\n")
     if mc is not None:
         (out / "table_globe_attribution.tex").write_text(
-            table_attribution(reg, reg_ci, seg_meas, seg_both, mc, zero, thor, globe_ci) + "\n")
+            table_attribution(reg, reg_ci, seg_meas, seg_both, mc, zero, thor, globe_ci,
+                              reg_model) + "\n")
     print(f"\nwrote {out / 'globe_attribution_summary.json'}")
 
 

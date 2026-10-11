@@ -10,10 +10,14 @@ For every paired cart sample in TREC-Route's comparison file
 
 * RADIOMETER: SOLWEIG's kdown, kup, ldown, lup at the sample's pixel,
   interpolated linearly between the two bracketing 10-min steps.
-* GLOBE: SOLWEIG's globe-configured run (six equal weights, absorptivity 0.95,
-  emittance 0.957) gives the absorbed load S = 0.957 sigma Tmrt^4; its beam
-  term is corrected from the cube projection (0.20 cos h + sin h / 6) to the
-  sphere's 0.25 using SOLWEIG's own shadow output. The load is then passed
+* GLOBE: SOLWEIG's globe-configured posture (six equal weights, emittance
+  0.957) gives the absorbed load S = 0.957 sigma Tmrt^4. SOLWEIG clips Tmrt at
+  80 C, which the globe's daytime load exceeds, so the load at absorptivity
+  0.95 is rebuilt from the two unclipped runs at 0.475 and 0.2375 (the load is
+  linear in the absorptivity): S = 3 S(0.475) - 2 S(0.2375). Its beam term is
+  corrected from the projection of six faces at sun elevation h and azimuth a,
+  (sin h + cos h (|sin a| + |cos a|)) / 6, to the sphere's 0.25 using
+  SOLWEIG's own shadow output. The load is then passed
   through the SAME transient globe emulator, ventilation, air temperature and
   timestamps TREC-Route's globe used (black_globe.integrate_globe_temperature_C,
   integrated along the cart samples). As a control, TREC-Route's own absorbed
@@ -106,19 +110,37 @@ def main():
     sd = run / "solweig" / "run_standing"; sg = run / "solweig" / "run_globe"
     for v in ("kdown", "kup", "ldown", "lup", "tmrt"):
         P[f"solweig_{v}"] = RasterSeries(sd, v, date).sample(hour, row, col, step_h)
+    load = lambda tmrt: 0.957 * SIGMA * (tmrt + 273.15) ** 4
     tm_g = RasterSeries(sg, "tmrt", date).sample(hour, row, col, step_h)
+    tm_a = RasterSeries(run / "solweig" / "run_globe_k050", "tmrt", date).sample(hour, row, col, step_h)
+    tm_b = RasterSeries(run / "solweig" / "run_globe_k025", "tmrt", date).sample(hour, row, col, step_h)
     shadow = RasterSeries(sg, "shadow", date).sample(hour, row, col, step_h)
     elev = np.interp(hour, th, times.elevation_deg.to_numpy(float))
+    azim = np.interp(hour, th, np.unwrap(np.radians(times.azimuth_deg.to_numpy(float))))
     dni = np.interp(hour, th, times.DNI_Wm2.to_numpy(float))
+    # Tmrt is clipped at 80 C; the time interpolation blends neighbouring steps,
+    # so a sample counts as clipped when it lies within 0.01 K of the cap.
+    clipped = tm_g > 79.99
+    if (tm_a > 79.99).any():
+        raise SystemExit("the half-absorptivity run is itself clipped at 80 C")
+    s_full = 3.0 * load(tm_a) - 2.0 * load(tm_b)
+    ok = (tm_g < 79.0) & np.isfinite(tm_g)    # clear of the cap at both bracketing steps
+    lin_err = np.abs(s_full[ok] - load(tm_g[ok]))
+    print(f"globe load rebuilt from k = 0.475/0.2375: {int(clipped.sum())} clipped samples recovered; "
+          f"on unclipped samples it reproduces the k = 0.95 run to {np.median(lin_err):.2f} W/m2 "
+          f"median, {lin_err.max():.2f} max")
     h = np.radians(np.clip(elev, 0, 90))
-    cube = 0.20 * np.cos(h) + np.sin(h) / 6.0
+    cube = (np.sin(h) + np.cos(h) * (np.abs(np.sin(azim)) + np.abs(np.cos(azim)))) / 6.0
     beam_corr = np.where(elev > 0, 0.95 * dni * shadow * (0.25 - cube), 0.0)
-    P["solweig_globe_load_Wm2"] = 0.957 * SIGMA * (tm_g + 273.15) ** 4 + beam_corr
-    P["solweig_globe_load_uncorrected_Wm2"] = 0.957 * SIGMA * (tm_g + 273.15) ** 4
+    P["solweig_globe_load_Wm2"] = s_full + beam_corr
+    P["solweig_globe_load_uncorrected_Wm2"] = s_full
+    P["solweig_globe_load_clipped_Wm2"] = load(tm_g)
+    P["solweig_globe_tmrt_clipped"] = clipped
     P["solweig_shadow"] = shadow
 
     spec = bg.DEFAULT_GLOBE
     P["solweig_globe_C"] = np.nan; P["solweig_globe_uncorr_C"] = np.nan; P["trec_globe_resampled_C"] = np.nan
+    P["solweig_globe_as_clipped_C"] = np.nan
     for _, g in P.groupby(["route_id", "period"]):
         g = g.sort_values("seq"); idx = g.index
         el = (g.arrival_hour_local.to_numpy(float) - g.arrival_hour_local.iloc[0]) * 3600.0
@@ -126,6 +148,7 @@ def main():
         vent = g.globe_ventilation_ms.to_numpy(float)
         for src, dst in (("solweig_globe_load_Wm2", "solweig_globe_C"),
                          ("solweig_globe_load_uncorrected_Wm2", "solweig_globe_uncorr_C"),
+                         ("solweig_globe_load_clipped_Wm2", "solweig_globe_as_clipped_C"),
                          ("globe_absorbed_flux_Wm2", "trec_globe_resampled_C")):
             T, _ = bg.integrate_globe_temperature_C(el, g[src].to_numpy(float), ta, vent, spec)
             P.loc[idx, dst] = T
@@ -147,7 +170,8 @@ def main():
             trec=stats(P.globe_transient_temperature_C.to_numpy(float)[mg], tg[mg]),
             trec_resampled_control=stats(P.trec_globe_resampled_C.to_numpy(float)[mg], tg[mg]),
             solweig=stats(P.solweig_globe_C.to_numpy(float)[mg], tg[mg]),
-            solweig_no_beam_correction=stats(P.solweig_globe_uncorr_C.to_numpy(float)[mg], tg[mg]))
+            solweig_no_beam_correction=stats(P.solweig_globe_uncorr_C.to_numpy(float)[mg], tg[mg]),
+            solweig_tmrt_clipped_at_80C=stats(P.solweig_globe_as_clipped_C.to_numpy(float)[mg], tg[mg]))
         ta = P.measured_air_temperature_c.to_numpy(float); V = np.maximum(P.measured_wind_ms.to_numpy(float), 0)
         iso = ((tg + 273.15) ** 4 + 1.1e8 * V ** 0.6 / (0.95 * 0.15 ** 0.4) * (tg - ta)) ** 0.25 - 273.15
         out[per]["conventional_iso_globe_vs_cylinder_tmrt"] = dict(

@@ -435,38 +435,46 @@ def solar_clearness_envelope(measurements: pd.DataFrame, *, latitude, longitude,
 
 
 def clearness_to_cloud_fraction(clearness, dni_clear, dhi_clear, elevation_deg,
-                                *, tolerance: float = 1e-4) -> np.ndarray:
+                                *, tolerance: float = 0.02,
+                                resolution: int = 2001) -> np.ndarray:
     """Invert the pipeline's own cloud adjustment for each timestep.
 
-    ``apply_cloud_adjustment`` is monotone decreasing in cloud fraction, so a
-    bisection recovers the cloud fraction whose adjusted GHI reproduces the
-    fitted clearness. Going through that function (rather than writing an
+    Going through ``apply_cloud_adjustment`` (rather than writing an
     independent attenuation) keeps shortwave and the cloud-dependent sky
-    longwave on one convention.
+    longwave on one convention. That adjustment is NOT monotone in cloud
+    fraction: its diffuse boost outgrows the beam loss at low cover, so GHI
+    first rises above clear sky (to about c = 0.4 at midday) and only falls
+    back to the clear-sky value near c = 0.65. A bisection that assumes
+    monotonicity therefore maps a clearness of 0.9995 -- clear sky within the
+    noise of the envelope fit -- to c = 0.65, with 17 % less beam, three times
+    the diffuse and a cloudy-sky longwave.
+
+    The inversion instead takes, at each timestep, the LEAST cloud whose
+    adjusted GHI reproduces the fitted clearness to within ``tolerance`` (the
+    same tolerance ``clearness_inversion_report`` uses to call a forcing
+    representable). Where no cloud fraction comes that close, the closest one
+    is used. Night steps carry no shortwave information and keep zero cloud.
     """
     clearness = np.asarray(clearness, dtype=float)
     dni_clear = np.asarray(dni_clear, dtype=float)
     dhi_clear = np.asarray(dhi_clear, dtype=float)
     elevation_deg = np.asarray(elevation_deg, dtype=float)
-    ghi_clear = np.maximum(
-        dni_clear * np.sin(np.deg2rad(np.maximum(elevation_deg, 0.0))) + dhi_clear,
-        1e-9)
-    target = np.clip(clearness, 0.0, None) * ghi_clear
+    ghi_clear = (dni_clear * np.sin(np.deg2rad(np.maximum(elevation_deg, 0.0)))
+                 + dhi_clear)
+    day = ghi_clear > 1.0
 
-    low = np.zeros_like(target)
-    high = np.ones_like(target)
-    for _ in range(40):
-        mid = 0.5 * (low + high)
-        _dni, _dhi, ghi = apply_cloud_adjustment(
-            dni_clear, dhi_clear, elevation_deg, mid)
-        too_bright = ghi > target
-        low = np.where(too_bright, mid, low)
-        high = np.where(too_bright, high, mid)
-        if np.all(high - low < tolerance):
-            break
-    cloud = 0.5 * (low + high)
-    # Above clear sky no cloud fraction can help; report zero cloud there.
-    return np.where(clearness >= 1.0, 0.0, np.clip(cloud, 0.0, 1.0))
+    levels = np.linspace(0.0, 1.0, int(resolution))
+    _dni, _dhi, ghi = apply_cloud_adjustment(
+        dni_clear[None, :], dhi_clear[None, :], elevation_deg[None, :],
+        levels[:, None])
+    achieved = ghi / np.maximum(ghi_clear[None, :], 1e-9)
+    error = np.abs(achieved - np.clip(clearness, 0.0, None)[None, :])
+    within = error <= tolerance
+    first_within = np.argmax(within, axis=0)
+    closest = np.argmin(error, axis=0)
+    index = np.where(within.any(axis=0), first_within, closest)
+    cloud = levels[index]
+    return np.where(day, cloud, 0.0)
 
 
 def clearness_inversion_report(clearness, cloud, dni_clear, dhi_clear,

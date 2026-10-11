@@ -19,8 +19,18 @@ Two runs:
              weighted (1/6), with the globe's absorptivity 0.95 and emittance
              0.957; writes tmrt and shadow. Its Tmrt is the radiant
              temperature of the absorbed load on a six-directional sphere; the
-             beam projection (0.20 cos h + 1/6 sin h vs 0.25 for a sphere) is
-             corrected afterwards from the shadow output (paper_solweig_compare.py).
+             beam projection of the six faces,
+             (sin h + cos h (|sin a| + |cos a|)) / 6 at sun azimuth a, against
+             0.25 for a sphere, is corrected afterwards from the shadow output
+             (paper_solweig_compare.py).
+  globe_k050, globe_k025
+             the same posture with the shortwave absorptivity halved and
+             quartered. SOLWEIG clips Tmrt to [-50, 80] C, and the globe's
+             daytime load exceeds 80 C at a fifth of the Lisbon samples. The
+             absorbed load is linear in the shortwave absorptivity k
+             (S = L + k K, with surface temperatures independent of the body),
+             so these two unclipped runs give the full load at k = 0.95 as
+             S(0.95) = 3 S(0.475) - 2 S(0.2375).
 """
 from __future__ import annotations
 
@@ -39,7 +49,7 @@ ROOT = Path(__file__).resolve().parent
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--case", required=True)
-    ap.add_argument("--runs", nargs="+", default=["standing", "globe"])
+    ap.add_argument("--runs", nargs="+", default=["standing", "globe", "globe_k050", "globe_k025"])
     args = ap.parse_args()
     base = ROOT / "run_output" / args.case / "solweig"
     inp = base / "inputs"
@@ -78,6 +88,10 @@ def main():
                      ["tmrt", "kdown", "kup", "ldown", "lup", "shadow"]),
         "globe": (solweig.HumanParams(posture="sitting", abs_k=0.95, abs_l=0.957),
                   ["tmrt", "shadow"]),
+        "globe_k050": (solweig.HumanParams(posture="sitting", abs_k=0.475, abs_l=0.957),
+                       ["tmrt"]),
+        "globe_k025": (solweig.HumanParams(posture="sitting", abs_k=0.2375, abs_l=0.957),
+                       ["tmrt"]),
     }
     for name in args.runs:
         human, outputs = configs[name]

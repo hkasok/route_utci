@@ -107,6 +107,14 @@ for requested in (0.95, 1.0):
           f"round trip reproduces reachable clearness {requested:.2f}",
           f"achieved {achieved:.3f}")
 
+# The adjustment is not monotone (its diffuse boost first brightens the sky),
+# so a sky clear within the noise of the fit must stay cloud-free rather than
+# land on the far side of the GHI hump at c ~ 0.65.
+cloud = wfs.clearness_to_cloud_fraction(
+    np.full(len(grid), 0.9995), dni_clear, dhi_clear, elevation_grid)
+check(float(cloud.max()) == 0.0, "a near-clear sky (clearness 0.9995) inverts to zero cloud",
+      f"max cloud {float(cloud.max()):.3f}")
+
 # The established scalar cloud adjustment has a limited dynamic range. A
 # clearness below it must be REPORTED, never silently shipped as if achieved.
 for unreachable in (0.35, 0.6):
