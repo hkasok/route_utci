@@ -47,6 +47,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import pvlib
+from paper_tex import latex_minus
 
 CASES = [f"lisbon{i}" for i in range(1, 7)]
 CHANNELS = [
@@ -958,8 +959,8 @@ def main() -> None:
     print("\nINDEPENDENT INFORMATION (measured globe autocorrelation)")
     print(f"  n={autocorr['n_total']}  ->  n_effective ~ {autocorr['n_effective_total']}  "
           f"({autocorr['effective_fraction']:.1%} of nominal)")
-    (out / "table_radiometer.tex").write_text(table_radiometer(points) + "\n")
-    (out / "table_globe.tex").write_text(table_globe(points) + "\n")
+    (out / "table_radiometer.tex").write_text(latex_minus(table_radiometer(points)) + "\n")
+    (out / "table_globe.tex").write_text(latex_minus(table_globe(points)) + "\n")
 
     print("\nBLACK GLOBE (pooled, spin-up excluded)")
     for period, st in globe.items():

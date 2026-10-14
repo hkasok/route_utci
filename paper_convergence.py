@@ -30,6 +30,7 @@ import numpy as np
 import pandas as pd
 
 from paper_validation_figures import CASES, apply_measurement_qc, stats
+from paper_tex import latex_minus
 
 STAGES = [
     ("Facet-thermal MRT -- preparation", "Prep."),
@@ -240,7 +241,7 @@ def main():
     for r in abl:
         print(f"  {r['label']:40s} globe day {r['globe_day_mbe']:+.2f}/{r['globe_day_rmse']:.2f}  "
               f"night {r['globe_night_mbe']:+.2f}  Lup RMSE {r['lup_rmse']:.1f}  Ldn MBE {r['ldn_mbe']:+.1f}  Kdn RMSE {r['kdn_rmse']:.0f}")
-    (out / "table_ablation.tex").write_text(table_ablation(abl) + "\n")
+    (out / "table_ablation.tex").write_text(latex_minus(table_ablation(abl)) + "\n")
     (out / "convergence_summary.json").write_text(json.dumps(
         {"timings_s": tf.to_dict(orient="index"), "convergence": conv, "ablation": abl},
         indent=2, default=float) + "\n")

@@ -8,6 +8,7 @@ import argparse
 from pathlib import Path
 import numpy as np
 import pandas as pd
+from paper_tex import latex_minus
 
 ROOT = Path(__file__).resolve().parent
 
@@ -41,7 +42,7 @@ def write_tables(out, paper_dir: Path):
             a, b = out[per][key]["TREC-Route"], out[per][key]["SOLWEIG"]
             L.append(f"{label if j == 0 else ''} & {per} & {a['n']} & {' & '.join(cell(a, k))} & {' & '.join(cell(b, k))} \\\\")
     L += [r"\bottomrule", r"\end{tabular}"]
-    (paper_dir / "table_solweig.tex").write_text("\n".join(L) + "\n")
+    (paper_dir / "table_solweig.tex").write_text(latex_minus("\n".join(L)) + "\n")
     C = [r"\begin{tabular}{llrrrr}", r"\toprule",
          r" & & \multicolumn{2}{c}{TREC-Route} & \multicolumn{2}{c}{SOLWEIG} \\",
          r"\cmidrule(lr){3-4} \cmidrule(lr){5-6}",
@@ -52,7 +53,7 @@ def write_tables(out, paper_dir: Path):
             name = f"Lisbon~{case[-1]}" if per == "day" else ""
             C.append(f"{name} & {per} & {a['mbe']:+.2f} & {a['rmse']:.2f} & {b['mbe']:+.2f} & {b['rmse']:.2f} \\\\")
     C += [r"\bottomrule", r"\end{tabular}"]
-    (paper_dir / "table_solweig_cases.tex").write_text("\n".join(C) + "\n")
+    (paper_dir / "table_solweig_cases.tex").write_text(latex_minus("\n".join(C)) + "\n")
 
 
 def main():

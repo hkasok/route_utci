@@ -6,6 +6,7 @@ import argparse
 from pathlib import Path
 
 import pandas as pd
+from paper_tex import latex_minus
 
 
 def main():
@@ -32,8 +33,8 @@ def main():
     lines = [r"\setlength{\tabcolsep}{3pt}",
              r"\begin{tabular}{llrrrrrrrrr}", r"\toprule",
              r"Case & Walk & Length & Dur. & $\overline{T_a}$ & "
-             r"$\overline{T_{\mathrm{mrt}}}$ & $\overline{UTCI}$ & "
-             r"$UTCI_{\max}$ & $D$ & $\Delta T_{\mathrm{core}}^{\mathrm{rad}}$ & "
+             r"$\overline{T_{\mathrm{mrt}}}$ & $\overline{\mathrm{UTCI}}$ & "
+             r"$\mathrm{UTCI}_{\max}$ & $D$ & $\Delta T_{\mathrm{core}}^{\mathrm{rad}}$ & "
              r"$\Delta T_{\mathrm{core}}$ \\",
              r" & & (\si{\metre}) & (\si{\minute}) & (\si{\celsius}) & "
              r"(\si{\celsius}) & (\si{\celsius}) & (\si{\celsius}) & "
@@ -43,14 +44,14 @@ def main():
         label = f"Lisbon {case}" if period == "day" else ""
         lines.append(
             f"{label} & {period} & {r.length_m:.0f} & {r.walk_duration_min:.0f} & "
-            f"{r.mean_ta_c:.1f} & {r.mean_tmrt_c:.1f} & {r.mean_utci_c:.1f} & "
+            f"{r.mean_ta_c:.1f} & {r.mean_tmrt_c:.1f} & {r.walk_utci_c:.1f} & "
             f"{r.max_utci_c:.1f} & {r.strong_stress_dose_degmin:.0f} & "
             f"{r.radiation_attributable_rise_c:+.3f} & "
             f"{r.final_tcore_rise_c:.3f} \\\\")
         if period == "night" and case < 6:
             lines.append(r"\addlinespace[2pt]")
     lines += [r"\bottomrule", r"\end{tabular}"]
-    args.out.write_text("\n".join(lines) + "\n")
+    args.out.write_text(latex_minus("\n".join(lines)) + "\n")
     print(args.out.read_text())
 
 

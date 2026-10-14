@@ -50,6 +50,7 @@ import pvlib
 import black_globe as bg
 from paper_validation_figures import (CASES, apply_measurement_qc, load_points,
                                       stats)
+from paper_tex import latex_minus
 
 SIGMA = 5.670374419e-8
 GLOBE_D, GLOBE_EPS, GLOBE_ALPHA = 0.152, 0.957, 0.95
@@ -583,7 +584,7 @@ def table_attribution(reg, reg_ci, seg_meas, seg_both, mc, zero, thor, globe_ci,
           r"\midrule",
           rf"\multicolumn{{2}}{{l}}{{Required for zero daytime bias}} & \multicolumn{{3}}{{l}}{{"
           rf"$\times${zero['zero_bias_scale']:.2f}}} \\",
-          rf"\multicolumn{{2}}{{l}}{{Thorsson et al.\ (2007), \SI{{38}}{{\milli\metre}}}} & \multicolumn{{3}}{{l}}{{"
+          rf"\multicolumn{{2}}{{l}}{{Thorsson et al.\ \cite{{thorsson2007tmrt}}, \SI{{38}}{{\milli\metre}}}} & \multicolumn{{3}}{{l}}{{"
           rf"$\times${thor['enhancement_at_38mm']:.2f} at $V = {thor['mean_ventilation_ms']:.2f}$ m\,s$^{{-1}}$}} \\",
           rf"\multicolumn{{2}}{{l}}{{Scaled to \SI{{152}}{{\milli\metre}} ($D^{{-0.4}}$ / $D^{{-0.5}}$)}} & "
           rf"\multicolumn{{3}}{{l}}{{$\times${thor['enhancement_at_152mm_D-0.4']:.2f} / "
@@ -764,11 +765,11 @@ def main():
                "conversion_error": conv, "globe_block_bootstrap_ci": globe_ci,
                "measurement_qc": qc}
     (out / "globe_attribution_summary.json").write_text(json.dumps(summary, indent=2, default=float) + "\n")
-    (out / "table_conversion_error.tex").write_text(table_conversion(conv) + "\n")
+    (out / "table_conversion_error.tex").write_text(latex_minus(table_conversion(conv)) + "\n")
     if mc is not None:
-        (out / "table_globe_attribution.tex").write_text(
+        (out / "table_globe_attribution.tex").write_text(latex_minus(
             table_attribution(reg, reg_ci, seg_meas, seg_both, mc, zero, thor, globe_ci,
-                              reg_model) + "\n")
+                              reg_model)) + "\n")
     print(f"\nwrote {out / 'globe_attribution_summary.json'}")
 
 

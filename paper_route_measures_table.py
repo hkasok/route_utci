@@ -8,12 +8,13 @@ table_route_measures_sweep.tex  least-loaded route(s) under each measure at ever
                                 (supplement; paper_adhoc/run_route_measures_sweep.sh)
 route_measures_summary.json     numbers quoted in the text
 
-Two routes are tied under a measure when their difference is within the
-largest shift that pair's difference showed at the 2.5/97.5 percentiles of
-the ranking Monte Carlo (13:00, 16:00 and 17:00 departures), which propagates
-the validated sun/shade and radiant-load error (paper_ranking_uncertainty.py).
-The measure's resolution reported in the text is the largest such shift
-over all pairs.
+Ties use the ranking Monte Carlo (paper_ranking_uncertainty.py), which
+propagates the validated sun/shade and radiant-load error at 13:00, 16:00 and
+17:00. At those departures two routes are tied under a measure when the
+2.5-97.5 percentile band of their difference over the draws includes zero; at
+the other sweep departures, when their difference is within the largest shift
+of that pair's difference found at the three. The measure's resolution quoted
+in the text is the largest such shift over all pairs.
 """
 import argparse
 import json
@@ -30,8 +31,8 @@ ROWS = [
     ("Time sunlit, $t_{\\mathrm{sun}}$", r"\si{\minute}", "jos3", "time_sunlit_min", 1, None),
     ("Mean $T_{\\mathrm{mrt}}$", r"\si{\celsius}", "jos3", "mean_tmrt_c", 1, None),
     ("comfort", None),
-    ("Walk UTCI, $\\overline{UTCI}$", r"\si{\celsius}", "utci", "walk_utci_c", 2, "walk_utci_c"),
-    ("Worst stretch, $UTCI_{3}$", r"\si{\celsius}", "utci", "worst_3min_utci_c", 2,
+    ("Walk UTCI, $\\overline{\\mathrm{UTCI}}$", r"\si{\celsius}", "utci", "walk_utci_c", 2, "walk_utci_c"),
+    ("Worst stretch, $\\mathrm{UTCI}_{3}$", r"\si{\celsius}", "utci", "worst_3min_utci_c", 2,
      "worst_3min_utci_c"),
     ("stress", None),
     ("Very strong stress, $t_{38}$", r"\si{\minute}", "utci", "very_strong_stress_min", 1,
@@ -66,17 +67,29 @@ def pair_shifts(mc_measure):
     return out
 
 
-def tied(values, shifts, a, b):
-    return abs(values[b] - values[a]) <= shifts[tuple(sorted((a, b)))]
+def tie_rule(mc_measure, departure):
+    """Function (values, a, b) -> True if routes a and b are tied."""
+    bands = {}
+    for key, q in mc_measure["pairs"].items():
+        dep, pair = key.split(":")
+        if abs(float(dep) - departure) < 1e-6:
+            bands[tuple(int(x) for x in pair.split("-"))] = q["resolved"]
+    shifts = pair_shifts(mc_measure)
+
+    def tied(values, a, b):
+        pair = tuple(sorted((a, b)))
+        if pair in bands:                       # Monte Carlo at this departure
+            return not bands[pair]
+        return abs(values[b] - values[a]) <= shifts[pair]
+    return tied
 
 
-def order_string(values, shifts):
-    """Lowest-to-highest route order; adjacent routes within their pair's
-    shift under the validated error are tied."""
+def order_string(values, tied):
+    """Lowest-to-highest route order with ties marked."""
     keys = sorted(values, key=lambda k: (values[k], k))
     out = str(keys[0])
     for a, b in zip(keys, keys[1:]):
-        out += (r"$\approx$" if tied(values, shifts, a, b) else "$<$") + str(b)
+        out += (r"$\approx$" if tied(values, a, b) else "$<$") + str(b)
     return out
 
 
@@ -105,7 +118,7 @@ def main_table(viz, out, res):
         if key is None:
             order = ""
         else:
-            order = order_string(vals, pair_shifts(res[key]))
+            order = order_string(vals, tie_rule(res[key], 13.0))
             summary[col + "_order"] = order
         lines.append(f"{label} ({unit}) & " + " & ".join(cells) + f" & {order} \\\\")
     summary["t_peak_after_arrival_min"] = {
@@ -118,8 +131,8 @@ def main_table(viz, out, res):
     return summary
 
 
-SWEEP_COLS = [("walk_utci_c", "utci", r"$\overline{UTCI}$", "walk_utci_c"),
-              ("worst_3min_utci_c", "utci", r"$UTCI_{3}$", "worst_3min_utci_c"),
+SWEEP_COLS = [("walk_utci_c", "utci", r"$\overline{\mathrm{UTCI}}$", "walk_utci_c"),
+              ("worst_3min_utci_c", "utci", r"$\mathrm{UTCI}_{3}$", "worst_3min_utci_c"),
               ("very_strong_stress_min", "utci", r"$t_{38}$", "very_strong_stress_min"),
               ("wettedness_discomfort_min", "jos3", r"$t_{w}$", "wettedness_discomfort_min"),
               ("final_tcore_rise_c", "jos3", r"$\Delta T_{\mathrm{core}}$", "tcore_rise_c"),
@@ -139,9 +152,9 @@ def sweep_table(sweep_dir, out, res):
         cells = []
         for col, s, _, key in SWEEP_COLS:
             vals = {r: float(src[s].loc[r, col]) for r in ROUTES}
-            shifts = pair_shifts(res[key])
+            tied = tie_rule(res[key], int(tag[:2]) + int(tag[2:]) / 60.0)
             r0 = min(ROUTES, key=lambda r: (vals[r], r))
-            best = [r for r in ROUTES if r == r0 or tied(vals, shifts, r0, r)]
+            best = [r for r in ROUTES if r == r0 or tied(vals, r0, r)]
             if len(best) == len(ROUTES):
                 cell = "none" if max(vals.values()) == 0 else "all"
                 k = cell
