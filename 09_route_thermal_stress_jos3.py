@@ -68,6 +68,7 @@ import clothing_profiles
 from generate_route import load_routes_directory, route_arrival_schedule
 from physical_checks import check_jos3_inputs
 import jos3_protocol
+import route_measures
 
 
 CORE_TEMP_SETPOINT_C = 37.0  # used only for reporting "rise from baseline"
@@ -110,7 +111,7 @@ class MrtField:
 def simulate_walk(xy, arrival_hour, nearest_idx, mrt, environment, subject,
                   segment_clo, activity_par, equilibration_min, context,
                   radiation_neutral=False, precondition="indoor",
-                  core_metric="pelvis"):
+                  core_metric="pelvis", post_arrival_min=30.0):
     """Walk one route through JOS-3, carrying physiological state forward.
 
     ``radiation_neutral`` replaces Tmrt with air temperature at every point
@@ -122,6 +123,13 @@ def simulate_walk(xy, arrival_hour, nearest_idx, mrt, environment, subject,
     indoors (``jos3_protocol``), so real and neutral runs, and all routes and
     departures, share one start; ``"outdoor_walk"`` is the earlier
     ``equilibration_min`` at walking activity in the start conditions.
+
+    After arrival the walker stands for ``post_arrival_min`` in the same
+    conditioned building conditions as the start (``jos3_protocol``); the
+    core keeps warming for some minutes after the walk, so the peak rise
+    (``peak_tcore_rise_c``) can exceed the rise at arrival. The walk
+    also records whole-body skin wettedness and the heat stored by the
+    body (sum over nodes of heat capacity x temperature change).
     """
     xy = np.asarray(xy, dtype=float)
     n_pts = len(xy)
@@ -172,6 +180,8 @@ def simulate_walk(xy, arrival_hour, nearest_idx, mrt, environment, subject,
         raise ValueError(f"unknown precondition {precondition!r}")
     model.par = activity_par
     start_core_c = weighted_core_c()
+    heat_capacity = np.asarray(model._cap, dtype=float)
+    start_heat_j = float(np.dot(heat_capacity, model._t_body))
 
     # Extremity (hand/foot) state is tracked as its OWN quantity, at the
     # same instants as the core trace, so every reported extremity number
@@ -187,7 +197,8 @@ def simulate_walk(xy, arrival_hour, nearest_idx, mrt, environment, subject,
 
     traces = {k: np.zeros(n_pts) for k in (
         "tcore_trace_c", "tmrt_trace_c", "ta_trace_c", "tau_dir_trace",
-        "hand_foot_trace_c", "hand_foot_skin_trace_c")}
+        "hand_foot_trace_c", "hand_foot_skin_trace_c",
+        "wettedness_trace", "heat_stored_trace_kj")}
     for j in range(n_pts):
         ta_now, tmrt_now, rh_now, v_now, tau_now = forcing(j)
         if j == 0:   # guard once per route (uniform drivers, hot loop)
@@ -203,6 +214,9 @@ def simulate_walk(xy, arrival_hour, nearest_idx, mrt, environment, subject,
         traces["tau_dir_trace"][j] = tau_now
         traces["hand_foot_trace_c"][j] = float(np.mean(model.t_core[idx_extreme]))
         traces["hand_foot_skin_trace_c"][j] = float(np.mean(model.t_skin[idx_extreme]))
+        traces["wettedness_trace"][j] = float(model.w_mean)
+        traces["heat_stored_trace_kj"][j] = (
+            float(np.dot(heat_capacity, model._t_body)) - start_heat_j) / 1e3
     traces.update({
         "cumdist_m": cumdist,
         "start_core_c": start_core_c,
@@ -213,6 +227,34 @@ def simulate_walk(xy, arrival_hour, nearest_idx, mrt, environment, subject,
         "extremity_skin_change_c": (traces["hand_foot_skin_trace_c"][-1]
                                     - start_extremity_skin_c),
     })
+    elapsed_min = (np.asarray(arrival_hour, float) - arrival_hour[0]) * 60.0
+    traces["wettedness_discomfort_min"] = (
+        route_measures.minutes_at_or_above(
+            traces["wettedness_trace"], elapsed_min,
+            route_measures.WETTEDNESS_DISCOMFORT)
+        if n_pts > 1 else 0.0)
+    traces["max_wettedness"] = float(np.max(traces["wettedness_trace"]))
+    traces["heat_stored_kj"] = float(traces["heat_stored_trace_kj"][-1])
+    # after arrival: back indoors, standing, in the start building's conditions
+    post_core = []
+    if post_arrival_min > 0:
+        model.tdb = model.tr = jos3_protocol.INDOOR_AIR_TEMPERATURE_C
+        model.rh = jos3_protocol.INDOOR_RH_PCT
+        model.v = jos3_protocol.INDOOR_AIR_SPEED_MS
+        model.par = jos3_protocol.INDOOR_ACTIVITY_PAR
+        for _ in range(int(round(post_arrival_min))):
+            model.simulate(times=1, dtime=60, output=False)
+            post_core.append(weighted_core_c())
+    post_core = np.asarray(post_core, dtype=float)
+    arrival_core = traces["tcore_trace_c"][-1]
+    if len(post_core) and post_core.max() > arrival_core:
+        k = int(np.argmax(post_core))
+        traces["peak_tcore_rise_c"] = float(post_core[k] - start_core_c)
+        traces["t_peak_after_arrival_min"] = float(k + 1)
+    else:
+        traces["peak_tcore_rise_c"] = float(arrival_core - start_core_c)
+        traces["t_peak_after_arrival_min"] = 0.0
+    traces["post_arrival_tcore_rise_c"] = post_core - start_core_c
     return traces
 
 
@@ -260,6 +302,10 @@ def parse_args():
                          "(the earlier protocol; default 10.0). The default indoor "
                          "preconditioning runs to steady state instead.")
     jos3_protocol.add_protocol_arguments(p)
+    p.add_argument("--post-arrival-min", type=float, default=30.0,
+                    help="Minutes simulated after arrival, standing back in the "
+                         "start building's conditions, to find the peak core rise "
+                         "(the core keeps warming after the walk; default 30, 0 = off)")
     p.add_argument("--activity-par", default="auto",
                     help="Physical activity ratio (metabolic rate / basal rate) "
                          "while walking. 'auto' (default) derives it per walk "
@@ -415,7 +461,8 @@ def main():
                              activity_par, args.equilibration_min,
                              context=f"stage 09 route {route_id}",
                              precondition=args.precondition,
-                             core_metric=args.core_metric)
+                             core_metric=args.core_metric,
+                             post_arrival_min=args.post_arrival_min)
         # Counterfactual: the same walk with the radiant environment equal to
         # air temperature (Tmrt = Ta). Everything else -- pace, air, wind,
         # humidity, clothing, subject -- is identical, so the difference is
@@ -426,7 +473,8 @@ def main():
                                 context=f"stage 09 route {route_id} (neutral)",
                                 radiation_neutral=True,
                                 precondition=args.precondition,
-                                core_metric=args.core_metric)
+                                core_metric=args.core_metric,
+                                post_arrival_min=args.post_arrival_min)
         walk_duration_min = (arrival_hour[-1] - arrival_hour[0]) * 60.0
         dt_min = np.diff(arrival_hour, prepend=arrival_hour[0]) * 60.0
         sunlit = walk["tau_dir_trace"] > SUNLIT_TAU
@@ -453,6 +501,16 @@ def main():
             "radiation_attributable_rise_c": (walk["final_tcore_rise_c"]
                                               - neutral["final_tcore_rise_c"]),
             "time_sunlit_min": float(np.sum(dt_min[sunlit])),
+            "peak_tcore_rise_c": walk["peak_tcore_rise_c"],
+            "t_peak_after_arrival_min": walk["t_peak_after_arrival_min"],
+            "heat_stored_kj": walk["heat_stored_kj"],
+            "heat_stored_neutral_kj": neutral["heat_stored_kj"],
+            "heat_stored_radiant_kj": (walk["heat_stored_kj"]
+                                       - neutral["heat_stored_kj"]),
+            "wettedness_discomfort_min": walk["wettedness_discomfort_min"],
+            "max_wettedness": walk["max_wettedness"],
+            "wettedness_trace": walk["wettedness_trace"],
+            "heat_stored_trace_kj": walk["heat_stored_trace_kj"],
             "mean_speed_ms": mean_speed,
             "activity_par": activity_par,
             "final_tcore_c": walk["tcore_trace_c"][-1],
@@ -501,6 +559,14 @@ def main():
         "neutral_tcore_rise_c": r["neutral_tcore_rise_c"],
         "radiation_attributable_rise_c": r["radiation_attributable_rise_c"],
         "time_sunlit_min": r["time_sunlit_min"],
+        "peak_tcore_rise_c": r["peak_tcore_rise_c"],
+        "t_peak_after_arrival_min": r["t_peak_after_arrival_min"],
+        "post_arrival_min": args.post_arrival_min,
+        "heat_stored_kj": r["heat_stored_kj"],
+        "heat_stored_neutral_kj": r["heat_stored_neutral_kj"],
+        "heat_stored_radiant_kj": r["heat_stored_radiant_kj"],
+        "wettedness_discomfort_min": r["wettedness_discomfort_min"],
+        "max_wettedness": r["max_wettedness"],
         "mean_speed_ms": r["mean_speed_ms"], "activity_par": r["activity_par"],
         "mean_tmrt_c": r["mean_tmrt_c"], "max_tmrt_c": r["max_tmrt_c"],
         "final_tcore_c": r["final_tcore_c"],
@@ -530,6 +596,8 @@ def main():
             "tau_direct": r["tau_dir_trace"],
             "tcore_rise_c": r["tcore_rise_trace_c"],
             "tcore_rise_neutral_c": r["tcore_rise_neutral_trace_c"],
+            "skin_wettedness": r["wettedness_trace"],
+            "heat_stored_kj": r["heat_stored_trace_kj"],
         }).to_csv(out_dir / f"route_{r['route_id']}_jos3_trace.csv", index=False)
     # Full clothing provenance: which outfit each walk wore and every term
     # that produced it, so a result is never silently re-clothed.
