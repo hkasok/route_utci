@@ -1,57 +1,82 @@
 #!/usr/bin/env python3
-"""Paper tables of the route comfort and heat-risk measures (campus).
+"""Paper tables of the route comfort and heat-strain measures (campus).
 
-table_route_measures.tex        13:00 departure, every measure per route and
-                                the route order it gives (main text)
-table_route_measures_sweep.tex  least-loaded route under each measure at every
+table_route_measures.tex        13:00 departure, every measure per route, its
+                                resolution and the route order it gives (main text)
+table_route_measures_sweep.tex  least-loaded route(s) under each measure at every
                                 departure of the fixed-clothing sweep
                                 (supplement; paper_adhoc/run_route_measures_sweep.sh)
 route_measures_summary.json     numbers quoted in the text
+
+Two routes are tied under a measure when their difference is within the
+largest shift that pair's difference showed at the 2.5/97.5 percentiles of
+the ranking Monte Carlo (13:00, 16:00 and 17:00 departures), which propagates
+the validated sun/shade and radiant-load error (paper_ranking_uncertainty.py).
+The measure's resolution reported in the text is the largest such shift
+over all pairs.
 """
 import argparse
 import json
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
 ROUTES = (1, 2, 3, 4)
-# (label, unit, source, column, decimals)
+# (label, unit, source, column, decimals, Monte Carlo key or None)
 ROWS = [
     ("route", None),
-    ("Length", r"\si{\metre}", "jos3", "length_m", 0),
-    ("Duration", r"\si{\minute}", "jos3", "walk_duration_min", 1),
-    ("Time sunlit, $t_{\\mathrm{sun}}$", r"\si{\minute}", "jos3", "time_sunlit_min", 1),
-    ("Mean $T_{\\mathrm{mrt}}$", r"\si{\celsius}", "jos3", "mean_tmrt_c", 1),
+    ("Length", r"\si{\metre}", "jos3", "length_m", 0, None),
+    ("Duration", r"\si{\minute}", "jos3", "walk_duration_min", 1, None),
+    ("Time sunlit, $t_{\\mathrm{sun}}$", r"\si{\minute}", "jos3", "time_sunlit_min", 1, None),
+    ("Mean $T_{\\mathrm{mrt}}$", r"\si{\celsius}", "jos3", "mean_tmrt_c", 1, None),
     ("comfort", None),
-    ("Walk UTCI, $\\overline{UTCI}$", r"\si{\celsius}", "utci", "walk_utci_c", 2),
-    ("Very strong stress, $t_{38}$", r"\si{\minute}", "utci", "very_strong_stress_lagged_min", 1),
-    ("Worst stretch, $UTCI_{3}$", r"\si{\celsius}", "utci", "worst_3min_utci_c", 2),
-    ("Wettedness $>0.36$, $t_{w}$", r"\si{\minute}", "jos3", "wettedness_discomfort_min", 1),
-    ("Strong-stress dose, $D$", r"\si{\celsius\minute}", "utci", "strong_stress_dose_degmin", 0),
-    ("strain", None),
-    ("Core rise, $\\Delta T_{\\mathrm{core}}$", r"\si{\celsius}", "jos3", "final_tcore_rise_c", 3),
+    ("Walk UTCI, $\\overline{UTCI}$", r"\si{\celsius}", "utci", "walk_utci_c", 2, "walk_utci_c"),
+    ("Worst stretch, $UTCI_{3}$", r"\si{\celsius}", "utci", "worst_3min_utci_c", 2,
+     "worst_3min_utci_c"),
+    ("stress", None),
+    ("Very strong stress, $t_{38}$", r"\si{\minute}", "utci", "very_strong_stress_min", 1,
+     "very_strong_stress_min"),
+    ("Strong-stress dose, $D$", r"\si{\celsius\minute}", "utci", "strong_stress_dose_degmin", 0,
+     "strong_stress_dose_degmin"),
+    ("body", None),
+    ("Wettedness $\\geq 0.36$, $t_{w}$", r"\si{\minute}", "jos3", "wettedness_discomfort_min", 1,
+     "wettedness_discomfort_min"),
+    ("Core rise, $\\Delta T_{\\mathrm{core}}$", r"\si{\celsius}", "jos3", "final_tcore_rise_c", 3,
+     "tcore_rise_c"),
     ("\\quad radiant part, $\\Delta T_{\\mathrm{core}}^{\\mathrm{rad}}$", r"\si{\celsius}", "jos3",
-     "radiation_attributable_rise_c", 3),
-    ("Peak core rise, $\\Delta T_{\\mathrm{core}}^{\\mathrm{peak}}$", r"\si{\celsius}", "jos3", "peak_tcore_rise_c", 3),
-    ("Heat stored, $\\Delta H$", r"\si{\kilo\joule}", "jos3", "heat_stored_kj", 0),
-    ("\\quad radiant part, $\\Delta H^{\\mathrm{rad}}$", r"\si{\kilo\joule}", "jos3", "heat_stored_radiant_kj", 0),
+     "radiation_attributable_rise_c", 3, "tcore_rad_c"),
+    ("Peak core rise, $\\Delta T_{\\mathrm{core}}^{\\mathrm{peak}}$", r"\si{\celsius}", "jos3",
+     "peak_tcore_rise_c", 3, "peak_tcore_rise_c"),
+    ("Heat stored, $\\Delta H$", r"\si{\kilo\joule}", "jos3", "heat_stored_kj", 0, "heat_stored_kj"),
+    ("\\quad radiant part, $\\Delta H^{\\mathrm{rad}}$", r"\si{\kilo\joule}", "jos3",
+     "heat_stored_radiant_kj", 0, "heat_stored_rad_kj"),
 ]
-BLOCKS = {"route": "Route", "comfort": "Comfort while walking",
-          "strain": "Heat strain"}
-RANKED = {"walk_utci_c", "very_strong_stress_lagged_min", "worst_3min_utci_c",
-          "wettedness_discomfort_min", "strong_stress_dose_degmin",
-          "final_tcore_rise_c", "radiation_attributable_rise_c", "peak_tcore_rise_c",
-          "heat_stored_kj", "heat_stored_radiant_kj"}
+BLOCKS = {"route": "Route", "comfort": "Thermal comfort while walking (UTCI)",
+          "stress": "Heat-stress exposure (UTCI)", "body": "Physiological response (JOS-3)"}
 
 
-def order_string(values, decimals):
-    """Lowest-to-highest route order; routes equal at the shown precision tie."""
-    r = {k: round(float(v), decimals) for k, v in values.items()}
-    keys = sorted(r, key=lambda k: (r[k], k))
+def pair_shifts(mc_measure):
+    """Largest shift of each route pair's difference over the MC departures."""
+    out = {}
+    for key, q in mc_measure["pairs"].items():
+        pair = tuple(int(x) for x in key.split(":")[1].split("-"))
+        lo, hi = q["band"]
+        g = q["baseline_gap"]
+        out[pair] = max(out.get(pair, 0.0), abs(g - lo), abs(hi - g))
+    return out
+
+
+def tied(values, shifts, a, b):
+    return abs(values[b] - values[a]) <= shifts[tuple(sorted((a, b)))]
+
+
+def order_string(values, shifts):
+    """Lowest-to-highest route order; adjacent routes within their pair's
+    shift under the validated error are tied."""
+    keys = sorted(values, key=lambda k: (values[k], k))
     out = str(keys[0])
     for a, b in zip(keys, keys[1:]):
-        out += ("$=$" if r[b] == r[a] else "$<$") + str(b)
+        out += (r"$\approx$" if tied(values, shifts, a, b) else "$<$") + str(b)
     return out
 
 
@@ -61,7 +86,7 @@ def load(viz):
     return {"utci": u, "jos3": j}
 
 
-def main_table(viz, out):
+def main_table(viz, out, res):
     src = load(viz)
     lines = [r"\begin{tabular}{lrrrrl}", r"\toprule",
              r"Measure & Route~1 & Route~2 & Route~3 & Route~4 & Order \\",
@@ -73,67 +98,78 @@ def main_table(viz, out):
                 lines.append(r"\addlinespace")
             lines.append(r"\multicolumn{6}{l}{\emph{" + BLOCKS[row[0]] + r"}} \\")
             continue
-        label, unit, s, col, dec = row
+        label, unit, s, col, dec, key = row
         vals = {r: float(src[s].loc[r, col]) for r in ROUTES}
         summary[col] = vals
         cells = [f"{vals[r]:.{dec}f}" for r in ROUTES]
-        order = order_string(vals, dec) if col in RANKED else ""
+        if key is None:
+            order = ""
+        else:
+            order = order_string(vals, pair_shifts(res[key]))
+            summary[col + "_order"] = order
         lines.append(f"{label} ({unit}) & " + " & ".join(cells) + f" & {order} \\\\")
-    peak_t = {r: float(src["jos3"].loc[r, "t_peak_after_arrival_min"]) for r in ROUTES}
-    summary["t_peak_after_arrival_min"] = peak_t
+    summary["t_peak_after_arrival_min"] = {
+        r: float(src["jos3"].loc[r, "t_peak_after_arrival_min"]) for r in ROUTES}
     summary["worst_3min_end_distance_m"] = {
         r: float(src["utci"].loc[r, "worst_3min_end_distance_m"]) for r in ROUTES}
+    summary["max_wettedness"] = {r: float(src["jos3"].loc[r, "max_wettedness"]) for r in ROUTES}
     lines += [r"\bottomrule", r"\end{tabular}"]
     (out / "table_route_measures.tex").write_text("\n".join(lines) + "\n")
     return summary
 
 
-SWEEP_COLS = [("walk_utci_c", "utci", 2, r"$\overline{UTCI}$"),
-              ("very_strong_stress_lagged_min", "utci", 1, r"$t_{38}$"),
-              ("worst_3min_utci_c", "utci", 2, r"$UTCI_{3}$"),
-              ("wettedness_discomfort_min", "jos3", 1, r"$t_{w}$"),
-              ("final_tcore_rise_c", "jos3", 3, r"$\Delta T_{\mathrm{core}}$"),
-              ("peak_tcore_rise_c", "jos3", 3, r"$\Delta T_{\mathrm{core}}^{\mathrm{peak}}$"),
-              ("heat_stored_kj", "jos3", 0, r"$\Delta H$")]
+SWEEP_COLS = [("walk_utci_c", "utci", r"$\overline{UTCI}$", "walk_utci_c"),
+              ("worst_3min_utci_c", "utci", r"$UTCI_{3}$", "worst_3min_utci_c"),
+              ("very_strong_stress_min", "utci", r"$t_{38}$", "very_strong_stress_min"),
+              ("wettedness_discomfort_min", "jos3", r"$t_{w}$", "wettedness_discomfort_min"),
+              ("final_tcore_rise_c", "jos3", r"$\Delta T_{\mathrm{core}}$", "tcore_rise_c"),
+              ("peak_tcore_rise_c", "jos3", r"$\Delta T_{\mathrm{core}}^{\mathrm{peak}}$",
+               "peak_tcore_rise_c"),
+              ("heat_stored_kj", "jos3", r"$\Delta H$", "heat_stored_kj")]
 
 
-def sweep_table(sweep_dir, out):
-    rows, best_counts = [], {c[0]: {} for c in SWEEP_COLS}
+def sweep_table(sweep_dir, out, res):
+    counts = {c[0]: {} for c in SWEEP_COLS}
     lines = [r"\begin{tabular}{l" + "c" * len(SWEEP_COLS) + "}", r"\toprule",
-             "Departure & " + " & ".join(c[3] for c in SWEEP_COLS) + r" \\", r"\midrule"]
+             "Departure & " + " & ".join(c[2] for c in SWEEP_COLS) + r" \\", r"\midrule"]
+    n = 0
     for d in sorted(sweep_dir.glob("dep_*")):
         src = load(d)
         tag = d.name[4:]
         cells = []
-        for col, s, dec, _ in SWEEP_COLS:
-            vals = {r: round(float(src[s].loc[r, col]), dec) for r in ROUTES}
-            lo = min(vals.values())
-            best = [r for r in ROUTES if vals[r] == lo]
+        for col, s, _, key in SWEEP_COLS:
+            vals = {r: float(src[s].loc[r, col]) for r in ROUTES}
+            shifts = pair_shifts(res[key])
+            r0 = min(ROUTES, key=lambda r: (vals[r], r))
+            best = [r for r in ROUTES if r == r0 or tied(vals, shifts, r0, r)]
             if len(best) == len(ROUTES):
-                cells.append("all " + f"{lo:.{dec}f}")
-                key = "all"
+                cell = "none" if max(vals.values()) == 0 else "all"
+                k = cell
             else:
-                cells.append("{=}".join(map(str, best)))
-                key = "=".join(map(str, best))
-            best_counts[col][key] = best_counts[col].get(key, 0) + 1
-        rows.append(tag)
+                cell = k = r"$\approx$".join(map(str, best))
+            cells.append(cell)
+            counts[col][k] = counts[col].get(k, 0) + 1
+        n += 1
         lines.append(f"{tag[:2]}:{tag[2:]} & " + " & ".join(cells) + r" \\")
     lines += [r"\bottomrule", r"\end{tabular}"]
     (out / "table_route_measures_sweep.tex").write_text("\n".join(lines) + "\n")
-    return {"n_departures": len(rows), "best_route_counts": best_counts}
+    return {"n_departures": n, "best_route_counts": counts}
 
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--viz", default="run_output/MMC/viz")
     p.add_argument("--sweep", default="run_output/MMC/postprocessing/route_measures_sweep")
+    p.add_argument("--mc", default="run_output/MMC/postprocessing/ranking_uncertainty/summary.json")
     p.add_argument("--paper-dir", default="/home/harshin/files/fastUTEC paper")
     a = p.parse_args()
+    res = json.loads(Path(a.mc).read_text())["measures"]
     out = Path(a.paper_dir)
-    summary = {"departure_13h": main_table(Path(a.viz), out),
-               "sweep": sweep_table(Path(a.sweep), out)}
+    summary = {"resolution": {k: v["resolution"] for k, v in res.items()},
+               "departure_13h": main_table(Path(a.viz), out, res),
+               "sweep": sweep_table(Path(a.sweep), out, res)}
     (out / "route_measures_summary.json").write_text(json.dumps(summary, indent=2))
-    print(json.dumps(summary["sweep"], indent=1))
+    print(json.dumps({"resolution": summary["resolution"], "sweep": summary["sweep"]}, indent=1))
 
 
 if __name__ == "__main__":

@@ -56,7 +56,16 @@ from black_globe import (GlobeSpec, integrate_globe_temperature_C,
                          receptor_velocity, ventilation_speed)
 from thermal_common import SIGMA
 from route_measures import utci_route_measures
+import jos3_protocol
 
+
+
+# UTCI of the conditioned building every JOS-3 walk starts from (air and
+# radiant temperature, humidity; still air at UTCI's 0.5 m/s floor)
+START_UTCI_C = float(utci(
+    tdb=jos3_protocol.INDOOR_AIR_TEMPERATURE_C,
+    tr=jos3_protocol.INDOOR_AIR_TEMPERATURE_C, v=0.5,
+    rh=jos3_protocol.INDOOR_RH_PCT, round_output=False).utci)
 
 def globe_spec_from_metadata(metadata):
     """Rebuild the emulated globe stage 05 actually used.
@@ -394,9 +403,11 @@ def main():
         # air/Tmrt, or km/h wind before they become plausible-looking UTCI.
         check_utci_inputs(ta_trace, tmrt_trace, wind_trace, rh_trace,
                           f"stage 08 UTCI, route {route_id}")
+        # unrounded: route measures integrate UTCI and count threshold
+        # crossings, which the 0.1 C display rounding would quantise
         utci_trace = utci(tdb=ta_trace, tr=tmrt_trace,
                           v=wind_trace, rh=rh_trace,
-                          limit_inputs=False).utci
+                          limit_inputs=False, round_output=False).utci
         utci_trace = np.asarray(utci_trace, dtype=float)
 
         if contribution_matrices is not None:
@@ -482,10 +493,13 @@ def main():
         excess = np.maximum(0.0, 0.5 * (utci_trace[1:] + utci_trace[:-1])
                             - UTCI_STRONG_STRESS_C)
         strong_stress_dose_degmin = float(np.sum(excess * dt_min))
-        # route comfort measures (route_measures.py): walk UTCI, lagged
-        # minutes of very strong heat stress, worst 3-min stretch
-        comfort = utci_route_measures(
-            utci_trace, (arrival_hour - arrival_hour[0]) * 60.0, cumdist)
+        # route comfort measures (route_measures.py): walk UTCI and the
+        # experienced (3-min backward mean) UTCI, which starts from the
+        # indoor conditions JOS-3 starts from -- its maximum (worst stretch)
+        # and the minutes it spends in very strong heat stress
+        comfort, _ = utci_route_measures(
+            utci_trace, (arrival_hour - arrival_hour[0]) * 60.0, cumdist,
+            start_utci_c=START_UTCI_C)
 
         results.append({
             "route_id": route_id,
@@ -538,7 +552,8 @@ def main():
         "mean_tmrt_c": r["mean_tmrt_c"], "max_tmrt_c": r["max_tmrt_c"],
         "strong_stress_dose_degmin": r["strong_stress_dose_degmin"],
         "walk_utci_c": r["walk_utci_c"],
-        "very_strong_stress_lagged_min": r["very_strong_stress_lagged_min"],
+        "very_strong_stress_min": r["very_strong_stress_min"],
+        "start_utci_c": r["start_utci_c"],
         "worst_3min_utci_c": r["worst_3min_utci_c"],
         "worst_3min_end_distance_m": r["worst_3min_end_distance_m"],
         "mean_ta_c": float(np.mean(r["ta_trace_c"])),

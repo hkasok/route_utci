@@ -37,6 +37,43 @@ import numpy as np
 import pandas as pd
 
 from campus_walks import CampusCase
+from pythermalcomfort.models import utci as utci_fn
+import route_measures
+import jos3_protocol
+
+# every route measure of Table 9 is propagated, not only the core rise
+MEASURES = ("tcore_rise_c", "tcore_rad_c", "peak_tcore_rise_c", "heat_stored_kj",
+            "heat_stored_rad_kj", "wettedness_discomfort_min", "walk_utci_c",
+            "worst_3min_utci_c", "very_strong_stress_min", "strong_stress_dose_degmin")
+START_UTCI_C = float(utci_fn(tdb=jos3_protocol.INDOOR_AIR_TEMPERATURE_C,
+                             tr=jos3_protocol.INDOOR_AIR_TEMPERATURE_C, v=0.5,
+                             rh=jos3_protocol.INDOOR_RH_PCT, round_output=False).utci)
+NEUTRAL = {}    # (route, departure) -> radiation-neutral walk, independent of the draw
+
+
+def walk_measures(route, dep, walk, neutral):
+    """Every Table-9 measure of one walk (UTCI ones from the walk's own Tmrt)."""
+    arrival = CASE.arrival_hours(route, dep)
+    xyz = np.column_stack([route.xy, CASE.xyz[route.nearest, 2]])
+    env = CASE.environment.sample(xyz, arrival % 24.0)
+    u = np.asarray(utci_fn(tdb=np.asarray(env.air_temperature_c, float),
+                           tr=walk["tmrt_trace_c"],
+                           v=np.asarray(env.utci_wind_speed_10m_ms, float),
+                           rh=np.asarray(env.relative_humidity_pct, float),
+                           limit_inputs=False, round_output=False).utci, float)
+    t = (arrival - arrival[0]) * 60.0
+    ut, _ = route_measures.utci_route_measures(u, t, route.dist_m, START_UTCI_C)
+    dt = np.diff(t)
+    dose = float(np.sum(np.maximum(0.0, 0.5 * (u[1:] + u[:-1]) - 32.0) * dt))
+    return {"tcore_rise_c": walk["final_tcore_rise_c"],
+            "tcore_rad_c": walk["final_tcore_rise_c"] - neutral["final_tcore_rise_c"],
+            "peak_tcore_rise_c": walk["peak_tcore_rise_c"],
+            "heat_stored_kj": walk["heat_stored_kj"],
+            "heat_stored_rad_kj": walk["heat_stored_kj"] - neutral["heat_stored_kj"],
+            "wettedness_discomfort_min": walk["wettedness_discomfort_min"],
+            "walk_utci_c": ut["walk_utci_c"], "worst_3min_utci_c": ut["worst_3min_utci_c"],
+            "very_strong_stress_min": ut["very_strong_stress_min"],
+            "strong_stress_dose_degmin": dose}
 
 CASE = None     # set in each worker (fork) before the draws run
 CLO = {}
@@ -82,8 +119,8 @@ def run_draw(task):
                              context=f"draw {draw}")
             rows.append({"draw": draw, "departure_hour": dep, "route_id": rid,
                          "load_offset_Wm2": offset, "flipped_fraction": float(flips.mean()),
-                         "tcore_rise_c": walk["final_tcore_rise_c"],
-                         "mean_tmrt_c": float(walk["tmrt_trace_c"].mean())})
+                         "mean_tmrt_c": float(walk["tmrt_trace_c"].mean()),
+                         **walk_measures(route, dep, walk, NEUTRAL[(rid, dep)])})
     return rows
 
 
@@ -114,6 +151,28 @@ def summarise(draws: pd.DataFrame, baseline: pd.DataFrame) -> dict:
                 "p_order_kept": float(np.mean(gap > 0)),
             }
         out[str(dep)] = entry
+    return out
+
+
+def measure_resolution(draws: pd.DataFrame, baseline: pd.DataFrame) -> dict:
+    """Per measure: the largest shift of any pairwise route difference from
+    its baseline at the 2.5/97.5 percentiles of the draws, over all departures
+    -- the resolution below which two routes are tied under that measure --
+    and, per departure and pair, whether the 95 % band excludes zero."""
+    out = {}
+    for m in MEASURES:
+        shift, pairs = 0.0, {}
+        for dep, g in draws.groupby("departure_hour"):
+            base = baseline[baseline["departure_hour"] == dep].set_index("route_id")[m]
+            wide = g.pivot(index="draw", columns="route_id", values=m)
+            for a, b in itertools.combinations(sorted(wide.columns), 2):
+                gap = wide[b] - wide[a]
+                gap0 = float(base[b] - base[a])
+                lo, hi = float(np.percentile(gap, 2.5)), float(np.percentile(gap, 97.5))
+                shift = max(shift, abs(gap0 - lo), abs(hi - gap0))
+                pairs[f"{dep}:{a}-{b}"] = {"baseline_gap": gap0, "band": [lo, hi],
+                                           "resolved": bool(lo > 0 or hi < 0)}
+        out[m] = {"resolution": shift, "pairs": pairs}
     return out
 
 
@@ -178,9 +237,11 @@ def main():
             clo, label = CASE.clothing(route, dep)
             CLO[(rid, dep)] = clo
             walk = CASE.walk(route, dep, clo=clo, context="baseline")
+            NEUTRAL[(rid, dep)] = CASE.walk(route, dep, clo=clo, radiation_neutral=True,
+                                            context="baseline neutral")
             baseline_rows.append({"departure_hour": dep, "route_id": rid,
-                                  "tcore_rise_c": walk["final_tcore_rise_c"],
-                                  "clothing": label})
+                                  "clothing": label,
+                                  **walk_measures(route, dep, walk, NEUTRAL[(rid, dep)])})
     baseline = pd.DataFrame(baseline_rows)
     print(baseline.pivot(index="route_id", columns="departure_hour", values="tcore_rise_c"))
 
@@ -195,6 +256,7 @@ def main():
                 print(f"  {k + 1}/{args.draws} draws", flush=True)
     draws = pd.DataFrame(rows)
     summary = summarise(draws, baseline)
+    measures = measure_resolution(draws, baseline)
     out_dir = args.root / "run_output" / args.case / "postprocessing" / "ranking_uncertainty"
     out_dir.mkdir(parents=True, exist_ok=True)
     draws.to_csv(out_dir / "draws.csv", index=False)
@@ -204,7 +266,7 @@ def main():
             "load_offset_range_Wm2": [lo, hi], "spacing_m": args.spacing_m,
             "departures": args.departures, "seed": args.seed,
             "mean_flipped_fraction": float(draws["flipped_fraction"].mean()),
-            "summary": summary}
+            "summary": summary, "measures": measures}
     (out_dir / "summary.json").write_text(json.dumps(meta, indent=2) + "\n")
     args.paper_dir.mkdir(parents=True, exist_ok=True)
     (args.paper_dir / "table_ranking_uncertainty.tex").write_text(

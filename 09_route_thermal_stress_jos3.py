@@ -246,14 +246,18 @@ def simulate_walk(xy, arrival_hour, nearest_idx, mrt, environment, subject,
             model.simulate(times=1, dtime=60, output=False)
             post_core.append(weighted_core_c())
     post_core = np.asarray(post_core, dtype=float)
-    arrival_core = traces["tcore_trace_c"][-1]
-    if len(post_core) and post_core.max() > arrival_core:
+    # peak over the walk AND the recovery; the time is minutes after
+    # arrival (negative if the core peaked during the walk)
+    walk_peak = int(np.argmax(traces["tcore_trace_c"]))
+    walk_max = float(traces["tcore_trace_c"][walk_peak])
+    if len(post_core) and post_core.max() > walk_max:
         k = int(np.argmax(post_core))
         traces["peak_tcore_rise_c"] = float(post_core[k] - start_core_c)
         traces["t_peak_after_arrival_min"] = float(k + 1)
     else:
-        traces["peak_tcore_rise_c"] = float(arrival_core - start_core_c)
-        traces["t_peak_after_arrival_min"] = 0.0
+        traces["peak_tcore_rise_c"] = walk_max - start_core_c
+        traces["t_peak_after_arrival_min"] = float(
+            (arrival_hour[walk_peak] - arrival_hour[-1]) * 60.0)
     traces["post_arrival_tcore_rise_c"] = post_core - start_core_c
     return traces
 
