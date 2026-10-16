@@ -11,21 +11,25 @@ instrument parameters, and the ISO 7726 globe-to-Tmrt conversion applied to
 the MEASUREMENT.
 
   (a) REGRESSION of the daytime residual (emulated minus measured globe) on
-      the quantities that would carry a convective error (measured Tg - Ta,
-      wind combined in quadrature with the cart's own speed), a radiative one
-      (modelled sunlit state, modelled beam load on the sphere) and an
-      operator-shading one (walking heading relative to the sun). Standardised
-      coefficients, partial R^2, and moving-block-bootstrap confidence
-      intervals, because consecutive samples are not independent.
+      ventilation (wind combined in quadrature with the cart's own speed), the
+      modelled beam load on the sphere and walking heading relative to the sun.
+      Standardised coefficients, partial R^2, and moving-block-bootstrap
+      confidence intervals, because consecutive samples are not independent.
+      A globe-air difference is NOT a regressor: measured or modelled, it
+      shares a globe temperature with the residual, so its coefficient is set
+      by construction (the modelled one "explains" 35 % of the variance for
+      that reason alone). The 0/1 modelled sunlit state was dropped too: it
+      carried nothing beyond the beam load (partial R^2 0.000).
   (b) SUSTAINED SHADE versus SUSTAINED SUN: the residual on stretches that
       stayed in one state for at least 60 s, where shadow-edge registration
       cannot contribute.
-  (c) MONTE CARLO budget of the emulator: forced-convection coefficient,
-      paint absorptivity, sensor height, beam projected-area factor and clock
-      offset drawn together; reports the band of pooled daytime bias the
-      emulator's own uncertainty spans and whether the observed +2.63 K lies
-      inside it. Needs the per-term globe flux that stage 05 now records
-      (globe_sw_direct_Wm2, ...); height needs the 0.8 m and 1.2 m re-runs.
+  (c) EMULATOR PARAMETERS: paint absorptivity, sensor height, beam
+      projected-area factor and clock offset, one at a time. The joint Monte
+      Carlo over these and the forced-convection coefficient is still computed
+      for the summary, but not tabulated: its band is set by the assumed
+      +-50 % convection range, so (d) treats convection on evidence instead.
+      Needs the per-term globe flux that stage 05 records (globe_sw_direct_Wm2,
+      ...); height needs the 0.8 m and 1.2 m re-runs.
   (d) DIAMETER SCALING of the outdoor calibration of Thorsson et al. (2007),
       made on a 38 mm globe, to the 152 mm instrument: D^-0.4 (ISO) and D^-0.5.
   (e) CONVERSION-ERROR demonstration: the measured globe converted to Tmrt
@@ -187,9 +191,7 @@ def ci(values, lo=2.5, hi=97.5):
 # (a) regression
 # ----------------------------------------------------------------------------
 REGRESSORS = [
-    ("measured_tg_minus_ta_K", r"$(T_g - T_a)_{\mathrm{meas}}$", "K"),
-    ("wind_quadrature_ms", r"$\sqrt{V_{\mathrm{meas}}^2 + V_{\mathrm{cart}}^2}$", r"m\,s$^{-1}$"),
-    ("model_sunlit", "Modelled sunlit (0/1)", "--"),
+    ("wind_quadrature_ms", r"Ventilation, $\sqrt{V_{\mathrm{meas}}^2 + V_{\mathrm{cart}}^2}$", r"m\,s$^{-1}$"),
     ("globe_sw_direct_Wm2", "Modelled beam on sphere", r"W\,m$^{-2}$"),
     ("cos_sun_heading", r"$\cos(\text{heading} - \text{solar azimuth})$", "--"),
 ]
@@ -266,6 +268,8 @@ def sustained_segments(walks: list[pd.DataFrame], flag_column, label) -> dict:
             "residual_mean_K": float(seg["residual_K"].mean()),
             "residual_rmse_K": float(np.sqrt((seg["residual_K"] ** 2).mean())),
             "tg_minus_ta_meas_K": float(seg["measured_tg_minus_ta_K"].mean()),
+            "tg_minus_ta_model_K": float((seg["globe_transient_temperature_C"]
+                                          - seg["measured_air_temperature_c"]).mean()),
             # Steady-state inversion; kept in the summary only. The stretches
             # are shorter than the globe's time constant, so the globe is not
             # in steady state on them and this number is not interpretable as
@@ -292,7 +296,12 @@ def heading_bins(d: pd.DataFrame) -> dict:
     with the sun behind the walker the operator's shadow falls on the cart."""
     rel = np.abs(d["sun_relative_heading_deg"].to_numpy(float))
     both_sun = (d["measured_sunlit"] & d["model_sunlit"]).to_numpy()
-    out = {"mean_cos_sun_heading": float(d["cos_sun_heading"].mean())}
+    elev = d["solar_elevation_deg"].to_numpy(float)
+    out = {"mean_cos_sun_heading": float(d["cos_sun_heading"].mean()),
+           # how high the sun stood: operator shading of the globe needs a low sun
+           "solar_elevation_deg_min_median_max": [float(np.nanmin(elev)),
+                                                  float(np.nanmedian(elev)),
+                                                  float(np.nanmax(elev))]}
     for name, lo, hi in HEADING_BINS:
         m = (rel >= lo) & (rel < hi) if hi < 180 else (rel >= lo)
         s = d[m]
@@ -529,66 +538,48 @@ def fmt_ci(lo, hi, nd=2):
     return f"[{lo:+.{nd}f}, {hi:+.{nd}f}]"
 
 
-def table_attribution(reg, reg_ci, seg_meas, seg_both, mc, zero, thor, globe_ci,
-                      reg_model=None) -> str:
-    L = [r"\begin{tabular}{llrrr}", r"\toprule",
+def table_attribution(reg, reg_ci, seg_both, mc, zero, thor) -> str:
+    L = [r"\begin{tabular}{lrrrr}", r"\toprule",
          r"\multicolumn{5}{l}{\textbf{(a) Regression of the daytime residual} "
          + rf"($n = {reg['n']}$, $R^2 = {reg['r2']:.2f}$)" + r"} \\",
-         r"\multicolumn{2}{l}{Term} & Coef.\ per SD (K) & 95\,\% CI & Partial $R^2$ \\",
+         r"Term & & Coef.\ per SD & 95\,\% CI & Partial \\",
+         r" & & (K) & (K) & $R^2$ \\",
          r"\midrule"]
     for j, (key, label, _) in enumerate(REGRESSORS):
         lo, hi = reg_ci[j]
-        L.append(f"\\multicolumn{{2}}{{l}}{{{label}}} & {reg['coef_per_sd_K'][j]:+.2f} & "
+        L.append(f"{label} & & {reg['coef_per_sd_K'][j]:+.2f} & "
                  f"{fmt_ci(lo, hi)} & {reg['partial_r2'][j]:.3f} \\\\")
-    if reg_model is not None:
-        lo, hi = reg_model["ci"]
-        L.append(r"\multicolumn{2}{l}{\quad $(T_g - T_a)_{\mathrm{model}}$ in its place} & "
-                 f"{reg_model['coef_per_sd_K'][0]:+.2f} & {fmt_ci(lo, hi)} & "
-                 f"{reg_model['partial_r2'][0]:.3f} \\\\")
-    L += [r"\addlinespace", r"\multicolumn{5}{l}{\textbf{(b) Residual on sun/shade "
-          r"stretches of $\geq$\SI{60}{\second}}} \\",
-          r"State & $n$ & Residual & $(T_g - T_a)_{\mathrm{meas}}$ & Longest \\",
-          r"(measured) & (segments) & (K) & (K) & (\si{\second}) \\",
+    L += [r"\addlinespace", r"\multicolumn{5}{l}{\textbf{(b) Agreed sun/shade stretches of $\geq$\SI{60}{\second}}} \\",
+          r"State & $n$ & Residual & $T_g - T_a$, meas./model & Longest \\",
+          r" & (stretches) & (K) & (K) & (\si{\second}) \\",
           r"\midrule"]
     for key, name in (("shade", "Shade"), ("sun", "Sun")):
-        s = seg_meas[key]
-        L.append(f"{name} & {s['n']} ({s['segments']}) & {s['residual_mean_K']:+.2f} & "
-                 f"{s['tg_minus_ta_meas_K']:.1f} & {s['longest_s']:.0f} \\\\")
-    for key, name in (("shade", "Shade, model agrees"), ("sun", "Sun, model agrees")):
         s = seg_both[key]
         L.append(f"{name} & {s['n']} ({s['segments']}) & {s['residual_mean_K']:+.2f} & "
-                 f"{s['tg_minus_ta_meas_K']:.1f} & {s['longest_s']:.0f} \\\\")
-    L += [r"\addlinespace", r"\multicolumn{5}{l}{\textbf{(c) Emulator uncertainty "
-          + rf"(Monte Carlo, {mc['draws']} draws): pooled daytime bias" + r"}} \\",
-          r"\multicolumn{2}{l}{Quantity} & \multicolumn{3}{l}{Value} \\", r"\midrule",
-          rf"\multicolumn{{2}}{{l}}{{Nominal (ISO 7726)}} & \multicolumn{{3}}{{l}}{{{mc['nominal_bias_K']:+.2f} K "
-          rf"(95\,\% block-bootstrap CI {fmt_ci(*globe_ci['day']['mbe'])})}} \\",
-          rf"\multicolumn{{2}}{{l}}{{2.5--97.5\,\% band of draws}} & \multicolumn{{3}}{{l}}{{"
-          rf"{mc['bias_percentiles_K']['2.5']:+.2f} to {mc['bias_percentiles_K']['97.5']:+.2f} K; "
-          rf"median {mc['bias_percentiles_K']['50']:+.2f} K}} \\",
-          rf"\multicolumn{{2}}{{l}}{{Draws with bias $\leq 0$}} & \multicolumn{{3}}{{l}}{{"
-          rf"{100 * mc['fraction_of_draws_with_bias_le_0']:.1f}\,\%}} \\",
-          r"\multicolumn{5}{l}{\emph{One at a time, others nominal:}} \\"]
-    names = {"h_scale": "Forced convection $\\times$0.5 / $\\times$1.5",
-             "sw_absorptivity": "Absorptivity 0.90 / 0.97",
-             "height_m": "Height 0.8 / 1.2 m",
+                 f"{s['tg_minus_ta_meas_K']:.1f} / {s['tg_minus_ta_model_K']:.1f} & "
+                 f"{s['longest_s']:.0f} \\\\")
+    L += [r"\addlinespace", r"\multicolumn{5}{l}{\textbf{(c) Other emulator parameters: daytime bias} "
+          + rf"(nominal {mc['nominal_bias_K']:+.2f} K)" + r"} \\",
+          r"\midrule"]
+    names = {"sw_absorptivity": "Absorptivity 0.90 / 0.97",
              "beam_factor": "Beam factor 0.22 / 0.25",
+             "height_m": "Height 0.8 / 1.2 m",
              "clock_offset_s": "Clock $-60$ / $+60$ s"}
     for k, label in names.items():
         if k not in mc["one_at_a_time"]:
             continue
         vals = list(mc["one_at_a_time"][k].values())
-        L.append(rf"\multicolumn{{2}}{{l}}{{\quad {label}}} & \multicolumn{{3}}{{l}}{{"
+        L.append(rf"{label} & \multicolumn{{4}}{{l}}{{"
                  rf"{vals[0]['bias_K']:+.2f} / {vals[1]['bias_K']:+.2f} K}} \\")
-    L += [r"\addlinespace", r"\multicolumn{5}{l}{\textbf{(d) Convective enhancement}} \\",
-          r"\midrule",
-          rf"\multicolumn{{2}}{{l}}{{Required for zero daytime bias}} & \multicolumn{{3}}{{l}}{{"
+    L += [r"\addlinespace", r"\multicolumn{5}{l}{\textbf{(d) Forced convection relative to ISO 7726}} \\", r"\midrule",
+          rf"Required for zero daytime bias & \multicolumn{{4}}{{l}}{{"
           rf"$\times${zero['zero_bias_scale']:.2f}}} \\",
-          rf"\multicolumn{{2}}{{l}}{{Thorsson et al.\ \cite{{thorsson2007tmrt}}, \SI{{38}}{{\milli\metre}}}} & \multicolumn{{3}}{{l}}{{"
+          rf"Thorsson et al.\ \cite{{thorsson2007tmrt}}, \SI{{38}}{{\milli\metre}} & \multicolumn{{4}}{{l}}{{"
           rf"$\times${thor['enhancement_at_38mm']:.2f} at $V = {thor['mean_ventilation_ms']:.2f}$ m\,s$^{{-1}}$}} \\",
-          rf"\multicolumn{{2}}{{l}}{{Scaled to \SI{{152}}{{\milli\metre}} ($D^{{-0.4}}$ / $D^{{-0.5}}$)}} & "
-          rf"\multicolumn{{3}}{{l}}{{$\times${thor['enhancement_at_152mm_D-0.4']:.2f} / "
-          rf"$\times${thor['enhancement_at_152mm_D-0.5']:.2f}}} \\",
+          rf"At \SI{{152}}{{\milli\metre}}, $D^{{-0.4}}$ / $D^{{-0.5}}$ & \multicolumn{{4}}{{l}}{{"
+          rf"$\times${thor['enhancement_at_152mm_D-0.4']:.2f} / "
+          rf"$\times${thor['enhancement_at_152mm_D-0.5']:.2f}, leaving "
+          rf"{thor['bias_left_K_D-0.4']:+.1f} / {thor['bias_left_K_D-0.5']:+.1f} K}} \\",
           r"\bottomrule", r"\end{tabular}"]
     return "\n".join(L)
 
@@ -667,20 +658,7 @@ def main():
     boots = bootstrap(d, lambda s: np.asarray(fit_regression(s)["coef_per_sd_K"]),
                       args.bootstrap_reps, rng)
     reg_ci = [ci(boots[:, j]) for j in range(len(REGRESSORS))]
-    # The measured globe-air difference shares the measured globe temperature
-    # with the residual (model minus measured), which biases its coefficient
-    # negative; the modelled difference shares the modelled one, biasing it
-    # positive. Report both: neither isolates a convective error on its own.
-    # A separate generator keeps every other bootstrap draw as before.
-    d_model = d.assign(measured_tg_minus_ta_K=d["globe_transient_temperature_C"]
-                       - d["measured_air_temperature_c"])
-    reg_model = fit_regression(d_model)
-    boots_m = bootstrap(d_model, lambda s: np.asarray(fit_regression(s)["coef_per_sd_K"]),
-                        args.bootstrap_reps, np.random.default_rng(args.seed + 1))
-    reg_model["ci"] = ci(boots_m[:, 0])
     print("\n(a) REGRESSION of residual (K):  R2 = %.3f" % reg["r2"])
-    print(f"   with the MODELLED Tg - Ta instead: {reg_model['coef_per_sd_K'][0]:+.3f} K/SD "
-          f"CI {reg_model['ci']}  R2 {reg_model['r2']:.3f}")
     for j, (k, _, unit) in enumerate(REGRESSORS):
         print(f"   {k:28s} {reg['coef_per_sd_K'][j]:+.3f} K/SD  CI {reg_ci[j]}  "
               f"raw {reg['coef_raw'][j]:+.4f} K/{unit}  partial R2 {reg['partial_r2'][j]:.3f}")
@@ -700,7 +678,9 @@ def main():
                   f"median {s[key].get('median_s', float('nan')):.0f} s")
 
     heading = heading_bins(d)
-    print("\n(b') RESIDUAL BY HEADING RELATIVE TO THE SUN  (mean cos %.2f)" % heading["mean_cos_sun_heading"])
+    print("\n(b') RESIDUAL BY HEADING RELATIVE TO THE SUN  (mean cos %.2f; solar elevation "
+          "%.0f / %.0f / %.0f deg min/median/max)" % (heading["mean_cos_sun_heading"],
+                                                      *heading["solar_elevation_deg_min_median_max"]))
     for name, _, _ in HEADING_BINS:
         h = heading[name]
         print(f"   {name:18s} n={h['n']:4d} residual {h['residual_mean_K']:+.2f} K | both sunlit n={h['n_both_sunlit']:4d} "
@@ -744,6 +724,9 @@ def main():
 
     # (d)
     thor = thorsson_scaling(float(d["globe_ventilation_ms"].mean()))
+    for key in ("enhancement_at_152mm_D-0.4", "enhancement_at_152mm_D-0.5"):
+        thor["bias_left_K_" + key.split("_")[-1]] = float(
+            np.interp(thor[key], zero["scales"], zero["bias_K"]))
     print("\n(d) THORSSON SCALING:", json.dumps(thor))
 
     # (e)
@@ -758,7 +741,6 @@ def main():
     out = args.paper_dir
     out.mkdir(parents=True, exist_ok=True)
     summary = {"n_day": int(len(d)), "regression": reg, "regression_ci": reg_ci,
-               "regression_with_modelled_tg_minus_ta": reg_model,
                "sustained_measured": seg_meas, "sustained_both": seg_both,
                "heading_bins": heading,
                "monte_carlo": mc, "zero_bias_scale": zero, "thorsson": thor,
@@ -768,8 +750,7 @@ def main():
     (out / "table_conversion_error.tex").write_text(latex_minus(table_conversion(conv)) + "\n")
     if mc is not None:
         (out / "table_globe_attribution.tex").write_text(latex_minus(
-            table_attribution(reg, reg_ci, seg_meas, seg_both, mc, zero, thor, globe_ci,
-                              reg_model)) + "\n")
+            table_attribution(reg, reg_ci, seg_both, mc, zero, thor)) + "\n")
     print(f"\nwrote {out / 'globe_attribution_summary.json'}")
 
 
