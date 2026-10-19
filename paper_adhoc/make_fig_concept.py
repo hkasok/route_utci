@@ -7,7 +7,7 @@ The highlighting is computed, not drawn by hand: from route points every
 scene, and every building or ground triangle hit first is a solved facet.
 Crowns are occluders (rays stopping there are vegetation, not facets).
 
-Units: 1 unit = 10 m.  Output: TikZ, oblique view, painter's order.
+Units: 1 unit = 10 m; a 3 x 3-block district.  Output: TikZ, oblique view, painter's order.
 
 Usage: python -I make_fig_concept.py OUT.tex
 """
@@ -27,7 +27,7 @@ STEP = 0.2                 # route point spacing, 2 m (every 8th of 0.25 m)
 RANGE = 30.0               # 300 m
 
 # projection used in the TikZ (x, y, z unit vectors on the page, cm)
-SCALE = 0.60              # natural width about the paper's text width
+SCALE = 1.00              # natural width about the paper's text width
 PX = SCALE * np.array([[0.60, 0.26, 0.00],
                        [-0.10, 0.42, 0.30]])
 # direction towards the viewer: null space of PX, with +z component
@@ -36,11 +36,11 @@ if VIEW[2] < 0:
     VIEW = -VIEW
 
 # ------------------------------------------------------------- scene -----
-BW, BD, ST = 4.0, 3.6, 1.2          # block width, depth, street width
-NCOL, NROW = 5, 4
-X0, Y0 = -0.8, -0.8                 # domain origin (edge streets)
-XMAX = NCOL * (BW + ST) - ST + 0.8
-YMAX = NROW * (BD + ST) - ST + 0.8
+BW, BD, ST = 3.6, 2.4, 1.2          # block width, depth, street width
+NCOL, NROW = 3, 3
+X0, Y0 = -0.4, -0.4                 # domain origin (edge strip)
+XMAX = NCOL * (BW + ST) - ST + 0.4
+YMAX = NROW * (BD + ST) - ST + 0.4
 
 
 def block_origin(i, j):
@@ -49,47 +49,38 @@ def block_origin(i, j):
 
 buildings = []        # (x0, x1, y0, y1, h)
 trees = []            # (x, y, crown radius, crown centre height)
-PARK = {(2, 1)}       # open block with trees
-COURT = {(1, 2), (4, 1), (3, 0)}
+PARK = {(1, 1)}       # open block with trees, inside the route's bend
 
 for i in range(NCOL):
     for j in range(NROW):
         bx, by = block_origin(i, j)
         if (i, j) in PARK:
-            for tx in np.arange(bx + 0.8, bx + BW - 0.4, 1.2):
-                for ty in np.arange(by + 0.8, by + BD - 0.4, 1.4):
-                    trees.append((tx + RNG.uniform(-.15, .15),
-                                  ty + RNG.uniform(-.15, .15), 0.42, 0.85))
-            continue
-        if (i, j) in COURT:       # perimeter bars round a courtyard
-            h = RNG.choice([1.2, 1.6, 2.0])
-            buildings += [(bx, bx + BW, by, by + 0.8, h),
-                          (bx, bx + BW, by + BD - 0.8, by + BD, h + 0.4),
-                          (bx, bx + 0.8, by + 1.2, by + BD - 1.2, h),
-                          (bx + BW - 0.8, bx + BW, by + 1.2, by + BD - 1.2, h)]
+            for tx in np.arange(bx + 0.7, bx + BW - 0.3, 1.1):
+                for ty in np.arange(by + 0.6, by + BD - 0.3, 1.2):
+                    trees.append((tx + RNG.uniform(-.1, .1),
+                                  ty + RNG.uniform(-.1, .1), 0.36, 0.80))
             continue
         # 2 x 2 buildings with a 0.4 gap
-        xs = [bx, bx + 2.0, bx + 2.4, bx + BW]
-        ys = [by, by + 1.6, by + 2.0, by + BD]
+        xs = [bx, bx + 1.6, bx + 2.0, bx + BW]
+        ys = [by, by + 1.0, by + 1.4, by + BD]
         for a in range(2):
             for b in range(2):
                 h = float(RNG.choice([0.8, 1.2, 1.6, 2.0]))
                 buildings.append((xs[2 * a], xs[2 * a + 1],
                                   ys[2 * b], ys[2 * b + 1], h))
 
-# one tall tower off the route
+# one tall building in the far row
+bx, by = block_origin(0, 2)
 buildings = [b for b in buildings
-             if not (b[0] == block_origin(2, 3)[0] + 2.4
-                     and b[2] == block_origin(2, 3)[1] + 2.0)]
-bx, by = block_origin(2, 3)
-buildings.append((bx + 2.4, bx + BW, by + 2.0, by + BD, 4.0))
+             if not (b[0] == bx + 2.0 and b[2] == by + 1.4)]
+buildings.append((bx + 2.0, bx + BW, by + 1.4, by + BD, 3.2))
 
-# street trees along part of the route street
-for tx in np.arange(15.6, 19.4, 1.4):
-    trees.append((tx, 8.4 + 0.25, 0.34, 0.78))
+# street trees along the last leg
+for tx in np.arange(9.4, 12.8, 1.1):
+    trees.append((tx, 6.0 + 0.25, 0.30, 0.72))
 
-# route: west on the y=4.2 street, north on x=9.8, east on y=9.0
-ROUTE = np.array([[1.8, 4.35], [9.65, 4.35], [9.65, 9.15], [19.2, 9.15]])
+# route: east on the y=3.0 street, north on x=4.2, east on y=6.6
+ROUTE = np.array([[0.2, 3.15], [4.35, 3.15], [4.35, 6.75], [13.0, 6.75]])
 
 
 def route_points():
@@ -289,7 +280,7 @@ for _, typ, k in items:
               f"--({ax},{ay},{h})--cycle;")
 
 # --------------------------------------------- reverse rays (sampled) ----
-FAN_AT = [np.array([9.65, 6.2, H_PED]), np.array([12.6, 9.15, H_PED])]
+FAN_AT = [np.array([4.35, 4.9, H_PED]), np.array([7.0, 6.75, H_PED])]
 w("  % reverse rays from two route points (subset of the 432 per point)")
 fan_rays = []
 for p in FAN_AT:
@@ -382,7 +373,7 @@ w("  % legend")
 w("  \\begin{scope}[x=1cm, y=1cm]")
 for n, (sym, text) in enumerate(entries):
     col, row = n % 3, n // 3
-    ox, oy = lx + 0.1 + (0.0, 3.6, 7.2)[col], by_ - 0.22 - 0.38 * row
+    ox, oy = lx + 0.1 + (0.0, 4.0, 7.7)[col], by_ - 0.22 - 0.38 * row
     w(f"    \\begin{{scope}}[shift={{({ox:.2f},{oy:.2f})}}] {sym} "
       f"\\node[anchor=west, inner sep=1pt, font=\\scriptsize] at (0.55,0) {{{text}}}; \\end{{scope}}")
 w("  \\end{scope}")
