@@ -280,6 +280,14 @@ for _, typ, k in items:
               f"--({ax},{ay},{h})--cycle;")
 
 # --------------------------------------------- reverse rays (sampled) ----
+# where the long sky rays end (page cm): the empty corner above the far
+# right of the ground, below the top of the tallest building
+_tops = np.array([[x, y, h] for (x0, x1, y0, y1, h) in buildings
+                  for x in (x0, x1) for y in (y0, y1)])
+_ground = np.array([[X0, Y0, 0], [XMAX, Y0, 0], [X0, YMAX, 0], [XMAX, YMAX, 0]])
+_scr = np.vstack([_tops, _ground]) @ PX.T
+SKY_LABEL = np.array([_scr[:, 0].max() - 0.9, _scr[:, 1].max() - 0.45])
+SKY_OFFSET = [np.array([-0.35, -0.10]), np.array([0.15, -0.30])]
 FAN_AT = [np.array([4.35, 4.9, H_PED]), np.array([7.0, 6.75, H_PED])]
 w("  % reverse rays from two route points (subset of the 432 per point)")
 fan_rays = []
@@ -315,24 +323,37 @@ for p in FAN_AT:
             chosen.append((r, q, kd)); used.append(az)
             if want == 'veg' or len([1 for x in chosen if x[2] == want]) >= (4 if want == 'wall' else 3):
                 break
-    # one sky ray (steepest unobstructed upward direction drawn short)
-    sky = [r for r in rows if hit_tri[r] < 0 and 0.5 < dvec[r][2] < 0.8
-           and visible_from_viewer(p + 1.6 * dvec[r])]
-    fan_rays.append((p, chosen, sky[:1]))
-    print(f"fan at {p[:2]}: {[(x[2]) for x in chosen]}, sky {len(sky)}")
+    # one sky ray, drawn long: the escaping ray whose image points best at
+    # the empty top-right corner of the figure, where "sky" is written
+    ps = PX @ p
+    aim = SKY_LABEL + SKY_OFFSET[len(fan_rays)] - ps
+    best = None
+    for r in rows:
+        if hit_tri[r] >= 0 or dvec[r][2] < 0.15:
+            continue
+        u = PX @ dvec[r]
+        ang = np.arccos(np.clip(u @ aim / np.linalg.norm(u) / np.linalg.norm(aim), -1, 1))
+        if best is None or ang < best[0]:
+            best = (ang, r, np.linalg.norm(aim) / np.linalg.norm(u))
+    sky = [(best[1], best[2])]
+    fan_rays.append((p, chosen, sky))
+    print(f"fan at {p[:2]}: {[(x[2]) for x in chosen]}, sky ray off by "
+          f"{np.degrees(best[0]):.1f} deg on the page")
 
 for n_fan, (p, chosen, sky) in enumerate(fan_rays):
     for r, q, kd in chosen:
         w(f"  \\draw[cfRay, line width=0.45pt] {c(p)}--{c(q)};")
         mark = 'fill=cfRay' if kd != 'veg' else 'fill=white, draw=cfRay'
         w(f"  \\filldraw[{mark}, line width=0.3pt] {c(q)} circle[radius=0.045cm];")
-    for r in sky:
-        q = p + 1.6 * dvec[r]
-        w(f"  \\draw[cfRay, line width=0.45pt, -{{Stealth[length=3pt]}}] "
-          f"{c(p)}--{c(q)}" + (" node[pos=1, anchor=south, font=\\scriptsize, "
-          "inner sep=1pt, text=cfRay] {sky}" if n_fan == 1 else "") + ";")
+    for r, L in sky:
+        q = p + L * dvec[r]
+        w(f"  \\draw[cfRay, line width=0.45pt, -{{Stealth[length=4pt]}}] "
+          f"{c(p)}--{c(q)};")
     w(f"  \\filldraw[fill=white, draw=cfRoute, line width=0.6pt] {c(p)} "
       f"circle[radius=0.06cm];")
+
+w(f"  \\node[anchor=west, text=cfRay, font=\\footnotesize\\itshape, inner sep=1pt] "
+  f"at ({SKY_LABEL[0] + 0.3:.2f}cm,{SKY_LABEL[1] - 0.1:.2f}cm) {{sky}};")
 
 # ---------------------------------------------------- walkers, sun -------
 w("""  \\def\\cfWalker#1{%
