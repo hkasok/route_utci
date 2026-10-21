@@ -17,6 +17,22 @@ validation post-processing. Mobile ``SWin`` is never replayed as pointwise
 domain-wide GHI because it contains local shade/reflection. The generated
 optional radiation configuration uses only its upper envelope to estimate one
 session-wide cloud attenuation; stage 05 still calculates all local shade.
+
+Other daytime walks (held-out validation)
+-----------------------------------------
+``--measurement 2nd|3rd --case-suffix _w2|_w3`` builds a NEW case
+``input/lisbonN<suffix>`` whose route 1 is that daytime walk and whose route 2
+is the same night walk. The scene is not rebuilt: the geometry, OSM cache,
+source footprint and material configuration are COPIED from ``input/lisbonN``
+(whose LiDAR extraction rectangle already covers all four walks plus the
+context buffer), and the manifest is ``lisbonN``'s with only the case id, the
+simulation date (the walk's own date) and the provenance changed. Nothing in
+``input/lisbonN`` is written. The 1st-walk default path is unchanged.
+
+Two source layers carry non-ISO clocks: Study_Area_2 2nd stores Excel serial
+days and Study_Area_2 3rd stores a time of day without a date. Both are read as
+UTC, like every other layer's ``Z`` timestamps; the undated layer needs
+``--assume-date`` and is flagged as such in its provenance.
 """
 
 from __future__ import annotations
@@ -53,7 +69,54 @@ def parse_args() -> argparse.Namespace:
                         help="all, one case number, or comma-separated numbers")
     parser.add_argument("--skip-osm-download", action="store_true")
     parser.add_argument("--overwrite-osm", action="store_true")
-    return parser.parse_args()
+    parser.add_argument("--measurement", choices=DAY_MEASUREMENTS, default="1st",
+                        help="daytime walk used as route 1 (default: 1st, the "
+                             "published validation set)")
+    parser.add_argument("--case-suffix", default="",
+                        help="write a NEW case input/lisbonN<suffix> derived from "
+                             "input/lisbonN (required unless --measurement 1st)")
+    parser.add_argument("--assume-date", default=None,
+                        help="YYYY-MM-DD for a layer whose timestamps carry no "
+                             "date (Study_Area_2 3rd); recorded as an assumption")
+    args = parser.parse_args()
+    if args.measurement != "1st" and not args.case_suffix:
+        parser.error("--measurement other than 1st needs --case-suffix, so the "
+                     "published lisbonN cases are never overwritten")
+    if args.case_suffix and not args.case_suffix.replace("_", "").isalnum():
+        parser.error("--case-suffix may contain only letters, digits and '_'")
+    return args
+
+
+DAY_MEASUREMENTS = ("1st", "2nd", "3rd")
+
+
+def parse_source_timestamps(values: pd.Series, assume_date: str | None
+                            ) -> tuple[pd.Series, dict]:
+    """UTC timestamps from the layer's TIMESTAMP column, whatever its format.
+
+    ISO strings (every 1st-walk and night layer) parse exactly as before.
+    Excel serial days (Study_Area_2 2nd) and date-less clock times
+    (Study_Area_2 3rd) are converted explicitly; all are taken as UTC.
+    """
+    numeric = pd.to_numeric(values, errors="coerce")
+    if numeric.notna().all() and numeric.between(30000.0, 60000.0).all():
+        stamps = (pd.Timestamp("1899-12-30", tz="UTC")
+                  + pd.to_timedelta(numeric.to_numpy(float) * 86400.0, unit="s"))
+        return pd.Series(stamps, index=values.index).dt.round("s"), {
+            "source_timestamp_format": "excel_serial_days_utc",
+            "original_timestamp_resolution_s": 1,
+            "subminute_reconstruction": "not needed (source resolves seconds)"}
+    text = values.astype(str).str.strip()
+    if text.str.fullmatch(r"\d{1,2}:\d{2}(:\d{2}(\.\d+)?)?").all():
+        if not assume_date:
+            raise ValueError("timestamps carry no date; pass --assume-date YYYY-MM-DD")
+        stamps = pd.to_datetime(assume_date + " " + text, errors="coerce", utc=True)
+        return stamps, {"source_timestamp_format": "time_of_day_utc_without_date",
+                        "original_timestamp_resolution_s": 1,
+                        "subminute_reconstruction": "not needed (source resolves seconds)",
+                        "assumed_date": assume_date, "date_is_assumed": True}
+    return pd.to_datetime(values, errors="coerce", utc=True), {
+        "source_timestamp_format": "iso8601"}
 
 
 def case_numbers(value: str) -> list[int]:
@@ -65,9 +128,11 @@ def case_numbers(value: str) -> list[int]:
     return values
 
 
-def refined_device_times(frame: pd.DataFrame) -> tuple[pd.Series, float]:
+def refined_device_times(frame: pd.DataFrame,
+                         coarse: pd.Series | None = None) -> tuple[pd.Series, float]:
     """Create strictly increasing UTC times from minute bins and RECORD order."""
-    coarse = pd.to_datetime(frame["TIMESTAMP"], errors="coerce", utc=True)
+    if coarse is None:
+        coarse = pd.to_datetime(frame["TIMESTAMP"], errors="coerce", utc=True)
     if coarse.isna().any() or not coarse.is_monotonic_increasing:
         raise ValueError("valid measurement timestamps must be monotonic after RECORD ordering")
     counts = coarse.value_counts(sort=False)
@@ -89,15 +154,17 @@ def refined_device_times(frame: pd.DataFrame) -> tuple[pd.Series, float]:
 
 
 def read_trajectory(gpkg: Path, layer: str, origin: np.ndarray,
-                    route_id: int, case_id: str) -> tuple[pd.DataFrame, dict, pd.DataFrame]:
+                    route_id: int, case_id: str,
+                    assume_date: str | None = None
+                    ) -> tuple[pd.DataFrame, dict, pd.DataFrame]:
     source = pyogrio.read_dataframe(gpkg, layer=layer)
     required = ["RECORD", "TIMESTAMP", "AirTemp", "HRel", "WS", "Tmrt"]
     missing = [column for column in required if column not in source.columns]
     if missing:
         raise ValueError(f"{layer}: missing required measurement columns {missing}")
     source["_record_numeric"] = pd.to_numeric(source["RECORD"], errors="coerce")
-    source["_timestamp_parsed"] = pd.to_datetime(
-        source["TIMESTAMP"], errors="coerce", utc=True)
+    source["_timestamp_parsed"], timestamp_info = parse_source_timestamps(
+        source["TIMESTAMP"], assume_date)
     good = (source.geometry.notna() & ~source.geometry.is_empty
             & source["_record_numeric"].notna() & source["_timestamp_parsed"].notna())
     dropped = int((~good).sum())
@@ -109,7 +176,8 @@ def read_trajectory(gpkg: Path, layer: str, origin: np.ndarray,
     xy_local = xy_projected - origin
     segment = np.linalg.norm(np.diff(xy_local, axis=0), axis=1)
     cumulative = np.r_[0.0, np.cumsum(segment)]
-    refined_utc, nominal_interval = refined_device_times(source)
+    refined_utc, nominal_interval = refined_device_times(
+        source, source["_timestamp_parsed"])
     local_time = refined_utc.dt.tz_convert("Europe/Lisbon")
     elapsed = (refined_utc - refined_utc.iloc[0]).dt.total_seconds().to_numpy(float)
     arrival_start = (local_time.iloc[0].hour + local_time.iloc[0].minute / 60.0
@@ -129,7 +197,7 @@ def read_trajectory(gpkg: Path, layer: str, origin: np.ndarray,
         "elapsed_time_s": elapsed,
         "arrival_hour_local": arrival_hour,
     })
-    period = "day" if "1st_measurement" in layer else "night"
+    period = "night" if "night_measurement" in layer else "day"
     metadata = {
         "route_id": route_id,
         "name": f"{period}_experimental",
@@ -156,6 +224,8 @@ def read_trajectory(gpkg: Path, layer: str, origin: np.ndarray,
             "nominal_reconstructed_sample_interval_s": nominal_interval,
             "timezone_interpretation": "source Z timestamps are UTC; converted to Europe/Lisbon",
             "dropped_invalid_rows": dropped,
+            **({} if timestamp_info["source_timestamp_format"] == "iso8601"
+               else timestamp_info),
         },
         "generator_args": {"program": Path(__file__).name, "layer": layer},
     }
@@ -175,7 +245,9 @@ def read_trajectory(gpkg: Path, layer: str, origin: np.ndarray,
 
 
 def write_routes_and_measurements(case_dir: Path, gpkg: Path, area: int,
-                                  manifest: dict) -> tuple[list[dict], pd.DataFrame]:
+                                  manifest: dict, measurement: str = "1st",
+                                  assume_date: str | None = None
+                                  ) -> tuple[list[dict], pd.DataFrame]:
     routes_dir = case_dir / "routes"
     measurements_dir = case_dir / "measurements"
     routes_dir.mkdir(parents=True, exist_ok=True)
@@ -191,13 +263,14 @@ def write_routes_and_measurements(case_dir: Path, gpkg: Path, area: int,
         manifest["coordinates"]["local_origin_y"],
     ], dtype=float)
     layers = [
-        f"Study_Area_{area}___1st_measurement",
+        f"Study_Area_{area}___{measurement}_measurement",
         f"Study_Area_{area}___night_measurement",
     ]
     measurement_frames = []
     for route_id, layer in enumerate(layers, 1):
         route, metadata, measurement = read_trajectory(
-            gpkg, layer, origin, route_id, manifest["case_id"])
+            gpkg, layer, origin, route_id, manifest["case_id"],
+            assume_date=assume_date if route_id == 1 else None)
         route.to_csv(routes_dir / f"route_{route_id}.csv", index=False,
                      float_format="%.12g")
         (routes_dir / f"route_{route_id}.json").write_text(
@@ -387,6 +460,76 @@ def download_osm(case_dir: Path, overwrite: bool) -> None:
     subprocess.run(command, cwd=ROOT, check=True)
 
 
+DERIVED_COPY_FILES = (
+    "geometry/building_final.stl", "geometry/vegetation_final.stl",
+    "geometry/ground_and_water_final.stl", "geometry/geometry_build.json",
+    "geometry/building_final_lod1_report.json",
+    "osm/lisbon_complete_osm.gpkg", "osm/lisbon_complete_osm.metadata.json",
+    "osm/lisbon_complete_osm.overpass.ql",
+    "source/reference_measurement_route.csv",
+    "source/scene_rectangle_projected.geojson",
+    "config/osm_ground_materials.json",
+    "config/radiant_flux_contribution_results.json",
+    "config/radiation_forcing.json",
+)
+
+
+def derive_case(template_dir: Path, case_dir: Path, measurement: str) -> dict:
+    """Create input/lisbonN<suffix> from input/lisbonN without touching it.
+
+    The scene (geometry, OSM cache, footprint, material configuration) is
+    COPIED -- never linked, so no later write can reach the template -- and the
+    manifest is the template's with only identity and provenance changed. The
+    simulation date is set from the walk once its route has been read.
+    """
+    template_dir, case_dir = template_dir.resolve(), case_dir.resolve()
+    if case_dir == template_dir:
+        raise ValueError("a derived case must not be the template case")
+    template = json.loads((template_dir / "case.json").read_text(encoding="utf-8"))
+    for relative in DERIVED_COPY_FILES:
+        source = template_dir / relative
+        target = case_dir / relative
+        if not source.is_file():
+            if relative.startswith(("geometry/building_final.stl",
+                                    "geometry/vegetation_final.stl",
+                                    "geometry/ground_and_water_final.stl",
+                                    "osm/lisbon_complete_osm.gpkg", "config/osm",
+                                    "config/radiant")):
+                raise FileNotFoundError(source)
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if (not target.is_file() or target.stat().st_size != source.stat().st_size
+                or target.stat().st_mtime < source.stat().st_mtime):
+            shutil.copy2(source, target)
+    manifest = json.loads(json.dumps(template))
+    manifest["case_id"] = case_dir.name
+    manifest["site_name"] = f"{template['site_name']} ({measurement} daytime walk)"
+    manifest["description"] = (
+        f"Held-out validation case: scene of {template['case_id']} (copied, not "
+        f"rebuilt) with the {measurement} daytime walk as route 1 and the same "
+        "night walk as route 2.")
+    manifest["source"]["derived_from_case"] = template["case_id"]
+    manifest["source"]["scene_copied_from"] = str(template_dir)
+    return manifest
+
+
+def finish_derived_manifest(case_dir: Path, manifest: dict, routes: list[dict]) -> None:
+    day = routes[0]
+    night = routes[1]
+    day_date = pd.Timestamp(day["frame"]["timestamp_local"].iloc[0]).date().isoformat()
+    provenance = day["metadata"]["measurement_provenance"]
+    manifest["simulation_defaults"]["date"] = day_date
+    manifest["source"]["day_measurement_layer"] = provenance["source_layer"]
+    manifest["source"]["night_measurement_layer"] = night["metadata"][
+        "measurement_provenance"]["source_layer"]
+    manifest["source"]["day_measurement_date"] = day_date
+    manifest["source"]["night_measurement_date"] = pd.Timestamp(
+        night["frame"]["timestamp_local"].iloc[0]).date().isoformat()
+    manifest["source"]["day_date_is_assumed"] = bool(provenance.get("date_is_assumed", False))
+    (case_dir / "case.json").write_text(json.dumps(manifest, indent=2) + "\n",
+                                        encoding="utf-8")
+
+
 def main() -> int:
     args = parse_args()
     gpkg = args.gpkg.resolve()
@@ -394,19 +537,31 @@ def main() -> int:
         raise FileNotFoundError(gpkg)
     selected = case_numbers(args.case)
     for area in selected:
-        case_dir = args.input_root.resolve() / f"lisbon{area}"
-        manifest_path = case_dir / "case.json"
+        template_dir = args.input_root.resolve() / f"lisbon{area}"
+        case_dir = args.input_root.resolve() / f"lisbon{area}{args.case_suffix}"
+        manifest_path = template_dir / "case.json"
         if not manifest_path.is_file():
             raise FileNotFoundError(f"prepare geometry first; missing {manifest_path}")
-        print(f"\n[{case_dir.name}] preparing day/night validation inputs")
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        derived = bool(args.case_suffix)
+        print(f"\n[{case_dir.name}] preparing day/night validation inputs "
+              f"({args.measurement} daytime walk"
+              + (f", scene copied from {template_dir.name})" if derived else ")"))
+        if derived:
+            manifest = derive_case(template_dir, case_dir, args.measurement)
+        else:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         routes, measurements = write_routes_and_measurements(
-            case_dir, gpkg, area, manifest)
+            case_dir, gpkg, area, manifest, args.measurement, args.assume_date)
         provenance = write_weather(case_dir, routes, measurements)
-        write_configs(case_dir, manifest["case_id"])
-        update_manifest(case_dir, routes, manifest)
+        if derived:
+            # Keep the template's (Lisbon-specific) material configuration and
+            # manifest layout, so only the walk differs from the published case.
+            finish_derived_manifest(case_dir, manifest, routes)
+        else:
+            write_configs(case_dir, manifest["case_id"])
+            update_manifest(case_dir, routes, manifest)
         write_readme(case_dir, routes, provenance)
-        if not args.skip_osm_download:
+        if not args.skip_osm_download and not derived:
             download_osm(case_dir, args.overwrite_osm)
         print(f"  routes: {len(routes)}; day {routes[0]['length_m']:.1f} m, "
               f"night {routes[1]['length_m']:.1f} m")

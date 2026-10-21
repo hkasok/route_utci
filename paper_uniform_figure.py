@@ -44,7 +44,10 @@ def main():
     norm = TwoSlopeNorm(vmin=-lim, vcenter=0.0, vmax=lim)
 
     cases = sorted(R.route_id.unique(), key=lambda s: int(s.split(":")[0].replace("lisbon", "")))
-    fig, axes = plt.subplots(2, 3, figsize=(15.5, 9.6))
+    # Drawn at about its printed size (text width, 5.4 in) as 3 rows x 2
+    # columns, so the cell values print at about 7 pt; in a 2 x 3 layout at
+    # this width the five-character values would not fit their cells.
+    fig, axes = plt.subplots(3, 2, figsize=(5.6, 6.6), constrained_layout=True)
     image = None
     for ax, cid in zip(axes.ravel(), cases):
         g = R[R.route_id == cid]
@@ -57,21 +60,24 @@ def main():
         image = ax.imshow(z, cmap="RdBu_r", norm=norm, aspect="auto")
         for i in range(z.shape[0]):
             for j in range(z.shape[1]):
-                ax.text(j, i, f"{z[i, j]:+.3f}", ha="center", va="center", fontsize=8,
+                ax.text(j, i, f"{z[i, j]:+.3f}", ha="center", va="center", fontsize=7.2,
                         color="white" if abs(z[i, j]) > 0.6 * lim else "black")
         ta = {k: g[g.Ta_offset_sigma == k].Ta_uniform_C.iloc[0] for k in ks_t}
         vp = {k: g[g.vp_offset_sigma == k].vp_uniform.iloc[0] for k in ks_e}
-        ax.set_xticks(range(len(ks_t)), [f"{offset_label(k)}\n{ta[k]:.1f}" for k in ks_t], fontsize=8)
-        ax.set_yticks(range(len(ks_e)), [f"{offset_label(k)}\n{vp[k]:.1f}" for k in ks_e], fontsize=8)
+        ax.set_xticks(range(len(ks_t)), [f"{offset_label(k)}\n{ta[k]:.1f}" for k in ks_t], fontsize=7.5)
+        ax.set_yticks(range(len(ks_e)), [f"{offset_label(k)}\n{vp[k]:.1f}" for k in ks_e], fontsize=7.5)
         n = int(cid.split(":")[0].replace("lisbon", ""))
         ax.set_title(f"Lisbon {n} (measured forcing: "
-                     f"{g.DeltaTcore_real_C.iloc[0]:.3f} °C)", fontsize=11)
+                     f"{g.DeltaTcore_real_C.iloc[0]:.3f} °C)", fontsize=8.5)
     for ax in axes[-1]:
-        ax.set_xlabel("Uniform air temperature $T_a$ (°C)")
-    for ax in axes[:, 0]:
-        ax.set_ylabel("Uniform vapour pressure $e$ (hPa)")
-    cb = fig.colorbar(image, ax=axes, shrink=0.85, pad=0.015)
-    cb.set_label("Signed error in $\\Delta T_{\\mathrm{core}}$, uniform − measured forcing (°C)")
+        ax.set_xlabel("Uniform air temperature $T_a$ (°C)", fontsize=8.5)
+    # one shared label: three stacked copies are longer than the column
+    fig.supylabel("Uniform vapour pressure $e$ (hPa)", fontsize=8.5)
+    cb = fig.colorbar(image, ax=axes, orientation="horizontal", shrink=0.7,
+                      aspect=40, pad=0.01)
+    cb.ax.tick_params(labelsize=7.5)
+    cb.set_label("Signed error in $\\Delta T_{\\mathrm{core}}$, uniform − measured forcing (°C)",
+                 fontsize=8.5)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(args.out, dpi=250, bbox_inches="tight")
     print(f"wrote {args.out}  (max |error| {lim:.4f} C)")

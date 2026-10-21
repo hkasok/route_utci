@@ -39,11 +39,23 @@ from weather_provider import WeatherProvider
 stage09 = import_module("09_route_thermal_stress_jos3")
 
 ROUTE_COLORS = {1: "#0072B2", 2: "#E69F00", 3: "#009E73", 4: "#CC79A7"}
+# A marker per route so the routes stay separable in greyscale and for
+# colour-vision deficiency; dash styles are reserved for the counterfactual.
+ROUTE_MARKERS = {1: "o", 2: "s", 3: "^", 4: "D"}
 TMRT_CMAP = "inferno"
 TMRT_RANGE = (30.0, 65.0)
-plt.rcParams.update({"font.size": 8, "axes.titlesize": 8, "axes.labelsize": 8,
-                     "legend.fontsize": 7, "xtick.labelsize": 7,
-                     "ytick.labelsize": 7})
+# The 7.0 in figures print at text width (5.4 in, x0.77): 9-9.5 pt here
+# prints at about 7 pt.
+plt.rcParams.update({"font.size": 9.5, "axes.titlesize": 9.5,
+                     "axes.labelsize": 9.5, "legend.fontsize": 9,
+                     "xtick.labelsize": 9, "ytick.labelsize": 9})
+PANEL_LABEL_BOX = dict(fc="white", ec="none", pad=1.5)
+
+
+def panel_label(ax, text):
+    """Panel letter at the same inside upper-left position in every panel."""
+    ax.text(0.008, 0.965, text, transform=ax.transAxes, ha="left", va="top",
+            fontsize=9.5, bbox=PANEL_LABEL_BOX, zorder=10)
 
 
 def parse_args():
@@ -99,12 +111,12 @@ def add_scale_bar(ax, length_m, x0, y0, label):
     ax.plot([x0, x0 + length_m], [y0, y0], color="black", lw=2,
             solid_capstyle="butt")
     ax.text(x0 + length_m / 2, y0 + 12, label, ha="center", va="bottom",
-            fontsize=7)
+            fontsize=9)
 
 
 def add_north_arrow(ax, x, y, size):
     ax.annotate("N", xy=(x, y + size), xytext=(x, y), ha="center",
-                va="center", fontsize=7,
+                va="center", fontsize=9,
                 arrowprops=dict(arrowstyle="-|>", color="black", lw=0.8))
 
 
@@ -134,7 +146,8 @@ def figure_map(case_dir, summary, traces, out):
         ax.imshow(np.where(canopy, 1.0, np.nan), extent=extent, origin="lower",
                   cmap=matplotlib.colors.ListedColormap(["#9fd39a"]),
                   interpolation="nearest", zorder=1, rasterized=True)
-        ax.add_collection(PolyCollection(buildings, facecolors="#b8b8b8",
+        # buildings darker than the canopy so the two separate in greyscale
+        ax.add_collection(PolyCollection(buildings, facecolors="#8a8a8a",
                                          edgecolors="none", zorder=2,
                                          rasterized=True))
         t = traces[rid]
@@ -174,23 +187,29 @@ def figure_strain(summary, traces, out):
     ax_c = fig.add_subplot(gs[2], sharex=ax_a)
     for rid in order:
         t = traces[rid]; c = ROUTE_COLORS.get(rid, "black")
+        m = ROUTE_MARKERS.get(rid, "o")
+        # markers at staggered intervals so coincident lines stay separable
+        every = (0.02 + 0.025 * (rid % 4), 0.11)
+        mark = dict(marker=m, ms=4.5, mec="white", mew=0.5, markevery=every)
         ax_a.plot(t.elapsed_min, t.tcore_rise_c, color=c, lw=1.6,
-                  label=f"Route {rid}")
+                  label=f"Route {rid}", **mark)
         ax_a.plot(t.elapsed_min, t.tcore_rise_neutral_c, color=c, lw=0.9,
                   ls="--")
         ax_b.plot(t.elapsed_min, t.tcore_rise_c - t.tcore_rise_neutral_c,
-                  color=c, lw=1.6)
+                  color=c, lw=1.6, **mark)
+        # arrival: a larger black-edged dot, distinct from the route markers
         ax_b.plot(t.elapsed_min.iloc[-1],
                   (t.tcore_rise_c - t.tcore_rise_neutral_c).iloc[-1], "o",
-                  color=c, ms=4)
+                  color=c, ms=6, mec="black", mew=0.8, zorder=5)
     ax_a.plot([], [], color="black", lw=0.9, ls="--",
               label=r"same walk, $T_\mathrm{mrt}=T_a$")
     ax_a.set_ylabel("Core temperature\nrise (°C)")
-    ax_a.legend(ncol=5, loc="upper left", frameon=False)
-    ax_a.text(0.995, 0.04, "(a)", transform=ax_a.transAxes, ha="right")
+    ax_a.legend(ncol=3, loc="upper left", bbox_to_anchor=(0.05, 1.0),
+                frameon=False)
+    panel_label(ax_a, "(a)")
     ax_b.set_ylabel("Radiation-attributable\nrise (°C)")
     ax_b.axhline(0, color="grey", lw=0.5)
-    ax_b.text(0.995, 0.04, "(b)", transform=ax_b.transAxes, ha="right")
+    panel_label(ax_b, "(b)")
 
     norm = plt.Normalize(*TMRT_RANGE)
     for k, rid in enumerate(order):
@@ -204,9 +223,10 @@ def figure_strain(summary, traces, out):
     ax_c.set_yticklabels([f"Route {rid}" for rid in order])
     for tick, rid in zip(ax_c.get_yticklabels(), order):
         tick.set_color(ROUTE_COLORS.get(rid, "black"))
-    ax_c.set_ylim(-0.6, len(order) - 0.4); ax_c.invert_yaxis()
+    # a free band above the first strip carries the panel letter
+    ax_c.set_ylim(-1.25, len(order) - 0.4); ax_c.invert_yaxis()
     ax_c.set_xlabel("Elapsed time (min)")
-    ax_c.set_title("(c)", loc="right", fontsize=8, pad=2)
+    panel_label(ax_c, "(c)")
     cb = fig.colorbar(mesh, ax=ax_c, pad=0.01, aspect=12)
     cb.set_label(r"$T_\mathrm{mrt}$ (°C)")
     # room for the arrival markers of the longest walk
@@ -328,25 +348,29 @@ def figure_sweep(sweep, out, name="jos3_departure_sweep"):
                                      constrained_layout=True)
     for rid, g in sweep.groupby("route_id"):
         c = ROUTE_COLORS.get(int(rid), "black")
-        ax_a.plot(g.departure_hour, g.radiation_attributable_rise_c, "-o",
-                  color=c, ms=2.5, lw=1.4, label=f"Route {rid}")
-        ax_b.plot(g.departure_hour, g.tcore_rise_c, "-o", color=c, ms=2.5,
-                  lw=1.4)
+        m = ROUTE_MARKERS.get(int(rid), "o")
+        ax_a.plot(g.departure_hour, g.radiation_attributable_rise_c, "-",
+                  marker=m, color=c, ms=3.2, lw=1.4, label=f"Route {rid}")
+        ax_b.plot(g.departure_hour, g.tcore_rise_c, "-", marker=m, color=c,
+                  ms=3.2, lw=1.4)
     best = sweep.loc[sweep.groupby("departure_hour").tcore_rise_c.idxmin()]
     for _, r in best.iterrows():
-        ax_b.plot(r.departure_hour, r.tcore_rise_c, "o", ms=6, mfc="none",
+        ax_b.plot(r.departure_hour, r.tcore_rise_c, "o", ms=7, mfc="none",
                   mec="black", mew=0.8)
-    ax_b.plot([], [], "o", ms=6, mfc="none", mec="black",
+    ax_b.plot([], [], "o", ms=7, mfc="none", mec="black",
               label="lowest at that departure")
     ax_a.set_ylabel("Radiation-attributable\nrise (°C)")
     ax_a.axhline(0, color="grey", lw=0.5)
-    ax_a.legend(ncol=4, frameon=False, loc="lower center")
+    # opaque, and lifted off the zero line it would otherwise sit on
+    ax_a.legend(ncol=4, loc="lower center", bbox_to_anchor=(0.55, 0.12),
+                frameon=True, framealpha=1.0, facecolor="white",
+                edgecolor="none", borderpad=0.3)
     ax_b.set_ylabel("Core temperature\nrise (°C)")
     ax_b.legend(frameon=False, loc="lower center")
     ax_b.set_xlabel("Departure time (h, local)")
     ax_b.set_xticks(np.arange(7, 20, 1))
-    ax_a.text(0.005, 0.92, "(a)", transform=ax_a.transAxes)
-    ax_b.text(0.005, 0.92, "(b)", transform=ax_b.transAxes)
+    panel_label(ax_a, "(a)")
+    panel_label(ax_b, "(b)")
     for ext in ("png", "pdf"):
         fig.savefig(out / f"{name}.{ext}", dpi=300)
     plt.close(fig)

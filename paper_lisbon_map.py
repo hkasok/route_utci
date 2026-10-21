@@ -68,8 +68,10 @@ LAND_IN = "#e4e4e0"
 BUILDING = "#d0d0d0"
 INK = "#222222"
 
+# The 7.0 in figure prints at text width (5.4 in, x0.77): 8.5-9 pt here
+# prints at 6.6-7 pt.
 plt.rcParams.update({
-    "font.size": 7.5, "axes.titlesize": 7.5, "legend.fontsize": 7,
+    "font.size": 9, "axes.titlesize": 8.5, "legend.fontsize": 8.5,
     "font.family": "DejaVu Sans", "figure.dpi": 150,
     "savefig.dpi": 300, "pdf.fonttype": 42,
 })
@@ -125,7 +127,7 @@ def fetch_context(domains):
 
 
 # ------------------------------------------------------------- drawing ---
-def scalebar(ax, length_m, label, loc="lower left", lw=2.0, fs=7):
+def scalebar(ax, length_m, label, loc="lower left", lw=2.0, fs=8.5):
     """Scale bar with its label on a translucent white box."""
     x0, x1 = ax.get_xlim()
     bar_h = lw / 72 * (x1 - x0) / (ax.get_position().width * ax.figure.get_figwidth())
@@ -154,7 +156,7 @@ def north_arrow(ax, x=0.93, y=0.86, size=0.08):
                 arrowprops=dict(arrowstyle="-|>,head_width=0.35,head_length=0.6",
                                 color=INK, lw=1.0), zorder=20)
     ax.text(x, y + size + 0.01, "N", transform=ax.transAxes, ha="center",
-            va="bottom", fontsize=8, fontweight="bold", color=INK, zorder=20)
+            va="bottom", fontsize=9.5, fontweight="bold", color=INK, zorder=20)
 
 
 def fit_limits(bounds, box_w, box_h, pad_frac=0.06):
@@ -243,7 +245,7 @@ def main():
         cx, cy = float(day.x.mean()), float(day.y.mean())
         ox_, oy_ = offsets[c]
         ax_a.annotate(str(c), xy=(cx, cy), xytext=(cx + ox_, cy + oy_),
-                      ha="center", va="center", fontsize=7.5, fontweight="bold",
+                      ha="center", va="center", fontsize=9, fontweight="bold",
                       color="white", zorder=7,
                       bbox=dict(boxstyle="circle,pad=0.25", fc=COLORS[c],
                                 ec=INK, lw=0.5),
@@ -257,16 +259,16 @@ def main():
     north_arrow(ax_a, x=0.07, y=0.84)
     if have_osm:
         ax_a.text(0.42, 0.07, "Tagus estuary", transform=ax_a.transAxes,
-                  fontsize=7, style="italic", color="#4a6b85", ha="center")
+                  fontsize=8.5, style="italic", color="#4a6b85", ha="center")
         ax_a.text(0.60, 0.60, "Lisbon", transform=ax_a.transAxes,
-                  fontsize=8, color="#555555", ha="center")
+                  fontsize=9.5, color="#555555", ha="center")
     ax_a.set_title("(a)  Lisbon municipality", loc="left", pad=3)
 
     # ---- panels (b)-(g) ---------------------------------------------------
     letters = "bcdefg"
     for c in range(1, 7):
         x, y, w, h = boxes[c]
-        th = 0.17 if c <= 2 else 0.33  # title room (two lines, bottom row)
+        th = 0.19 if c <= 2 else 0.37  # title room (two lines, bottom row)
         ax = add(x, y, w, h - th)
         day, night = tracks[c]
         b = day.union_all().union(night.union_all()).bounds
@@ -296,7 +298,7 @@ def main():
     ax_l.axis("off")
     handles = [
         Line2D([], [], color="#777777", lw=1.8, label="Daytime walk\n(colour = route)"),
-        Line2D([], [], color=INK, lw=0.7, ls=(0, (2.5, 2)), label="Night-time walk"),
+        Line2D([], [], color=INK, lw=0.7, ls=(0, (2.5, 2)), label="Nighttime walk"),
         Line2D([], [], marker="o", ms=5, mfc="white", mec=INK, mew=1.0,
                ls="none", label="Start (daytime)"),
         plt.Rectangle((0, 0), 1, 1, fc=BUILDING, ec="none", label="Building (OSM)"),

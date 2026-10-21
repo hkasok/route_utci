@@ -173,11 +173,15 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--viz", default="run_output/MMC/viz")
     p.add_argument("--sweep", default="run_output/MMC/postprocessing/route_measures_sweep")
-    p.add_argument("--mc", default="run_output/MMC/postprocessing/ranking_uncertainty/summary.json")
+    p.add_argument("--mc", default="run_output/MMC/postprocessing/ranking_uncertainty/summary.json",
+                   help="Monte Carlo summary.json, or the run directory holding it "
+                        "(e.g. run_output/MMC/postprocessing/ranking_uncertainty_mc_state)")
     p.add_argument("--paper-dir", default="/home/harshin/files/fastUTEC paper")
     a = p.parse_args()
-    res = json.loads(Path(a.mc).read_text())["measures"]
+    mc = Path(a.mc)
+    res = json.loads((mc / "summary.json" if mc.is_dir() else mc).read_text())["measures"]
     out = Path(a.paper_dir)
+    out.mkdir(parents=True, exist_ok=True)
     summary = {"resolution": {k: v["resolution"] for k, v in res.items()},
                "departure_13h": main_table(Path(a.viz), out, res),
                "sweep": sweep_table(Path(a.sweep), out, res)}

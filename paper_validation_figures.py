@@ -66,6 +66,19 @@ plt.rcParams.update({
 
 DAY, NIGHT = "#c0392b", "#2471a3"
 
+# Density maps of the radiometer figure. Day and night are separated by
+# LIGHTNESS as well as hue, so they stay apart in greyscale and for
+# red-green colour-vision deficiency: day bins run from orange-red to dark
+# red (CIELAB L* ~80-25), night bins from pale to mid blue (L* ~91-64).
+def _truncated(name: str, lo: float, hi: float):
+    base = plt.get_cmap(name)
+    return matplotlib.colors.LinearSegmentedColormap.from_list(
+        f"{name}_{lo:g}_{hi:g}", base(np.linspace(lo, hi, 256)))
+
+
+DAY_CMAP = _truncated("OrRd", 0.40, 1.0)
+NIGHT_CMAP = _truncated("Blues", 0.15, 0.55)
+
 
 def load_points(root: Path) -> pd.DataFrame:
     frames = []
@@ -330,7 +343,9 @@ def figure_radiometer(points: pd.DataFrame, out: Path) -> dict:
     are counted and annotated rather than silently dropped: they are present in
     every statistic reported, and only their position on the page is affected.
     """
-    fig, axes = plt.subplots(2, 2, figsize=(6.8, 7.0), constrained_layout=True)
+    # Drawn close to its printed size (0.92 text width) so the 8-9 pt text
+    # prints at about 7-8 pt.
+    fig, axes = plt.subplots(2, 2, figsize=(5.6, 5.8), constrained_layout=True)
     summary = {}
     for ax, (mcol, ocol, label) in zip(axes.ravel(), CHANNELS):
         d = points.dropna(subset=[mcol, ocol])
@@ -343,7 +358,7 @@ def figure_radiometer(points: pd.DataFrame, out: Path) -> dict:
         lo, hi = lo - pad, hi + pad
         clipped = int((~((d[mcol].between(lo, hi)) & (d[ocol].between(lo, hi)))).sum())
 
-        for period, cmap in (("day", "Reds"), ("night", "Blues")):
+        for period, cmap in (("day", DAY_CMAP), ("night", NIGHT_CMAP)):
             sub = d[d["period"] == period]
             if sub.empty:
                 continue
@@ -358,13 +373,13 @@ def figure_radiometer(points: pd.DataFrame, out: Path) -> dict:
         if clipped:
             note += f"\n{clipped} off-scale"
         ax.text(0.04, 0.96, note, transform=ax.transAxes, va="top", ha="left",
-                fontsize=7.2,
+                fontsize=8,
                 bbox=dict(fc="white", ec="0.7", lw=0.5, alpha=0.92, pad=2.2))
 
-    handles = [plt.Line2D([], [], marker="h", ls="", ms=7, mec="none", mfc=c)
-               for c in (DAY, NIGHT)]
+    handles = [plt.Line2D([], [], marker="h", ls="", ms=8, mec="none", mfc=c)
+               for c in (DAY_CMAP(0.6), NIGHT_CMAP(0.45))]
     axes[0, 0].legend(handles, ["day", "night"], loc="lower right", frameon=True,
-                      framealpha=0.9, fontsize=7.5, handletextpad=0.4)
+                      framealpha=0.9, fontsize=8, handletextpad=0.4)
     fig.savefig(out / "validation_radiometer_pooled.png")
     plt.close(fig)
     return summary
@@ -570,39 +585,46 @@ def shadow_registration_tolerance(points: pd.DataFrame, root: Path, out: Path) -
     result["time_half_recovery_s"] = float(np.interp(-deficit_t[0] / 2, -deficit_t,
                                                      TIME_TOLERANCES_S))
 
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(6.8, 3.0), constrained_layout=True)
-    ax1.plot(SPATIAL_TOLERANCES_M, 100 * agree_s, "-o", ms=3, color="#1f618d",
-             label="position tolerance (m)")
-    ax1.set_xlabel("Allowed along-track position error (m)")
-    ax1.set_ylabel("Sun/shade agreement (%)")
-    ax1.set_ylim(70, 100.5)
-    ax1b = ax1.twiny()
-    ax1b.plot(TIME_TOLERANCES_S, 100 * agree_t, "-s", ms=3, color="#b03a2e",
-              label="clock tolerance (s)")
-    ax1b.set_xlabel("Allowed clock error (s)")
-    ax1b.grid(False)
-    lines = ax1.get_lines() + ax1b.get_lines()
-    ax1.legend(lines, [l.get_label() for l in lines], loc="lower right",
-               frameon=True, framealpha=0.9, fontsize=7.5)
-    ax1.set_title("(a) Agreement against allowed error")
+    # Printed at 0.78 of its drawn size: text is set 1-2 pt above the module
+    # defaults so that it prints at 6.6-7.4 pt.
+    with plt.rc_context({"font.size": 9.5, "axes.labelsize": 9.5,
+                         "axes.titlesize": 9.5, "xtick.labelsize": 9,
+                         "ytick.labelsize": 9}):
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(6.8, 3.0), constrained_layout=True,
+                                       gridspec_kw={"width_ratios": (1.0, 1.15)})
+        ax1.plot(SPATIAL_TOLERANCES_M, 100 * agree_s, "-o", ms=3, color="#1f618d",
+                 label="position tolerance (m)")
+        ax1.set_xlabel("Allowed along-track position error (m)")
+        ax1.set_ylabel("Sun/shade agreement (%)")
+        ax1.set_ylim(70, 100.5)
+        ax1b = ax1.twiny()
+        ax1b.plot(TIME_TOLERANCES_S, 100 * agree_t, "-s", ms=3, color="#b03a2e",
+                  label="clock tolerance (s)")
+        ax1b.set_xlabel("Allowed clock error (s)")
+        ax1b.grid(False)
+        lines = ax1.get_lines() + ax1b.get_lines()
+        ax1.legend(lines, [l.get_label() for l in lines], loc="lower right",
+                   frameon=True, framealpha=0.9, fontsize=8.5)
+        ax1.set_title("(a) Agreement against allowed error")
 
-    labels = [f"{int(b['lo_m'])}–{int(b['hi_m'])}" if b["hi_m"] else f"≥{int(b['lo_m'])}"
-              for b in bins]
-    rates = [100 * (b["misclassification_rate"] or 0) for b in bins]
-    bars = ax2.bar(labels, rates, color="#7f8c8d", width=0.7)
-    for bar, b in zip(bars, bins):
-        ax2.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 1,
-                 f"n={b['n']}", ha="center", fontsize=6.5)
-    ax2.axhline(100 * mis.mean(), color="k", lw=0.8, ls="--")
-    ax2.text(len(bins) - 0.5, 100 * mis.mean() + 1.5, f"all: {100 * mis.mean():.0f}%",
-             ha="right", fontsize=7)
-    ax2.set_xlabel("Distance to nearest modelled shadow edge (m)")
-    ax2.set_ylabel("Samples misclassified (%)")
-    ax2.set_ylim(0, max(rates) * 1.25)
-    ax2.grid(axis="x", visible=False)
-    ax2.set_title("(b) Misclassification lives at the edges")
-    fig.savefig(out / "validation_shadow_registration.png")
-    plt.close(fig)
+        labels = [f"{int(b['lo_m'])}–{int(b['hi_m'])}" if b["hi_m"] else f"≥{int(b['lo_m'])}"
+                  for b in bins]
+        rates = [100 * (b["misclassification_rate"] or 0) for b in bins]
+        bars = ax2.bar(labels, rates, color="#7f8c8d", width=0.7)
+        for bar, b in zip(bars, bins):
+            ax2.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 1,
+                     f"n={b['n']}", ha="center", fontsize=8.5)
+        ax2.axhline(100 * mis.mean(), color="k", lw=0.8, ls="--")
+        ax2.text(len(bins) - 0.5, 100 * mis.mean() + 1.5, f"all: {100 * mis.mean():.0f}%",
+                 ha="right", fontsize=8.5)
+        ax2.set_xlabel("Distance to nearest modelled shadow edge (m)")
+        ax2.tick_params(axis="x", labelsize=8.5)
+        ax2.set_ylabel("Samples misclassified (%)")
+        ax2.set_ylim(0, max(rates) * 1.25)
+        ax2.grid(axis="x", visible=False)
+        ax2.set_title("(b) Misclassification lives at the edges")
+        fig.savefig(out / "validation_shadow_registration.png")
+        plt.close(fig)
     return result
 
 
