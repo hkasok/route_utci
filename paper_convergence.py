@@ -63,7 +63,12 @@ def timings(root: Path) -> pd.DataFrame:
         path = root / "run_output" / case / "stage_timings.log"
         if not path.is_file():
             continue
-        entries = [line.rstrip("\n").split("\t") for line in path.read_text().splitlines()]
+        # Time only the first complete run: later partial re-runs append
+        # further blocks to the same log.
+        lines = path.read_text().splitlines()
+        end = next((i for i, l in enumerate(lines) if "Pipeline complete" in l),
+                   len(lines) - 1)
+        entries = [line.split("\t") for line in lines[:end + 1]]
         t = np.array([float(e[0]) for e in entries])
         names = [e[1] for e in entries]
         row = {"case": case}

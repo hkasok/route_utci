@@ -92,7 +92,7 @@ def outline(mesh: trimesh.Trimesh, n: int = 220):
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--split-dir", type=Path, default=Path("out_crop_test/00_split"))
+    ap.add_argument("--split-dir", type=Path, default=Path("out_crop_test_metric/00_split"))
     ap.add_argument("--index", type=int, default=-1)
     ap.add_argument("--paper-dir", type=Path,
                     default=Path("/home/harshin/files/fastUTEC paper"))
