@@ -152,7 +152,7 @@ def figure_map(case_dir, summary, traces, out):
         row = summary.loc[rid]
         ax.set_title(f"Route {rid}: {row.length_m:.0f} m, "
                      f"{row.walk_duration_min:.1f} min, "
-                     f"$\\Delta T_{{core}}$ {row.final_tcore_rise_c:.3f} °C",
+                     f"$\\Delta T_{{\\mathrm{{core}}}}$ {row.final_tcore_rise_c:.3f} °C",
                      color=ROUTE_COLORS.get(rid, "black"))
         ax.set_xlim(lo[0], hi[0]); ax.set_ylim(lo[1], hi[1])
         ax.set_aspect("equal"); ax.set_xticks([]); ax.set_yticks([])
@@ -160,7 +160,7 @@ def figure_map(case_dir, summary, traces, out):
     add_scale_bar(axes[0, 0], 200.0, hi[0] - 320, lo[1] + 30, "200 m")
     add_north_arrow(axes[0, 0], hi[0] - 40, lo[1] + 40, 70)
     cb = fig.colorbar(sc, ax=axes, shrink=0.8, pad=0.01)
-    cb.set_label("$T_{mrt}$ at arrival time (°C)")
+    cb.set_label(r"$T_\mathrm{mrt}$ at arrival time (°C)")
     for ext in ("png", "pdf"):
         fig.savefig(out / f"jos3_route_map.{ext}", dpi=300)
     plt.close(fig)
@@ -183,8 +183,8 @@ def figure_strain(summary, traces, out):
         ax_b.plot(t.elapsed_min.iloc[-1],
                   (t.tcore_rise_c - t.tcore_rise_neutral_c).iloc[-1], "o",
                   color=c, ms=4)
-    ax_a.plot([], [], color="grey", lw=0.9, ls="--",
-              label="same walk, $T_{mrt}=T_a$")
+    ax_a.plot([], [], color="black", lw=0.9, ls="--",
+              label=r"same walk, $T_\mathrm{mrt}=T_a$")
     ax_a.set_ylabel("Core temperature\nrise (°C)")
     ax_a.legend(ncol=5, loc="upper left", frameon=False)
     ax_a.text(0.995, 0.04, "(a)", transform=ax_a.transAxes, ha="right")
@@ -208,7 +208,7 @@ def figure_strain(summary, traces, out):
     ax_c.set_xlabel("Elapsed time (min)")
     ax_c.set_title("(c)", loc="right", fontsize=8, pad=2)
     cb = fig.colorbar(mesh, ax=ax_c, pad=0.01, aspect=12)
-    cb.set_label("$T_{mrt}$ (°C)")
+    cb.set_label(r"$T_\mathrm{mrt}$ (°C)")
     # room for the arrival markers of the longest walk
     t_end = max(t.elapsed_min.iloc[-1] for t in traces.values())
     ax_a.set_xlim(0.0, t_end * 1.02)

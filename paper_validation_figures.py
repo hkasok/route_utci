@@ -305,7 +305,7 @@ def figure_globe(points: pd.DataFrame, out: Path) -> dict:
     _square(ax, lo, hi, "Measured globe temperature (°C)",
             "Emulated globe temperature (°C)",
             "Black globe, like-for-like (6 campaigns)")
-    ax.legend(loc="upper left", frameon=True, framealpha=0.9)
+    ax.legend(loc="lower right", frameon=True, framealpha=0.9)
     fig.savefig(out / "validation_black_globe_pooled.png")
     plt.close(fig)
     return summary
