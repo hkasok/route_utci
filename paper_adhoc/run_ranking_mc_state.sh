@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # State-dependent ranking Monte Carlo and deterministic route robustness
 # (20 Oct 2026 review of paper_ranking_uncertainty.py). Every job goes through
-# paper_adhoc/gated.sh (one gated job at a time, waits for 8 free threads).
+# paper_adhoc/gated.sh (one gated job at a time, waits for 6 free threads).
 #
 #   a  mc_state            state flips + beam offset, 500 draws, CORR
 #   d  mc_state_flip_only  state flips + uniform offset, 500, CORR      (attribution)
@@ -30,7 +30,7 @@ tab() { nice -n 19 python3 paper_adhoc/tabulate_ranking_mc_state.py --out "$SCR/
             > "$LOG/tabulate.log" 2>&1 || echo "tabulation failed (see $LOG/tabulate.log)"; }
 mc() { name=$1; shift
     echo "== $name queued ($(date '+%F %T'))"
-    "$G" "$name" 8 nice -n 10 python3 paper_ranking_uncertainty.py --workers 6 \
+    "$G" "$name" 6 nice -n 10 python3 paper_ranking_uncertainty.py --workers 6 \
         --departures 13 16 17 --load-offset-range "$OFF" 0 \
         --out-name "$name" --paper-dir "$SCR/$name" "$@" > "$LOG/$name.log" 2>&1
     echo "== $name rc=$? ($(date '+%F %T'))"; tab
@@ -40,7 +40,7 @@ mc mc_state           --flip-model state   --offset-model beam    --correlation-
 mc mc_state_flip_only --flip-model state   --offset-model uniform --correlation-length-m "$CORR" --draws 500
 mc mc_uniform_beam    --flip-model uniform --flip-rate 0.241 --offset-model beam --correlation-length-m 2 --draws 500
 echo "== route_robustness queued ($(date '+%F %T'))"
-"$G" route_robustness 8 nice -n 10 python3 paper_adhoc/route_robustness.py --workers 6 \
+"$G" route_robustness 6 nice -n 10 python3 paper_adhoc/route_robustness.py --workers 6 \
     > "$LOG/route_robustness.log" 2>&1
 echo "== route_robustness rc=$? ($(date '+%F %T'))"; tab
 mc mc_state_corr10m   --flip-model state --offset-model beam --correlation-length-m 10 --draws 500

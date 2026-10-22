@@ -15,7 +15,7 @@ measurement=$([ "$w" = 2 ] && echo 2nd || echo 3rd)
 fail() { echo "FAILED $c: $*"; exit 1; }
 export USE_PEDESTRIAN_WIND=1          # as every published Lisbon run
 # The machine is shared: cap library thread pools at the gated allowance.
-export OMP_NUM_THREADS=8 OPENBLAS_NUM_THREADS=8 MKL_NUM_THREADS=8 NUMBA_NUM_THREADS=8
+export OMP_NUM_THREADS=6 OPENBLAS_NUM_THREADS=6 MKL_NUM_THREADS=6 NUMBA_NUM_THREADS=6
 NICE=(nice -n 19)
 OUT="$R/run_output/$c"
 mkdir -p "$OUT"
