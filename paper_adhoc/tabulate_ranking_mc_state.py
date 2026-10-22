@@ -32,7 +32,7 @@ PUBLISHED = (("500, 2 m (reported)", "ranking_uncertainty"),
              ("2000, 2 m", "ranking_uncertainty_n2000"),
              ("500, 10 m", "ranking_uncertainty_corr10m"),
              ("500, 40 m", "ranking_uncertainty_corr40m"))
-NEW_LABELS = {"mc_state": "state/beam, 500", "mc_state_n2000": "state/beam, 2000",
+NEW_LABELS = {"mc_state_corr5m": "state/beam, 500, 5 m", "mc_state": "state/beam, 500", "mc_state_n2000": "state/beam, 2000",
               "mc_state_corr10m": "state/beam, 500, 10 m",
               "mc_state_corr40m": "state/beam, 500, 40 m",
               "mc_state_flip_only": "state/uniform offset, 500",

@@ -126,7 +126,7 @@ def run_lengths(s, wrong):
     return s[i1 - 1] - s[i0] + np.median(np.diff(s))
 
 
-def simulated_mean(seqs, length, p_sun, p_shade, reps, seed):
+def simulated_mean(seqs, length, p_sun, p_shade, reps, seed, physical_only=False):
     from scipy.stats import norm
     rng = np.random.default_rng(seed)
     total, count = 0.0, 0
@@ -139,11 +139,13 @@ def simulated_mean(seqs, length, p_sun, p_shade, reps, seed):
             z[:, k] = rho[k - 1] * z[:, k - 1] + np.sqrt(1 - rho[k - 1] ** 2) * rng.standard_normal(reps)
         thr = np.where(q["model_sun"], norm.ppf(p_sun), norm.ppf(p_shade))
         r = run_lengths(s, z < thr[None, :])
+        if physical_only:
+            r = r[r > 0]
         total += r.sum(); count += r.size
     return total / count
 
 
-def by_samples(summary, p_sun, p_shade, reps, out_json):
+def by_samples(summary, p_sun, p_shade, reps, out_json, physical_only=False):
     seqs = lisbon_sequences(ROOT)
     measured = np.concatenate([run_lengths(q["s"], q["model_sun"] != q["meas_sun"]) for q in seqs])
     target = summary["tolerance"]["misclassified_run_length_m"]["mean"]
@@ -156,11 +158,14 @@ def by_samples(summary, p_sun, p_shade, reps, out_json):
     print(f"  of which non-physical (<= 0 m, projection jumps backward): {bad.size} "
           f"({', '.join(f'{b:.0f}' for b in bad)} m); mean without them "
           f"{measured[measured > 0].mean():.2f} m")
+    if physical_only:   # drop runs <= 0 m from the measured and the simulated sets
+        target = float(measured[measured > 0].mean())
+        print(f"  target: mean of physical runs, {target:.2f} m")
     rate = 1.0 - summary["classification_agreement"]
     grid = np.r_[1e-3, GRID]
-    res = {"target_mean_run_m": target, "grid_m": grid.tolist()}
+    res = {"target_mean_run_m": target, "physical_only": physical_only, "grid_m": grid.tolist()}
     for name, ps, ph in (("uniform", rate, rate), ("state", p_sun, p_shade)):
-        means = np.array([simulated_mean(seqs, L, ps, ph, reps, 11) for L in grid])
+        means = np.array([simulated_mean(seqs, L, ps, ph, reps, 11, physical_only) for L in grid])
         L = float(np.interp(target, means, grid)) if target >= means[0] else float(grid[1])
         floor = target < means[0]
         res[name] = {"p_sun": ps, "p_shade": ph, "mean_run_m": means.tolist(),
@@ -189,12 +194,16 @@ def main():
     ap.add_argument("--flip-rate-shade", type=float, default=P_MEAS_SUN_GIVEN_MODEL_SHADE)
     ap.add_argument("--replicates", type=int, default=400)
     ap.add_argument("--out-json", default=None)
+    ap.add_argument("--physical-only", action="store_true",
+                    help="state: exclude non-physical runs (<= 0 m, backward projection jumps) "
+                         "from the measured target and the simulated runs")
     a = ap.parse_args()
     summary = json.loads(Path(a.summary).read_text())["shadow"]
     if a.flip_model == "uniform":
         uniform_stride(summary, a.points)
     else:
-        by_samples(summary, a.flip_rate_sun, a.flip_rate_shade, a.replicates, a.out_json)
+        by_samples(summary, a.flip_rate_sun, a.flip_rate_shade, a.replicates, a.out_json,
+                   a.physical_only)
 
 
 if __name__ == "__main__":
