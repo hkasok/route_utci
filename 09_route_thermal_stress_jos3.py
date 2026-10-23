@@ -135,6 +135,10 @@ def simulate_walk(xy, arrival_hour, nearest_idx, mrt, environment, subject,
     n_pts = len(xy)
     cumdist = np.concatenate(([0.0], np.cumsum(
         np.linalg.norm(np.diff(xy, axis=0), axis=1))))
+    # JOS-3 needs the air speed relative to the body, so the walking speed
+    # is added to the wind in quadrature, as for the emulated globe.
+    walk_speed = jos3_protocol.walking_speeds_ms(
+        cumdist, (np.asarray(arrival_hour, float) - arrival_hour[0]) * 3600.0)
     model = subject.make_model()
     if list(getattr(model, "body_names", clothing_profiles.JOS3_SEGMENTS)) \
             != list(clothing_profiles.JOS3_SEGMENTS):
@@ -159,7 +163,8 @@ def simulate_walk(xy, arrival_hour, nearest_idx, mrt, environment, subject,
                                mrt.tau_matrix[:, nearest_idx[j]], period=24.0))
                if mrt.tau_matrix is not None else np.nan)
         return (ta, tmrt, float(local.relative_humidity_pct[0]),
-                float(local.wind_speed_ms[0]), tau)
+                float(jos3_protocol.body_air_speed_ms(
+                    float(local.wind_speed_ms[0]), walk_speed[j])), tau)
 
     ta0, tmrt0, rh0, v0, _ = forcing(0)
     # JOS-3's .rh is RELATIVE HUMIDITY IN PERCENT (library default 50), the

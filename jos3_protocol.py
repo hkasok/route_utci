@@ -89,6 +89,31 @@ def precondition_indoor(model, *, air_temperature_c=INDOOR_AIR_TEMPERATURE_C,
         f"min (last {STEADY_BLOCK_MIN}-min drift {drift:.4f} C)")
 
 
+def walking_speeds_ms(distance_m, elapsed_s) -> np.ndarray:
+    """Walker speed at each route point from cumulative distance and time [m/s].
+
+    Centred differences; capped at 4 m/s so a timing glitch cannot inject an
+    impossible ventilation. Constant-pace routes return the pace exactly.
+    """
+    d = np.asarray(distance_m, dtype=float)
+    t = np.asarray(elapsed_s, dtype=float)
+    if d.size < 2:
+        return np.zeros_like(d)
+    dt = np.gradient(t)
+    speed = np.gradient(d) / np.where(np.abs(dt) < 1e-9, np.inf, dt)
+    return np.clip(speed, 0.0, 4.0)
+
+
+def body_air_speed_ms(wind_ms, walking_speed_ms):
+    """Air speed relative to a walking body: wind and walking speed in quadrature.
+
+    JOS-3 takes the air speed relative to the body. Without a wind direction,
+    quadrature is the RMS relative speed over all headings -- the same rule
+    the emulated globe uses (black_globe.ventilation_speed).
+    """
+    return np.hypot(wind_ms, walking_speed_ms)
+
+
 def walking_activity_ratio(model, speed_ms: float, mass_kg: float) -> float:
     """JOS-3 physical activity ratio for level, unloaded walking at a speed.
 

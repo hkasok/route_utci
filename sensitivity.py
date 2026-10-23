@@ -302,13 +302,17 @@ def simulate_uniform_reference_case(routes: list[PreparedRoute], mrt_matrix: np.
             if args.equilibration_min > 0:
                 model.simulate(times=int(args.equilibration_min), dtime=60, output=False)
         start_core = core(); final_core = start_core
+        walk_speed = jos3_protocol.walking_speeds_ms(
+            np.concatenate(([0.0], np.cumsum(np.linalg.norm(np.diff(route.xy, axis=0), axis=1)))),
+            (np.asarray(route.arrival_hour, float) - route.arrival_hour[0]) * 3600.0)
         for j, unwrapped_hour in enumerate(route.arrival_hour):
             hour = unwrapped_hour % 24
             tr = float(np.interp(hour, time_hours, mrt_matrix[:, route.nearest_mrt_index[j]], period=24.0))
             wind = float(weather.wind_ms(hour))
             if not np.isfinite(tr) or not np.isfinite(wind):
                 raise ValueError(f"Non-finite MRT/wind: route {route.route_id}, point {j}")
-            model.tdb, model.tr, model.rh, model.v = ta_ref_c, tr, rh, wind
+            model.tdb, model.tr, model.rh, model.v = ta_ref_c, tr, rh, float(
+                jos3_protocol.body_air_speed_ms(wind, walk_speed[j]))
             if j:
                 dt = float(route.step_duration_s[j-1])
                 if not np.isfinite(dt) or dt <= 0: raise ValueError(f"Invalid duration {dt} on route {route.route_id}")

@@ -374,11 +374,16 @@ def run_jos3_walk(route: MeasuredRoute, ta_series: np.ndarray,
             model.simulate(times=int(args.equilibration_min), dtime=60,
                            output=False)
     start_core = core_c()
+    # air speed relative to the body: wind and walking speed in quadrature
+    walk_speed = jos3_protocol.walking_speeds_ms(
+        np.concatenate(([0.0], np.cumsum(np.linalg.norm(np.diff(route.xy, axis=0), axis=1)))),
+        (np.asarray(route.arrival_hour, float) - route.arrival_hour[0]) * 3600.0)
 
     final_core = start_core
     for j in range(n_points):
         model.tdb, model.tr = float(ta_series[j]), float(mrt[j])
-        model.rh, model.v = float(rh_series[j]), float(wind[j])
+        model.rh, model.v = float(rh_series[j]), float(
+            jos3_protocol.body_air_speed_ms(wind[j], walk_speed[j]))
         if j:
             dt_s = float(route.step_duration_s[j - 1])
             if not np.isfinite(dt_s) or dt_s <= 0:
