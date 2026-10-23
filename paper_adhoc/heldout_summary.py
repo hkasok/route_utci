@@ -142,7 +142,7 @@ def latex_tables(held: dict, ref: dict | None) -> str:
     rows = [r"% Held-out daytime walks (2nd, 3rd); statistics as Tables 4-5 and Sec. 4.4.",
             r"\begin{tabular}{llrrrrrrrrr}", r"\toprule",
             r"Walk & Date & $n_g$ & MBE$_g$ & RMSE$_g$ & cRMSE$_g$ & $\sigma_{\mathrm{obs}}$ & "
-            r"MBE$_{K\downarrow}$ & Agree & $\kappa$ & Sunlit m/o \\",
+            r"MBE$_{K\downarrow}$ & Agree & $\kappa$ & Sunlit mod/meas \\",
             r" & & & (K) & (K) & (K) & (K) & (W\,m$^{-2}$) & (\%) & & (\%) \\", r"\midrule"]
 
     def row(name, date, b):
@@ -184,7 +184,7 @@ def latex_tables(held: dict, ref: dict | None) -> str:
     rows += [r"\bottomrule", r"\end{tabular}",
              r"% $^*$ date absent from the source layer; 2023-08-13 assumed "
              r"(bracketed 11-16 Aug by logger record order). Agree/kappa: "
-             r"daytime sun/shade classification; Sunlit m/o: modelled/observed."]
+             r"daytime sun/shade classification; Sunlit mod/meas: modelled/measured."]
     return latex_minus("\n".join(rows)) + "\n"
 
 
