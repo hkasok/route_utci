@@ -60,11 +60,17 @@ CHANNELS = [
 plt.rcParams.update({
     "font.size": 9, "axes.labelsize": 9, "axes.titlesize": 9.5,
     "xtick.labelsize": 8, "ytick.labelsize": 8, "legend.fontsize": 8,
-    "figure.dpi": 200, "savefig.dpi": 300, "savefig.bbox": "tight",
+    "figure.dpi": 200, "savefig.dpi": 600, "savefig.bbox": "tight",
     "axes.grid": True, "grid.alpha": 0.25, "grid.linewidth": 0.5,
 })
 
 DAY, NIGHT = "#c0392b", "#2471a3"
+
+
+def save_figure(fig, path: Path) -> None:
+    """Write the PNG preview and the vector PDF the manuscript includes."""
+    fig.savefig(path)
+    fig.savefig(path.with_suffix(".pdf"))
 
 # Density maps of the radiometer figure. Day and night are separated by
 # LIGHTNESS as well as hue, so they stay apart in greyscale and for
@@ -319,7 +325,7 @@ def figure_globe(points: pd.DataFrame, out: Path) -> dict:
             "Emulated globe temperature (°C)",
             "Black globe, like-for-like (6 campaigns)")
     ax.legend(loc="lower right", frameon=True, framealpha=0.9)
-    fig.savefig(out / "validation_black_globe_pooled.png")
+    save_figure(fig, out / "validation_black_globe_pooled.png")
     plt.close(fig)
     return summary
 
@@ -380,7 +386,7 @@ def figure_radiometer(points: pd.DataFrame, out: Path) -> dict:
                for c in (DAY_CMAP(0.6), NIGHT_CMAP(0.45))]
     axes[0, 0].legend(handles, ["day", "night"], loc="lower right", frameon=True,
                       framealpha=0.9, fontsize=8, handletextpad=0.4)
-    fig.savefig(out / "validation_radiometer_pooled.png")
+    save_figure(fig, out / "validation_radiometer_pooled.png")
     plt.close(fig)
     return summary
 
@@ -623,7 +629,7 @@ def shadow_registration_tolerance(points: pd.DataFrame, root: Path, out: Path) -
         ax2.set_ylim(0, max(rates) * 1.25)
         ax2.grid(axis="x", visible=False)
         ax2.set_title("(b) Misclassification lives at the edges")
-        fig.savefig(out / "validation_shadow_registration.png")
+        save_figure(fig, out / "validation_shadow_registration.png")
         plt.close(fig)
     return result
 
