@@ -29,8 +29,10 @@ if [ ! -d "$B" ]; then
 fi
 
 # 1. stage 09 on the campus and the six Lisbon cases (case configs via start.sh)
+# (wind as published: campus without the solved field, Lisbon with it)
 for c in MMC lisbon1 lisbon2 lisbon3 lisbon4 lisbon5 lisbon6; do
-    step "stage09_$c" 2 env USE_PEDESTRIAN_WIND=1 SKIP_08=1 SOLWEIG_COMPARE=0 \
+    if [ "$c" = MMC ]; then W="USE_PEDESTRIAN_WIND=0 SKIP_PEDESTRIAN_WIND=1"; else W="USE_PEDESTRIAN_WIND=1"; fi
+    step "stage09_$c" 2 env $W SKIP_08=1 SOLWEIG_COMPARE=0 \
         INPUT_CASE_DIR="$R/input/$c" OUTPUT_CASE_DIR="$R/run_output/$c" CASE_NAME=$c \
         nice bash start.sh 6 || { echo "FAILED stage 09 $c"; exit 1; }
     grep -q "Pipeline complete" "$LOG/stage09_$c.log" || { echo "stage 09 $c incomplete"; exit 1; }
