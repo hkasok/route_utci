@@ -9,7 +9,7 @@ set -uo pipefail
 cd "${REPO:-$(dirname "$0")/..}"
 R="$PWD"
 SCR=${SCR:-/tmp/claude-1000/-home-harshin-files-fastUTEC-paper/98394eca-18c6-484b-8728-17aede7e7821/scratchpad/reruns/walkspeed}
-LOG="$SCR/logs"; mkdir -p "$LOG"
+LOG="$SCR/logs"; mkdir -p "$LOG" "$SCR/ta_heterogeneity" "$SCR/lisbon_routes" "$SCR/uniform"
 G=paper_adhoc/gated.sh
 export PYTHONUNBUFFERED=1 MPLBACKEND=Agg OMP_NUM_THREADS=6 OPENBLAS_NUM_THREADS=6 MKL_NUM_THREADS=6 NUMBA_NUM_THREADS=6
 step() { name=$1; need=$2; shift 2
