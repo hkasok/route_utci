@@ -448,7 +448,7 @@ entries:
   rule: pct
 - id: main-0916-a
   file: main
-  snippet: 'Nighttime agreement is close: pooled bias \SI{[[+0.08]]}{\kelvin}'
+  snippet: 'Night-time agreement is close: pooled bias \SI{[[+0.08]]}{\kelvin}'
   source: J(r"validation_summary.json", r"globe.night.mbe")
 - id: main-0916-b
   file: main
@@ -750,11 +750,11 @@ entries:
   source: J(r"globe_attribution_summary.json", r"regression.coef_per_sd_K[1]")
 - id: main-1020-a
   file: main
-  snippet: walking direction (\SI{[[+1.8]]}{\kelvin} toward the sun
+  snippet: walking direction (\SI{[[+1.8]]}{\kelvin} towards the sun
   source: J(r"globe_attribution_summary.json", r"heading_bins.toward the sun.residual_mean_K")
 - id: main-1021-b
   file: main
-  snippet: toward the sun, \SI{[[+2.7]]}{\kelvin} away)
+  snippet: towards the sun, \SI{[[+2.7]]}{\kelvin} away)
   source: J(r"globe_attribution_summary.json", r"heading_bins.away from the sun.residual_mean_K")
 - id: main-1026-a
   file: main
@@ -866,7 +866,7 @@ entries:
   source: J(r"convergence_summary.json", r"ablation[1].lup_rmse")
 - id: main-1056-a
   file: main
-  snippet: lowers it by more than \SI{[[0.14]]}{\kelvin} (generic paving)
+  snippet: lowers the bias by more than \SI{[[0.14]]}{\kelvin} (paving-stone ground)
   source: J(r"convergence_summary.json", r"ablation[0].globe_day_mbe") - J(r"convergence_summary.json", r"ablation[5].globe_day_mbe")
   rule: le
   note: generic paving lowers the day bias by 0.143 K; 'not more than 0.14' holds within rounding
@@ -936,11 +936,11 @@ entries:
   source: J(r"validation_summary.json", r"albedo_skill.pooled.model_albedo_mean")
 - id: main-1077-b
   file: main
-  snippet: against $[[0.216]]$) but not its placement
+  snippet: against $[[0.216]]$) but uncorrelated
   source: J(r"validation_summary.json", r"albedo_skill.pooled.measured_albedo_mean")
 - id: main-1077-c
   file: main
-  snippet: placement ($r = [[+0.07]]$), so
+  snippet: with the measured ($r = [[0.07]]$), so
   source: J(r"validation_summary.json", r"albedo_skill.pooled.albedo_r")
 - id: main-1085-a
   file: main
@@ -1520,11 +1520,6 @@ entries:
   snippet: (Edelsbrunner \& M\"{u}cke, 1994, \emph{ACM Transactions on Graphics} 13, 43--72)
   kind: skip
   reason: citation details
-- id: supp-0140-a
-  file: supp
-  snippet: and across the six campaigns \SI{[[0.5]]}{\percent} of daytime samples exceed
-  source: J(r"validation_summary.json", r"solar_forcing_audit.pooled_fraction_above_toa_horizontal")
-  rule: pct
 - id: supp-0145-a
   file: supp
   snippet: uses only a \SI{[[10]]}{\minute} envelope quantile
@@ -1583,7 +1578,7 @@ entries:
   source: J(r"validation_summary.json", r"solar_forcing_audit.by_case.lisbon6.max_measured_over_toa_horizontal")
 - id: supp-0169-a
   file: supp
-  snippet: nighttime $K\!\downarrow$ averages \SI{[[-2.4]]}{\watt\per\metre\squared}
+  snippet: night-time $K\!\downarrow$ averages \SI{[[-2.4]]}{\watt\per\metre\squared}
   source: TAB("table_radiometer.tex", r"^\s*& night", 3)
 - id: supp-0170-a
   file: supp
@@ -1688,11 +1683,11 @@ entries:
   source: J(r"globe_attribution_summary.json", r"globe_block_bootstrap_ci.night.mbe[1]")
 - id: supp-0214-c
   file: supp
-  snippet: and \SIrange{[[0.27]]}{0.34}{\kelvin} for the nighttime
+  snippet: and \SIrange{[[0.27]]}{0.34}{\kelvin} for the night-time
   source: J(r"globe_attribution_summary.json", r"globe_block_bootstrap_ci.night.rmse[0]")
 - id: supp-0214-d
   file: supp
-  snippet: and \SIrange{0.27}{[[0.34]]}{\kelvin} for the nighttime
+  snippet: and \SIrange{0.27}{[[0.34]]}{\kelvin} for the night-time
   source: J(r"globe_attribution_summary.json", r"globe_block_bootstrap_ci.night.rmse[1]")
 - id: supp-0217-a
   file: supp
@@ -2405,31 +2400,6 @@ entries:
   snippet: at the \num{[[25]]} departures of the fixed-clothing sweep
   source: J(r"route_measures_summary.json", r"sweep.n_departures")
   rule: exact
-- id: supp-0719-a
-  file: supp
-  snippet: computed on the \SI{[[1]]}{\metre} route points
-  source: SRC("route-pts-1m")
-  rule: exact
-- id: supp-0719-b
-  file: supp
-  snippet: the sweep's \SI{[[2]]}{\metre} values
-  source: SRC("sweep-spacing")
-  rule: exact
-- id: supp-0720-a
-  file: supp
-  snippet: departures other than [[13:00]], 16:00 and 17:00 use
-  source: J(r"ranking_uncertainty_summary.json", r"departures[0]")
-  rule: time
-- id: supp-0720-b
-  file: supp
-  snippet: departures other than 13:00, [[16:00]] and 17:00 use
-  source: J(r"ranking_uncertainty_summary.json", r"departures[1]")
-  rule: time
-- id: supp-0720-c
-  file: supp
-  snippet: departures other than 13:00, 16:00 and [[17:00]] use
-  source: J(r"ranking_uncertainty_summary.json", r"departures[2]")
-  rule: time
 - id: supp-0727-a
   file: supp
   snippet: to 18:00 (\num{[[10]]} departures)
@@ -2916,20 +2886,10 @@ entries:
   source: max(abs(x) for x in [J(DERIVED, r"wallview.lisbon1.facade060_dT"), J(DERIVED, r"wallview.lisbon2.facade060_dT"), J(DERIVED, r"wallview.lisbon3.facade060_dT"), J(DERIVED, r"wallview.lisbon4.facade060_dT"), J(DERIVED, r"wallview.lisbon5.facade060_dT"), J(DERIVED, r"wallview.lisbon6.facade060_dT")])
 - id: supp-0231-a
   file: supp
-  snippet: \emph{ahead} of the measurement in [[nine]] of the twelve
-  source: J(DERIVED, r"phase.n_model_ahead")
-  rule: exact
-  note: 'derived: PIPE/paper_adhoc/phase_check.py analyse() on current outputs'
-- id: supp-0231-b
-  file: supp
-  snippet: in nine of the [[twelve]] walks
-  source: J(DERIVED, r"phase.n_walks")
-  rule: exact
-- id: supp-0232-b
-  file: supp
-  snippet: walks ([[five]] of the six by day)
+  snippet: of the measurement in [[five]] of the six daytime walks
   source: J(DERIVED, r"phase.n_day_ahead")
   rule: exact
+  note: 'derived: PIPE/paper_adhoc/phase_check.py analyse() on current outputs'
 - id: supp-0232-c
   file: supp
   snippet: by up to about \SI{[[2]]}{\minute} in daytime
@@ -5496,42 +5456,42 @@ entries:
 - id: table_ablation-031
   file: table_ablation.tex
   cell:
-    row: ^Generic paving
+    row: ^Paving-stone ground
     k: 0
     col: 1
   source: J(r"convergence_summary.json", r"ablation[5].globe_day_mbe")
 - id: table_ablation-032
   file: table_ablation.tex
   cell:
-    row: ^Generic paving
+    row: ^Paving-stone ground
     k: 0
     col: 2
   source: J(r"convergence_summary.json", r"ablation[5].globe_day_rmse")
 - id: table_ablation-033
   file: table_ablation.tex
   cell:
-    row: ^Generic paving
+    row: ^Paving-stone ground
     k: 0
     col: 3
   source: J(r"convergence_summary.json", r"ablation[5].globe_night_mbe")
 - id: table_ablation-034
   file: table_ablation.tex
   cell:
-    row: ^Generic paving
+    row: ^Paving-stone ground
     k: 0
     col: 4
   source: J(r"convergence_summary.json", r"ablation[5].lup_rmse")
 - id: table_ablation-035
   file: table_ablation.tex
   cell:
-    row: ^Generic paving
+    row: ^Paving-stone ground
     k: 0
     col: 5
   source: J(r"convergence_summary.json", r"ablation[5].ldn_mbe")
 - id: table_ablation-036
   file: table_ablation.tex
   cell:
-    row: ^Generic paving
+    row: ^Paving-stone ground
     k: 0
     col: 6
   source: J(r"convergence_summary.json", r"ablation[5].kdn_rmse")
@@ -6249,7 +6209,7 @@ entries:
   source: '(lambda f: 100*f[''area''][f[''material_name''] == ''paving_stone_pedestrian''].sum()/f[''area''][np.isin(f[''material_name''], [''paving_stone_pedestrian'', ''calcada_limestone''])].sum())(np.load(r"/media/harshin/data_drive/route based UTCI/run_output/lisbon%d/thermal_out/facets.npz" % 4, allow_pickle=True))'
 - id: main-0286-a
   file: main
-  snippet: measured at \SI{[[1]]}{\metre} below the canopy's displacement height
+  snippet: measured near \SI{[[1]]}{\metre}, below the canopy's displacement height
   source: CODE(r"PIPE/weather_from_sensors.py", r"\"--sensor-wind-height-m\", type=float, default=([\d.]+)")
   rule: exact
   note: 'sensor (1 m) is below d in all scenes: min d = 3.28 m (PIPE/input/lisbon{}/weather/weather_from_sensors_provenance.json)'
@@ -6428,7 +6388,7 @@ entries:
   tol: 0.02
 - id: main-0477-a
   file: main
-  snippet: against a climatological \num{[[3.6]]} \cite{holmgren2018pvlib}
+  snippet: against a climatological \num{[[3.6]]} \cite{holmgren2018pvlib, remund2003linke}
   source: J(DERIVED, r"linke_clim.mean")
   note: pvlib monthly Linke climatology at the case sites/dates (derived)
 - id: forcing-10min
@@ -6449,12 +6409,12 @@ entries:
   note: pythermalcomfort JOS-3 has NUM_NODES = 85 (84 tissue/blood + central blood pool); 83 is the count in some published descriptions -- check Takahashi et al.
 - id: main-0548-a
   file: main
-  snippet: Pandolf et al.\ \cite{pandolf1977load}, $M = [[1.5]]\,W + 1.5
+  snippet: $M = [[1.5]]\,m + 1.5
   source: CODE(r"PIPE/jos3_protocol.py", r"metabolic_w = ([\d.]+) \* mass_kg")
   rule: exact
 - id: main-0548-b
   file: main
-  snippet: $M = 1.5\,W + [[1.5]]\,W U_w^2$
+  snippet: $M = 1.5\,m + [[1.5]]\,m U_w^2$
   source: CODE(r"PIPE/jos3_protocol.py", r"mass_kg \+ ([\d.]+) \* mass_kg \* speed_ms")
   rule: exact
 - id: main-0550-a
@@ -6742,7 +6702,7 @@ entries:
   note: black_globe._areal_heat_capacity_for_time_constant reference wind
 - id: main-0669-b
   file: main
-  snippet: matching the 20--30 minutes a standard globe takes to equilibrate
+  snippet: matching the \SIrange{20}{30}{\minute} a standard globe takes to equilibrate
   kind: skip
   reason: literature value (ISO 7726 equilibration time), cited
 - id: beam-fp
@@ -6850,12 +6810,12 @@ entries:
 - id: main-0792-a
   file: main
   snippet: the core rises would be \SI{[[5]]}{\percent} and
-  source: '100*(np.mean(np.array(TXTALL(r"PIPE/geometry_rebuild_20261011/logs/wind_test4.log", r"v1\.1: tot ([\d.]+)"))/np.array(TXTALL(r"PIPE/geometry_rebuild_20261011/logs/wind_test4.log", r"v10: tot ([\d.]+)"))) - 1)'
-  note: geometry_rebuild_20261011/logs/wind_test4.log (paper_adhoc/scratch_sessions/wind_test4.py)
+  source: '100*(np.mean(np.array(TXTALL(r"PIPE/paper_adhoc/logs/wind_test_walkspeed.log", r"v1\.1: tot ([\d.]+)"))/np.array(TXTALL(r"PIPE/paper_adhoc/logs/wind_test_walkspeed.log", r"v10: tot ([\d.]+)"))) - 1)'
+  note: paper_adhoc/logs/wind_test_walkspeed.log (paper_adhoc/scratch_sessions/wind_test_walkspeed.py; JOS-3 air speed with walking speed, 26 Oct)
 - id: main-0792-b
   file: main
   snippet: their radiant parts \SI{[[14]]}{\percent} higher
-  source: '100*(np.mean(np.array(TXTALL(r"PIPE/geometry_rebuild_20261011/logs/wind_test4.log", r"v1\.1: tot [\d.]+ rad ([\d.]+)"))/np.array(TXTALL(r"PIPE/geometry_rebuild_20261011/logs/wind_test4.log", r"v10: tot [\d.]+ rad ([\d.]+)"))) - 1)'
+  source: '100*(np.mean(np.array(TXTALL(r"PIPE/paper_adhoc/logs/wind_test_walkspeed.log", r"v1\.1: tot [\d.]+ rad ([\d.]+)"))/np.array(TXTALL(r"PIPE/paper_adhoc/logs/wind_test_walkspeed.log", r"v10: tot [\d.]+ rad ([\d.]+)"))) - 1)'
 - id: main-0794-a
   file: main
   snippet: single LiDAR tile of \SI{[[1.17]]}{\kilo\metre} by
@@ -7033,19 +6993,19 @@ entries:
   rule: time
 - id: sweep-r1r3-res-first
   file: main
-  snippet: subsec:propagation} at [[13:00]] and from 14:30 to 18:00, by
+  snippet: 'subsec:propagation}) at [[13:00]] and from 14:30 to 18:00, by'
   source: min(float(d) for d, v in J(r"ranking_uncertainty_summary.json", "summary").items() if v["pairs"]["1-3"]["band_95_c"][0] > 0)
   rule: time
   note: 'bootstrap tie rule of paper_route_measures_table.py (ws_main): R3-R1 on the 1 m route points must exceed the 95th bootstrap percentile of pair 1-3''s largest shift (0.0265 C; pair 1-3 is the measure''s largest, so resolution_upper95 is that threshold); exceeded 14:30-18:00 (14:00 gap 0.0261)'
 - id: main-1214-d
   file: main
-  snippet: subsec:propagation} at 13:00 and from [[14:30]] to 18:00, by
+  snippet: 'subsec:propagation}) at 13:00 and from [[14:30]] to 18:00, by'
   source: '(lambda g, s: min(g[g > s].index))((lambda pv: pv[3] - pv[1])(CSV(r"RUN/MMC/postprocessing/route_measures_sweep/route_measures_sweep.csv").pivot(index="dep", columns="route", values="rise")), J(r"route_measures_summary.json", r"resolution_upper95.tcore_rise_c"))'
   rule: time
   note: 'bootstrap tie rule of paper_route_measures_table.py (ws_main): R3-R1 on the 1 m route points must exceed the 95th bootstrap percentile of pair 1-3''s largest shift (0.0265 C; pair 1-3 is the measure''s largest, so resolution_upper95 is that threshold); exceeded 14:30-18:00 (14:00 gap 0.0261)'
 - id: main-1214-e
   file: main
-  snippet: subsec:propagation} at 13:00 and from 14:30 to [[18:00]], by
+  snippet: 'subsec:propagation}) at 13:00 and from 14:30 to [[18:00]], by'
   source: '(lambda g, s: max(g[g > s].index))((lambda pv: pv[3] - pv[1])(CSV(r"RUN/MMC/postprocessing/route_measures_sweep/route_measures_sweep.csv").pivot(index="dep", columns="route", values="rise")), J(r"route_measures_summary.json", r"resolution_upper95.tcore_rise_c"))'
   rule: time
   note: 'bootstrap tie rule of paper_route_measures_table.py (ws_main): R3-R1 on the 1 m route points must exceed the 95th bootstrap percentile of pair 1-3''s largest shift (0.0265 C; pair 1-3 is the measure''s largest, so resolution_upper95 is that threshold); exceeded 14:30-18:00 (14:00 gap 0.0261)'
@@ -7087,7 +7047,7 @@ entries:
   source: CSV(r"/home/harshin/files/fastUTEC paper/matlab/UTCI_conditional_contribution_summary.csv").set_index("Variable").loc["T_{mrt}", "MaximumConditionalContributionPercent"]
 - id: main-1232-a
   file: main
-  snippet: ($\sigma_{T_a} = \SI{[[0.035]]}{\celsius}$)
+  snippet: ($\sigma_{T_a} = \SI{[[0.035]]}{\kelvin}$)
   source: '(lambda d: (d.ta_ref_c.max() - d.ta_ref_c.min())/4)(CSV(r"RUN/MMC/postprocessing/sensitivity_2sigma/reference_case_ranking_summary.csv"))'
 - id: main-1233-a
   file: main
@@ -7475,7 +7435,7 @@ entries:
   source: 'float(np.percentile((lambda d: d[(d.period == ''day'') & (d.measured_swin_wm2 < 0.5*d.trec_atmospheric_ghi_wm2) & (d.sensor_shortwave_down_Wm2 < 0.5*d.trec_atmospheric_ghi_wm2)])((lambda d: d[~((d.period == ''day'') & (d.measured_swin_wm2 < 10) & (d.measured_swout_wm2 < 0))])(pd.concat([CSV(r"RUN/lisbon%d/validation/mrt_lisbon/radiant_flux_comparison_points.csv" % c) for c in range(1, 7)], ignore_index=True))).measured_swin_wm2, 5))'
 - id: supp-0396-a
   file: supp
-  snippet: ensemble at [[10:30]] as air temperature
+  snippet: '(\num{0.25}~clo) at [[10:30]] as air temperature'
   source: float(CSV(r"RUN/MMC/postprocessing/departure_sweep/departure_sweep.csv").query("route_id == 1 and clothing == 'hot_minimal'").departure_hour.min())
   rule: time
 - id: supp-0398-a
@@ -7732,16 +7692,16 @@ entries:
   source: CSV(r"RUN/MMC/postprocessing/route_measures_sweep/route_measures_sweep.csv").heat_rad.max()
 - id: supp-0720-d
   file: supp
-  snippet: values to within \SI{[[0.003]]}{\celsius}. Ties
+  snippet: resampling to within \SI{[[0.003]]}{\celsius}.
   source: '(lambda m, d: float((m.assign(h=m.dep.str[:2].astype(int) + m.dep.str[3:].astype(int)/60).merge(d, left_on=["h", "route"], right_on=["departure_hour", "route_id"]).eval("rise - tcore_rise_c")).abs().max()))(CSV(r"RUN/MMC/postprocessing/route_measures_sweep/route_measures_sweep.csv"), CSV(r"RUN/MMC/postprocessing/departure_sweep/departure_sweep_fixedclothing.csv"))'
   rule: le
 - id: route-pts-1m
   file: supp
-  snippet: computed on the \SI{[[1]]}{\metre} route points
+  snippet: the walk resampled every \SI{[[1]]}{\metre}
   source: float(np.median(np.diff(CSV(r"RUN/MMC/viz/route_utci/routes_points.csv").query("route_id == 1").cumdist_m)))
 - id: sweep-spacing
   file: supp
-  snippet: sweep's \SI{[[2]]}{\metre} values
+  snippet: sweep's \SI{[[2]]}{\metre} resampling
   source: J(r"ranking_uncertainty_summary.json", r"spacing_m")
   rule: exact
 - id: main-051
@@ -8685,12 +8645,12 @@ entries:
   note: cell size (definition)
 - id: supp-0443-a
   file: supp
-  snippet: integration of \num{[[64143]]} facets
+  snippet: integration of up to \num{[[64143]]} facets (Lisbon~4)
   source: TXT(r"RUN/lisbon4/variant_run.log", r"n_facets=(\d+)")
   rule: exact
 - id: supp-0443-b
   file: supp
-  snippet: facets over \num{[[144]]} steps
+  snippet: facets (Lisbon~4) over \num{[[144]]} steps
   source: TXT(r"RUN/lisbon4/variant_run.log", r"n_times=(\d+)")
   rule: exact
 - id: supp-0444-a
@@ -8879,27 +8839,27 @@ entries:
   source: J(r"review_stats_summary.json", r"2_campaign_bootstrap.day.two_stage_campaign_and_block_95ci.mbe[1]")
 - id: supp-0220-c
   file: supp
-  snippet: \numrange{1.92}{3.10}, \numrange{[[2.38]]}{3.38} and \SIrange{1.24}{1.66}{\kelvin} and the nighttime
+  snippet: \numrange{1.92}{3.10}, \numrange{[[2.38]]}{3.38} and \SIrange{1.24}{1.66}{\kelvin} and the night-time
   source: J(r"review_stats_summary.json", r"2_campaign_bootstrap.day.two_stage_campaign_and_block_95ci.rmse[0]")
 - id: supp-0220-d
   file: supp
-  snippet: \numrange{1.92}{3.10}, \numrange{2.38}{[[3.38]]} and \SIrange{1.24}{1.66}{\kelvin} and the nighttime
+  snippet: \numrange{1.92}{3.10}, \numrange{2.38}{[[3.38]]} and \SIrange{1.24}{1.66}{\kelvin} and the night-time
   source: J(r"review_stats_summary.json", r"2_campaign_bootstrap.day.two_stage_campaign_and_block_95ci.rmse[1]")
 - id: supp-0220-e
   file: supp
-  snippet: and \SIrange{[[1.24]]}{1.66}{\kelvin} and the nighttime
+  snippet: and \SIrange{[[1.24]]}{1.66}{\kelvin} and the night-time
   source: J(r"review_stats_summary.json", r"2_campaign_bootstrap.day.two_stage_campaign_and_block_95ci.crmse[0]")
 - id: supp-0220-f
   file: supp
-  snippet: and \SIrange{1.24}{[[1.66]]}{\kelvin} and the nighttime
+  snippet: and \SIrange{1.24}{[[1.66]]}{\kelvin} and the night-time
   source: J(r"review_stats_summary.json", r"2_campaign_bootstrap.day.two_stage_campaign_and_block_95ci.crmse[1]")
 - id: supp-0222-c
   file: supp
-  snippet: nighttime bias interval to \SIrange[range-phrase={ to }]{[[-0.17]]}{0.23}{\kelvin}
+  snippet: night-time bias interval to \SIrange[range-phrase={ to }]{[[-0.17]]}{0.23}{\kelvin}
   source: SRC("main-0935-a")
 - id: supp-0222-d
   file: supp
-  snippet: nighttime bias interval to \SIrange[range-phrase={ to }]{-0.17}{[[0.23]]}{\kelvin}
+  snippet: night-time bias interval to \SIrange[range-phrase={ to }]{-0.17}{[[0.23]]}{\kelvin}
   source: SRC("main-0935-b")
 - id: supp-0223-d
   file: supp
@@ -9722,7 +9682,7 @@ entries:
   rule: pct
 - id: supp-boot-res
   file: supp
-  snippet: the resolutions below by up to \SI{[[4]]}{\percent}
+  snippet: the resolutions above, shown before this allowance, by up to \SI{[[4]]}{\percent}
   source: '(lambda d: max(d["resolution_upper95"][k] / d["resolution"][k] - 1 for k in d["resolution"] if d["resolution"][k] > 0))(J(r"route_measures_summary.json"))'
   rule: le
 - id: supp-wutci-n
@@ -9755,3 +9715,64 @@ entries:
   snippet: moves its daytime bias under \SI{[[0.1]]}{\kelvin}
   source: 'max(abs(J(r"globe_attribution_summary.json", r"monte_carlo.one_at_a_time.height_m")[k]["bias_K"] - J(r"globe_attribution_summary.json", r"monte_carlo.nominal_bias_K")) for k in ("0.8", "1.2"))'
   rule: lt
+- id: supp-s4-mu
+  file: supp
+  snippet: diurnal angular frequency, is \SI{[[17]]}{\watt\per\square\metre\per\kelvin}
+  source: (1.9 * 2.10e6 * 2 * math.pi / 86400) ** 0.5
+  rule: round
+  note: paving-stone class k = 1.9, rho c = 2.10 MJ/m3/K (material_library.py paving_stone_pedestrian)
+- id: supp-s4-lime
+  file: supp
+  snippet: just below solid limestone's [[18]]--19 because
+  kind: skip
+  reason: literature range for solid limestone (material_library.py calibration note)
+- id: supp-s4-lime-b
+  file: supp
+  snippet: just below solid limestone's 18--[[19]] because
+  kind: skip
+  reason: literature range for solid limestone (material_library.py calibration note)
+- id: supp-s4-inv
+  file: supp
+  snippet: harmonic surface balance gives about [[20]] on Lisbon~4
+  kind: skip
+  reason: recorded inversion (material_library.py calibration note, mu ~ 20 on lisbon4)
+- id: supp-autoclo-a
+  file: supp
+  snippet: from T-shirt and shorts (\num{[[0.36]]}~clo)
+  source: TAB(r"elsarticle-template-num.tex", r"^T-shirt, shorts, trainers", 2)
+  rule: exact
+- id: supp-autoclo-b
+  file: supp
+  snippet: to singlet and shorts (\num{[[0.25]]}~clo)
+  source: TAB(r"elsarticle-template-num.tex", r"^Singlet, shorts, sandals", 2)
+  rule: exact
+- id: supp-night-utci
+  file: supp
+  snippet: (mean UTCI up to \SI{[[27.1]]}{\celsius})
+  source: max(TAB(r"table_lisbon_routes.tex", r"& night &", 6, k) for k in range(6))
+  rule: exact
+- id: supp-parton-a
+  file: supp
+  snippet: (Parton and Logan, [[1981]], \emph{Agricultural Meteorology} 23
+  kind: skip
+  reason: citation details
+- id: supp-parton-b
+  file: supp
+  snippet: \emph{Agricultural Meteorology} [[23]], 205--216
+  kind: skip
+  reason: citation details
+- id: supp-parton-c
+  file: supp
+  snippet: \emph{Agricultural Meteorology} 23, [[205]]--216
+  kind: skip
+  reason: citation details
+- id: supp-parton-d
+  file: supp
+  snippet: \emph{Agricultural Meteorology} 23, 205--[[216]]
+  kind: skip
+  reason: citation details
+- id: main-indoor-v
+  file: main
+  snippet: relative humidity, \SI{[[0.1]]}{\metre\per\second} air speed
+  source: CODE(r"/media/harshin/data_drive/route based UTCI/jos3_protocol.py", r"^INDOOR_AIR_SPEED_MS = ([0-9.]+)")
+  rule: exact

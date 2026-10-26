@@ -53,9 +53,14 @@ ABLATION = [
     ("abl_steady_state", "Steady-state surfaces"),
     ("abl_hemisphere_crowns", "Hemisphere crowns"),
     ("abl_global_reflected", "Global ground albedo"),
-    ("abl_generic_paving", "Generic paving"),
+    ("abl_generic_paving", "Paving-stone ground"),
 ]
 
+
+
+def num(x):
+    """Integer as siunitx \\num{} (thin-space thousands), blank if missing."""
+    return f"\\num{{{x}}}" if x not in ("", None) else ""
 
 def timings(root: Path) -> pd.DataFrame:
     rows = []
@@ -87,7 +92,7 @@ def table_timings(frame: pd.DataFrame, facets: dict) -> str:
          "Scene & facets & " + " & ".join(labels) + r" & Total \\",
          " & & " + " & ".join(["(s)"] * len(labels)) + r" & (s) \\", r"\midrule"]
     for case, r in frame.iterrows():
-        L.append(f"{case.replace('lisbon', 'Lisbon ')} & {facets.get(case, ''):,} & "
+        L.append(f"{case.replace('lisbon', 'Lisbon ')} & {num(facets.get(case, ''))} & "
                  + " & ".join(f"{r[l]:.0f}" for l in labels) + f" & {r['total']:.0f} \\\\")
     L += [r"\bottomrule", r"\end{tabular}"]
     return "\n".join(L)
@@ -188,7 +193,7 @@ def table_convergence(rows) -> str:
          r"Variant & Facets & max & RMS & MBE / RMSE & $L\!\uparrow$ & $K\!\downarrow$ \\",
          r"\midrule"]
     for r in rows:
-        L.append(f"{r['label']} & {r['facets'] or '':,} & {r['max_dT']:.2f} & {r['rms_dT']:.3f} & "
+        L.append(f"{r['label']} & {num(r['facets'])} & {r['max_dT']:.2f} & {r['rms_dT']:.3f} & "
                  f"{r['globe_day_mbe']:+.2f} / {r['globe_day_rmse']:.2f} & {r['lup_rmse']:.1f} & "
                  f"{r['kdn_rmse']:.0f} \\\\")
     L += [r"\bottomrule", r"\end{tabular}"]

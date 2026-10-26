@@ -194,7 +194,7 @@ def ci(values, lo=2.5, hi=97.5):
 # (a) regression
 # ----------------------------------------------------------------------------
 REGRESSORS = [
-    ("wind_quadrature_ms", r"Ventilation, $\sqrt{V_{\mathrm{meas}}^2 + V_{\mathrm{cart}}^2}$", r"m\,s$^{-1}$"),
+    ("wind_quadrature_ms", r"Ventilation (wind and walking speed)", r"m\,s$^{-1}$"),
     ("globe_sw_direct_Wm2", "Modelled beam on sphere", r"W\,m$^{-2}$"),
     ("cos_sun_heading", r"$\cos(\text{heading} - \text{solar azimuth})$", "--"),
 ]
@@ -578,8 +578,8 @@ def table_attribution(reg, reg_ci, seg_both, mc, zero, thor) -> str:
           rf"Required for zero daytime bias & \multicolumn{{4}}{{l}}{{"
           rf"$\times${zero['zero_bias_scale']:.2f}}} \\",
           rf"Thorsson et al.\ \cite{{thorsson2007tmrt}}, \SI{{38}}{{\milli\metre}} & \multicolumn{{4}}{{l}}{{"
-          rf"$\times${thor['enhancement_at_38mm']:.2f} at $V = {thor['mean_ventilation_ms']:.2f}$ m\,s$^{{-1}}$}} \\",
-          rf"At \SI{{152}}{{\milli\metre}}, $D^{{-0.4}}$ / $D^{{-0.5}}$ & \multicolumn{{4}}{{l}}{{"
+          rf"$\times${thor['enhancement_at_38mm']:.2f} at {thor['mean_ventilation_ms']:.2f} m\,s$^{{-1}}$}} \\",
+          rf"At \SI{{152}}{{\milli\metre}}, diameter$^{{-0.4}}$ / $^{{-0.5}}$ & \multicolumn{{4}}{{l}}{{"
           rf"$\times${thor['enhancement_at_152mm_D-0.4']:.2f} / "
           rf"$\times${thor['enhancement_at_152mm_D-0.5']:.2f}, leaving "
           rf"{thor['bias_left_K_D-0.4']:+.1f} / {thor['bias_left_K_D-0.5']:+.1f} K}} \\",
