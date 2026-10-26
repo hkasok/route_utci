@@ -197,9 +197,122 @@ def linke_clim():
     return dict(mean=float(np.mean(vals)), values=vals)
 
 
+def linke_campus():
+    """Main Sec. 3.2: Linke turbidity of the campus clear sky, as Location.get_clearsky
+    interpolates it for the case day (pvlib day-of-year interpolation of the monthly table)."""
+    import pvlib
+    case = json.load(open(f"{R}/input/MMC/case.json"))
+    loc = case["location"]
+    ts = pd.date_range(case["simulation_defaults"]["date"] + " 07:00", periods=13, freq="1h",
+                       tz=loc["timezone"])
+    v = pvlib.clearsky.lookup_linke_turbidity(ts, loc["latitude"], loc["longitude"]).to_numpy(float)
+    return dict(min=float(v.min()), max=float(v.max()), median=float(np.median(v)))
+
+
+def tie_rule_checks():
+    """Supp S15: 13:00 pairs resolved by the band test that the other-departure
+    threshold would tie, and the departure-sweep margins at a 40 m correlation length."""
+    import itertools
+    from pathlib import Path
+    sys.path.insert(0, R)
+    cwd = os.getcwd()
+    os.chdir(R)
+    try:
+        import paper_route_measures_table as T
+        post = Path("run_output/MMC/postprocessing")
+        main = post / "ranking_uncertainty_ws_main"
+        res = json.loads((main / "summary.json").read_text())["measures"]
+        rules = T.bootstrap_rules(main, list(res))
+        src = T.load(Path("run_output/MMC/viz"))
+        resolved, lost = 0, {}
+        for row in T.ROWS:
+            if row[1] is None or row[5] is None:
+                continue
+            _l, _u, s_, col, _d, key = row
+            v = {r: float(src[s_].loc[r, col]) for r in T.ROUTES}
+            for a, b in itertools.combinations(T.ROUTES, 2):
+                if rules[key]["resolved"][(13.0, (a, b))]:
+                    resolved += 1
+                    thr = rules[key]["shift"][(a, b)]
+                    if abs(v[b] - v[a]) <= thr:
+                        lost[f"{col}:{a}-{b}"] = {"gap": v[b] - v[a], "threshold": thr}
+        out40 = {}
+        r40 = T.bootstrap_rules(post / "ranking_uncertainty_ws_corr40m", ["tcore_rise_c", "walk_utci_c"])
+        sweep = post / "route_measures_sweep"
+        for tag in ("1430", "1800"):
+            sw = T.load(sweep / f"dep_{tag}")
+            core = sw["jos3"]["final_tcore_rise_c"]
+            utci = sw["utci"]["walk_utci_c"]
+            out40[tag] = {"core_1_3_gap": float(core.loc[3] - core.loc[1]),
+                          "core_1_3_threshold": r40["tcore_rise_c"]["shift"][(1, 3)],
+                          "utci_1_2_gap": float(utci.loc[2] - utci.loc[1]),
+                          "utci_1_2_threshold": r40["walk_utci_c"]["shift"][(1, 2)],
+                          "utci_1_4_gap": float(utci.loc[4] - utci.loc[1]),
+                          "utci_1_4_threshold": r40["walk_utci_c"]["shift"][(1, 4)]}
+        return {"resolved_13h": resolved, "would_tie_13h": len(lost), "pairs": lost, "corr40m": out40}
+    finally:
+        os.chdir(cwd)
+
+
+def campus_paving_check():
+    """Supp S16: campus route results with the library's revised paving-stone and
+    plaza properties (variants/mmc_paving_library) against the published run."""
+    out = {}
+    for f, cols in (("route_jos3", ["final_tcore_rise_c", "mean_tmrt_c"]),
+                    ("route_utci", ["walk_utci_c"])):
+        a = pd.read_csv(f"{R}/run_output/MMC/viz/{f}/route_ranking_summary.csv").set_index("route_id")
+        b = pd.read_csv(f"{R}/variants/mmc_paving_library/run_output/MMC/viz/{f}/"
+                        "route_ranking_summary.csv").set_index("route_id")
+        for c in cols:
+            out[c + "_max_abs_change"] = float((b[c] - a[c]).abs().max())
+    f = np.load(f"{R}/run_output/MMC/thermal_out/facets.npz", allow_pickle=True)
+    names = np.load(f"{R}/run_output/MMC/thermal_out/facet_material_name.npy", allow_pickle=True)
+    m = np.isin(names, ["paving_stone_pedestrian", "pedestrian_plaza"])
+    out["selected_area_pct"] = float(100 * f["area"][m].sum() / f["area"].sum())
+    used = json.load(open(f"{R}/run_output/MMC/thermal_out/materials_used.json"))
+    out["campus_k"] = used["paving_stone_pedestrian"]["k"]
+    out["campus_depths"] = [used["paving_stone_pedestrian"]["depth"], used["pedestrian_plaza"]["depth"]]
+    return out
+
+
+def forcing_variants():
+    """Main Secs 2.4, 4.1 and Supp S2, S16: Lisbon validation under the two forcing
+    sensitivity runs of 26 Oct 2026 (variants/forcing_measured_level,
+    variants/wind_floor_0p5) and the unchanged control rerun, with the paper's
+    statistics (paper_adhoc/heldout_summary.summarise)."""
+    import glob
+    import warnings
+    from pathlib import Path
+    sys.path.insert(0, os.path.join(R, "paper_adhoc"))
+    sys.path.insert(0, R)
+    import heldout_summary as H
+    cases = [f"lisbon{i}" for i in range(1, 7)]
+    out = {}
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        for name, root in (("published", Path(R)), ("control", Path(R, "variants/control_rerun")),
+                           ("measured_level", Path(R, "variants/forcing_measured_level")),
+                           ("wind_floor_0p5", Path(R, "variants/wind_floor_0p5"))):
+            p = H.summarise(cases, root, ["day", "night"], [])["pooled"]
+            per = H.summarise(cases, root, ["day"], [])["per_walk"]
+            out[name] = {"globe_day_mbe": p["globe"]["day"]["mbe"],
+                         "globe_day_rmse": p["globe"]["day"]["rmse"],
+                         "globe_night_mbe": p["globe"]["night"]["mbe"],
+                         "kdown_day_mbe": p["radiometer"]["K_down_day"]["mbe"],
+                         "lup_day_mbe": p["radiometer"]["L_up_day"]["mbe"],
+                         "per_case_day_mbe": {c: per[c]["globe"]["day"]["mbe"] for c in cases}}
+    factors = [json.load(open(f))["factor"] for f in sorted(glob.glob(
+        f"{R}/variants/forcing_measured_level/input_alt/lisbon*/config/solar_forcing_scale.json"))]
+    out["measured_level_factor_range"] = [min(factors), max(factors)]
+    return out
+
+
 TASKS = {"wallview": wallview, "phase": phase, "flip_calibration": flip_calibration, "reloc": reloc,
          "campus_geometry": campus_geometry, "jos3_bsa": jos3_bsa, "utci_wind10": utci_wind10,
-         "utci_prefill": utci_prefill, "linke_clim": linke_clim}
+         "utci_prefill": utci_prefill, "linke_clim": linke_clim,
+         "linke_campus": linke_campus, "tie_rule_checks": tie_rule_checks,
+         "campus_paving_check": campus_paving_check,
+         "forcing_variants": forcing_variants}
 
 for name in (sys.argv[3].split(",") if len(sys.argv) > 3 else TASKS):
     try:

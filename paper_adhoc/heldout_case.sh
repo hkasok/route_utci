@@ -24,7 +24,9 @@ echo "== $c ($measurement daytime walk of study area $area) $(date '+%F %T')"
 # 0. inputs: walk + night walk, scene copied from input/lisbon$area
 if [ ! -f "input/$c/case.json" ]; then
     extra=()
-    [ "$c" = lisbon2_w3 ] && extra=(--assume-date 2023-08-13)   # layer has no date
+    # the layer has no date; Silva et al. (2024), Table 3, give 16/08/2023
+    # (13 Aug was assumed before 26 Oct 2026)
+    [ "$c" = lisbon2_w3 ] && extra=(--assume-date 2023-08-16)
     "${NICE[@]}" python3 prepare_lisbon_case_inputs.py --case "$area" \
         --measurement "$measurement" --case-suffix "_w$w" --skip-osm-download \
         "${extra[@]}" || fail "input preparation"

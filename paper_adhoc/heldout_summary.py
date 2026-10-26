@@ -16,9 +16,9 @@ paper_validation_figures.py (apply_measurement_qc, stats, shadow_registration,
 CHANNELS, within_case_r), so the definitions are the paper's. Nothing is
 written to the paper folder. By default only the day route (route 1) of a
 held-out case is used: its night route is the published night walk again,
-simulated on another date. The undated walk (lisbon2_w3, date assumed) is
-reported per walk but left out of the pooled held-out set unless
---pool-assumed-date is given.
+simulated on another date. The walk whose source layer has no date
+(lisbon2_w3; 16 Aug 2023 from Silva et al. 2024, Table 3) is pooled unless
+--exclude-assumed-date is given.
 
   python3 paper_adhoc/heldout_summary.py                 # held-out walks
   python3 paper_adhoc/heldout_summary.py --verify-published
@@ -182,8 +182,8 @@ def latex_tables(held: dict, ref: dict | None) -> str:
                      f"{fmt(r.get('rmse'), '.1f')}")
         rows.append(line + r" \\")
     rows += [r"\bottomrule", r"\end{tabular}",
-             r"% $^*$ date absent from the source layer; 2023-08-13 assumed "
-             r"(bracketed 11-16 Aug by logger record order). Agree/kappa: "
+             r"% $^*$ date absent from the source layer; 2023-08-16 from Silva et al. "
+             r"(2024), Table 3. Agree/kappa: "
              r"daytime sun/shade classification; Sunlit: modelled/measured sunlit share."]
     return latex_minus("\n".join(rows)) + "\n"
 
@@ -269,6 +269,44 @@ def _all_period_rmse(root: Path, mcol: str, ocol: str) -> float:
     return stats(d[mcol].values, d[ocol].values)["rmse"]
 
 
+def paper_tables(summary: dict, out: Path) -> None:
+    """Supplement Tables S9-S10 (table_heldout_globe.tex, table_heldout_radiometer.tex)
+    from a heldout_summary.json dict, written to OUT (never the paper folder)."""
+    held, ref = summary["heldout"], summary["published_first_walks_day"]
+    months = {"06": "Jun", "07": "Jul", "08": "Aug"}
+
+    def cells(b):
+        g, s = b["globe"]["day"], b["shadow"]
+        k = b["radiometer"]["K_down_day"]
+        return (f"{g['n']} & {fmt(g['mbe'], '+.2f')} & {fmt(g['rmse'], '.2f')} & "
+                f"{fmt(g['crmse'], '.2f')} & {fmt(g['sd_obs'], '.2f')} & {fmt(k['mbe'], '+.0f')} & "
+                f"{fmt(100 * s['classification_agreement'], '.1f')} & {fmt(s['cohen_kappa'], '.2f')} & "
+                f"{fmt(100 * s['model_sunlit_fraction'], '.0f')}/"
+                f"{fmt(100 * s['measured_sunlit_fraction'], '.0f')} \\\\")
+    rows = [r"\begin{tabular}{llrrrrrrrrr}", r"\toprule",
+            r"Walk$^{a}$ & Date & $n_g$ & MBE$_g$ & RMSE$_g$ & cRMSE$_g$ & $\sigma_{\mathrm{obs}}$ & "
+            r"MBE$_{K\downarrow}$ & Agree & $\kappa$ & Sunlit \\",
+            r" & & & (K) & (K) & (K) & (K) & (W\,m$^{-2}$) & (\%) & & (\%) \\", r"\midrule"]
+    for case, b in held["per_walk"].items():
+        m = re.match(r"lisbon(\d)_w(\d)", case)
+        _y, mo, d = b["date"].split("-")
+        rows.append(f"L{m.group(1)} w{m.group(2)} & {int(d)} {months[mo]} & " + cells(b))
+    rows += [r"\midrule", "Pooled &  & " + cells(held["pooled"]),
+             "First walks &  & " + cells(ref["pooled"]), r"\bottomrule", r"\end{tabular}"]
+    (out / "table_heldout_globe.tex").write_text(latex_minus("\n".join(rows)) + "\n")
+    rows = [r"\begin{tabular}{lrrrrrrrr}", r"\toprule",
+            r"Channel & $n$ & Meas. & Model & MBE & RMSE & $n_{\mathrm{first}}$ & "
+            r"MBE$_{\mathrm{first}}$ & RMSE$_{\mathrm{first}}$ \\", r"\midrule"]
+    for key, label in (("K_down", r"$K{\downarrow}$"), ("K_up", r"$K{\uparrow}$"),
+                       ("L_down", r"$L{\downarrow}$"), ("L_up", r"$L{\uparrow}$")):
+        h, f = held["pooled"]["radiometer"][f"{key}_day"], ref["pooled"]["radiometer"][f"{key}_day"]
+        rows.append(f"{label} & {h['n']} & {fmt(h['measured_mean'], '.1f')} & "
+                    f"{fmt(h['model_mean'], '.1f')} & {fmt(h['mbe'], '+.1f')} & {fmt(h['rmse'], '.1f')} & "
+                    f"{f['n']} & {fmt(f['mbe'], '+.1f')} & {fmt(f['rmse'], '.1f')} \\\\")
+    rows += [r"\bottomrule", r"\end{tabular}"]
+    (out / "table_heldout_radiometer.tex").write_text(latex_minus("\n".join(rows)) + "\n")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -276,19 +314,26 @@ def main() -> int:
     ap.add_argument("--cases", nargs="+", default=HELDOUT)
     ap.add_argument("--include-night", action="store_true",
                     help="also tabulate the night route of each case")
-    ap.add_argument("--pool-assumed-date", action="store_true",
-                    help="include walks whose date was assumed in the pooled set")
+    ap.add_argument("--exclude-assumed-date", action="store_true",
+                    help="leave walks whose date is not in the source layer out "
+                         "of the pooled set")
     ap.add_argument("--out-dir", type=Path, default=DEFAULT_OUT)
     ap.add_argument("--verify-published", action="store_true")
+    ap.add_argument("--paper-tables-from", type=Path, default=None,
+                    help="write the supplement's two held-out tables from this "
+                         "heldout_summary.json into --out-dir and stop")
     args = ap.parse_args()
     args.out_dir.mkdir(parents=True, exist_ok=True)
     if args.out_dir.resolve().is_relative_to(PAPER_DIR):
         raise SystemExit("refusing to write into the paper folder")
     if args.verify_published:
         return verify_published(args.root, args.out_dir)
+    if args.paper_tables_from is not None:
+        paper_tables(json.loads(args.paper_tables_from.read_text()), args.out_dir)
+        return 0
 
     periods = ["day", "night"] if args.include_night else ["day"]
-    assumed = [] if args.pool_assumed_date else [
+    assumed = [] if not args.exclude_assumed_date else [
         c for c in args.cases
         if (args.root / "input" / c / "case.json").is_file()
         and walk_info(c, args.root)["date_is_assumed"]]

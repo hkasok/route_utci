@@ -86,9 +86,9 @@ entries:
   reason: literature values (cited)
 - id: main-0158-a
   file: main
-  snippet: by \SIrange{7}{9}{\kelvin} RMSE \cite{jia2024comparative}
+  snippet: by \SIlist[list-units=single]{7.3;9.5}{\kelvin} RMSE \cite{jia2024comparative}
   kind: skip
-  reason: literature values (cited)
+  reason: literature values (cited; Jia et al. accepted manuscript 7.33 and 9.47 C)
 - id: main-0176-a
   file: main
   snippet: precomputes hourly \SI{1}{\metre} SOLWEIG
@@ -134,7 +134,7 @@ entries:
   note: test definition
 - id: main-0317-a
   file: main
-  snippet: at most \SI{0.12}{\kelvin} at the [[95]]th percentile
+  snippet: at most \SI{0.15}{\kelvin} at each scene's [[95]]th percentile
   source: '95'
   rule: exact
   note: statistic definition
@@ -438,12 +438,12 @@ entries:
   rule: abs
 - id: main-0878-a
   file: main
-  snippet: because \SIrange{[[98]]}{100}{\percent} of unshaded samples
+  snippet: because at \SIrange{[[98]]}{100}{\percent} of daytime samples
   source: J(r"validation_summary.json", r"solar_forcing_audit.above_physical_ceiling_range[0]")
   rule: pct
 - id: main-0878-b
   file: main
-  snippet: because \SIrange{98}{[[100]]}{\percent} of unshaded samples
+  snippet: because at \SIrange{98}{[[100]]}{\percent} of daytime samples
   source: J(r"validation_summary.json", r"solar_forcing_audit.above_physical_ceiling_range[1]")
   rule: pct
 - id: main-0916-a
@@ -1522,7 +1522,7 @@ entries:
   reason: citation details
 - id: supp-0145-a
   file: supp
-  snippet: uses only a \SI{[[10]]}{\minute} envelope quantile
+  snippet: binned to \SI{[[10]]}{\minute}, and sets
   source: SRC("forcing-10min")
   rule: exact
 - id: supp-0150-a
@@ -1544,27 +1544,27 @@ entries:
   note: per-case means 972-1032
 - id: supp-0153-a
   file: supp
-  snippet: between \SI{[[98]]}{\percent} and \SI{100}{\percent} of unshaded
+  snippet: at \SIrange{[[98]]}{100}{\percent} of daytime samples
   source: J(r"validation_summary.json", r"solar_forcing_audit.above_physical_ceiling_range[0]")
   rule: pct
 - id: supp-0153-b
   file: supp
-  snippet: between \SI{98}{\percent} and \SI{[[100]]}{\percent} of unshaded
+  snippet: at \SIrange{98}{[[100]]}{\percent} of daytime samples
   source: J(r"validation_summary.json", r"solar_forcing_audit.above_physical_ceiling_range[1]")
   rule: pct
 - id: supp-0155-a
   file: supp
-  snippet: a Linke turbidity of \num{[[2.0]]} --- by
+  snippet: a Linke turbidity of \num{[[2.0]]} --- at
   source: J(r"validation_summary.json", r"solar_forcing_audit.by_case.lisbon1.ceiling_linke_turbidity")
   rule: exact
 - id: supp-0155-b
   file: supp
-  snippet: '--- by \SIrange{[[5.1]]}{10.5}{\percent},'
+  snippet: 'by a median \SIrange{[[5.1]]}{10.5}{\percent},'
   source: J(r"validation_summary.json", r"solar_forcing_audit.residual_instrument_bias_range[0]")
   rule: pct
 - id: supp-0155-c
   file: supp
-  snippet: '--- by \SIrange{5.1}{[[10.5]]}{\percent},'
+  snippet: 'by a median \SIrange{5.1}{[[10.5]]}{\percent},'
   source: J(r"validation_summary.json", r"solar_forcing_audit.residual_instrument_bias_range[1]")
   rule: pct
 - id: supp-0156-a
@@ -6147,7 +6147,7 @@ entries:
   source: sum(J(r"RUN/lisbon{}/surface_materials/material_classification_summary.json".format(i), "mean_confidence_area_weighted")*J(r"RUN/lisbon{}/surface_materials/material_classification_summary.json".format(i), "total_area_m2") for i in range(1, 7))/sum(J(r"RUN/lisbon{}/surface_materials/material_classification_summary.json".format(i), "total_area_m2") for i in range(1, 7))
 - id: alb-limestone
   file: main
-  snippet: (albedo \num{[[0.38]]} \cite{oke1987boundary}, conductivity
+  snippet: (assumed albedo \num{[[0.38]]} and
   source: CODE(r"PIPE/material_library.py", r"_m\(\"calcada_limestone\", CATEGORY_\w+, ([\d.]+)")
   rule: exact
 - id: k-limestone
@@ -6404,9 +6404,9 @@ entries:
 - id: main-0541-b
   file: main
   snippet: as 17 segments in [[83]] nodes
-  source: '85'
+  source: '83'
   rule: exact
-  note: pythermalcomfort JOS-3 has NUM_NODES = 85 (84 tissue/blood + central blood pool); 83 is the count in some published descriptions -- check Takahashi et al.
+  note: 83 is Takahashi et al. (2021)'s count, checked against the paper on 26 Oct 2026; pythermalcomfort's JOS-3 has NUM_NODES = 85 because it adds blood pools
 - id: main-0548-a
   file: main
   snippet: $M = [[1.5]]\,m + 1.5
@@ -6837,11 +6837,11 @@ entries:
   rule: approx
   tol: 0.03
 - id: main-0798-a
-  file: main
-  snippet: Route~1 was chosen from \num{[[456]]} candidate paths
+  file: supp
+  snippet: geometry (\num{[[456]]} candidates), the search shortlisted
   source: TXT(r"RUN/MMC/postprocessing/route_search_rebuilt_geometry_20261011/route_search.log", r"(\d+) candidate paths")
   rule: exact
-  note: current-geometry search enumerated 456; 454 was the 7 Oct search (log not kept)
+  note: current-geometry search enumerated 456; 454 was the 7 Oct search (recorded in input/MMC/routes/route_1.json)
 - id: main-0801-a
   file: main
   snippet: Covered passages (\SI{[[2.9]]}{\percent} of Route~2
@@ -7462,9 +7462,7 @@ entries:
   rule: exact
 - id: supp-0416-c
   file: supp
-  snippet: 'land-use
-
-    inference ([[0.60]])'
+  snippet: 'OpenStreetMap object type ([[0.60]];'
   source: 'CODE(r"PIPE/material_classification.py", r"SOURCE_CONFIDENCE[\s\S]*?SOURCE_OSM_INFERRED: ([\d.]+)")'
   rule: exact
 - id: supp-0417-a
@@ -8016,9 +8014,9 @@ entries:
   source: max(J(DERIVED, "geometry.view_share_beyond_50m_pct").values())
 - id: main-0317-b
   file: main
-  snippet: $T_{\mathrm{mrt}}$ by at most \SI{[[0.12]]}{\kelvin} at the 95th
-  source: J(DERIVED, "geometry.drop100_dTmrt_p95abs_K.pooled_all7")
-  note: 'original script lost; reconstruction (scripts_agentA/drop100.py): pooled p95 0.122 K, per scene up to 0.146 K, so ''at most'' holds only pooled'
+  snippet: $T_{\mathrm{mrt}}$ by at most \SI{[[0.15]]}{\kelvin} at each scene's
+  source: max(v for k, v in J(DERIVED, "geometry.drop100_dTmrt_p95abs_K").items() if k.startswith("lisbon") and k != "lisbon_pooled")
+  note: 'original script lost; reconstruction (scripts_agentA/drop100.py): per-scene p95 up to 0.146 K (Lisbon 1), pooled 0.122 K; campus value not stored (the pooled_all7 0.122 is below the max)'
 - id: supp-042
   file: supp
   cell:
@@ -8700,19 +8698,19 @@ entries:
   source: J(r"review_stats_summary.json", r"2_campaign_bootstrap.night.two_stage_campaign_and_block_95ci.mbe[1]")
 - id: main-0936-b
   file: main
-  snippet: Pooled over the \num{[[11]]} dated held-out daytime walks
-  source: sum(1 for w in J(r"heldout_summary.json", r"heldout.per_walk").values() if not w.get("date_is_assumed"))
+  snippet: Pooled over the \num{[[12]]} held-out daytime walks
+  source: len(J(r"heldout_summary.json", r"heldout.per_walk")) - len(J(r"heldout_summary.json", r"heldout.pooled.excluded_from_pool"))
   rule: exact
 - id: main-0937-a
   file: main
-  snippet: dated held-out daytime walks, the bias is \SI{[[+1.74]]}{\kelvin}
+  snippet: held-out daytime walks, the bias is \SI{[[+1.74]]}{\kelvin}
   source: J(r"heldout_summary.json", r"heldout.pooled.globe.day.mbe")
-  note: pooled over the eleven dated walks (Lisbon 2 w3 excluded)
+  note: pooled over all twelve walks
 - id: main-0938-b
   file: main
-  snippet: (positive on \num{[[10]]})
-  source: sum(1 for w in J(r"heldout_summary.json", r"heldout.per_walk").values() if w["globe"]["day"]["mbe"] > 0 and not w.get("date_is_assumed"))
-  note: the pooled held-out figures cover the 11 dated walks (lisbon2_w3's date is assumed)
+  snippet: (positive on \num{[[11]]})
+  source: sum(1 for w in J(r"heldout_summary.json", r"heldout.per_walk").values() if w["globe"]["day"]["mbe"] > 0)
+  note: all 12 walks pooled since 26 Oct 2026 (lisbon2_w3 on its published date, 16 Aug 2023)
   rule: exact
 - id: main-0939-c
   file: main
@@ -9181,7 +9179,7 @@ entries:
   note: CAMPBELL_BLACKGLOBE_L spec
 - id: supp-0845-a
   file: supp
-  snippet: forced-convection coefficient is ISO 7726's
+  snippet: larger of ISO 7726's forced
   kind: skip
   reason: standard designation
 - id: supp-0846-a
@@ -9196,9 +9194,9 @@ entries:
   reason: dates; checked against heldout_summary.json per_walk.date (min 2023-06-27, max 2023-08-25)
 - id: supp-0858-a
   file: supp
-  snippet: 13 August 2023 is assumed from the logger's
+  snippet: it is simulated on 16 August 2023, the date
   kind: skip
-  reason: date; heldout_summary.json per_walk.lisbon2_w3.date 2023-08-13, date_is_assumed true
+  reason: date; heldout_summary.json per_walk.lisbon2_w3.date 2023-08-16 (Silva et al. 2024, Table 3, Route 2 summer walks 23/06, 04/07, 16/08/2023)
 - id: supp-0860-a
   file: supp
   snippet: rejected \num{[[7]]} of \num{5296} samples
@@ -9776,3 +9774,385 @@ entries:
   snippet: relative humidity, \SI{[[0.1]]}{\metre\per\second} air speed
   source: CODE(r"/media/harshin/data_drive/route based UTCI/jos3_protocol.py", r"^INDOOR_AIR_SPEED_MS = ([0-9.]+)")
   rule: exact
+
+- id: main-linke-campus
+  file: main
+  snippet: "climatological Linke turbidity (\\num{[[5.4]]})"
+  source: "J(DERIVED, \"linke_campus.median\")"
+  rule: round
+- id: main-r1-50
+  file: main
+  snippet: "for one at least \\SI{[[50]]}{\\metre} longer than Route~3"
+  source: "CODE(r\"/media/harshin/data_drive/route based UTCI/paper_route_search.py\", r\"at least\\s+(\\d+) m longer\")"
+  rule: exact
+  note: "screen criterion in the search script docstring"
+- id: supp-crown-vox-a
+  file: supp
+  snippet: "(bounded to \\SIrange{[[0.10]]}{0.23}{\\metre})"
+  source: "CODE(r\"/media/harshin/data_drive/route based UTCI/crown_field_reconstruction.py\", r\"target_resolution_m: float = ([0-9.]+)\")"
+  rule: exact
+- id: supp-crown-vox-b
+  file: supp
+  snippet: "(bounded to \\SIrange{0.10}{[[0.23]]}{\\metre})"
+  source: "float(CODE(r\"/media/harshin/data_drive/route based UTCI/crown_field_reconstruction.py\", r\"bridge_radius_m: float = ([0-9.]+)\")) / float(CODE(r\"/media/harshin/data_drive/route based UTCI/crown_field_reconstruction.py\", r\"VOXELS_PER_BRIDGE_RADIUS = ([0-9.]+)\"))"
+  rule: round
+  note: "bridge radius / voxels per bridge radius"
+- id: supp-crown-ball
+  file: supp
+  snippet: "places a \\SI{[[0.70]]}{\\metre}-radius ball"
+  source: "CODE(r\"/media/harshin/data_drive/route based UTCI/crown_field_reconstruction.py\", r\"bridge_radius_m: float = ([0-9.]+)\")"
+  rule: exact
+- id: supp-crown-gap
+  file: supp
+  snippet: "(bridging gaps up to about \\SI{[[1.4]]}{\\metre})"
+  source: "2 * float(CODE(r\"/media/harshin/data_drive/route based UTCI/crown_field_reconstruction.py\", r\"bridge_radius_m: float = ([0-9.]+)\"))"
+  rule: round
+  note: "two ball radii"
+- id: supp-shade-tol
+  file: supp
+  snippet: '(a sample more than \SI{[[12]]}{\percent} below a rolling'
+  source: '100 * J(r"RUN/../input/lisbon1/weather/weather_from_sensors_provenance.json", r"solar.envelope_diagnostics.shade_tolerance")'
+  rule: exact
+- id: supp-shade-q
+  file: supp
+  snippet: '[[90]]th percentile counts as shaded'
+  source: 'CODE(r"/media/harshin/data_drive/route based UTCI/weather_from_sensors.py", r"reference_quantile: float = 0\.(\d+)")'
+  rule: exact
+- id: supp-flatroof
+  file: supp
+  snippet: 'flat-roof shape tag, [[0.50]])'
+  source: 'CODE(r"/media/harshin/data_drive/route based UTCI/material_classification.py", r"roof:shape=\{shape\}\", confidence=([0-9.]+)")'
+  rule: exact
+- id: supp-solweig-h
+  file: supp
+  snippet: "left at its \\SI{[[1.75]]}{\\metre}"
+  source: "CODE(r\"/media/harshin/data_drive/solweig/.venv/lib/python3.12/site-packages/solweig/models/config.py\", r\"height: float = ([0-9.]+)\")"
+  rule: exact
+  note: "HumanParams default body height, passed to the view-factor code (computation.py)"
+- id: supp-solweig-sit
+  file: supp
+  snippet: "file's \\SI{[[0.75]]}{\\metre} sitting height"
+  source: "J(r\"RUN/lisbon1/solweig/run_globe/run_metadata.json\", r\"physics.full_params.Posture.Sitting.Value.height\")"
+  rule: exact
+- id: supp-solweig-trec
+  file: supp
+  snippet: 'where TREC-Route traces from \SI{[[1.1]]}{\metre}'
+  source: '1.1'
+  rule: exact
+  note: route-point height Z_HEIGHT (start.sh default, printed as 'MRT sample height 1.1 m' in every run log)
+- id: supp-tie-42
+  file: supp
+  snippet: "of the \\num{[[42]]} route pairs it resolves"
+  source: "J(DERIVED, \"tie_rule_checks.resolved_13h\")"
+  rule: exact
+- id: supp-tie-12
+  file: supp
+  snippet: "at 13:00, \\num{[[12]]} differ by less"
+  source: "J(DERIVED, \"tie_rule_checks.would_tie_13h\")"
+  rule: exact
+- id: supp-tie-core-g
+  file: supp
+  snippet: "core rise (\\SI{[[0.018]]}{\\celsius} against"
+  source: "J(DERIVED, \"tie_rule_checks.pairs\")[\"final_tcore_rise_c:1-3\"][\"gap\"]"
+  rule: round
+- id: supp-tie-core-t
+  file: supp
+  snippet: "against \\SI{[[0.027]]}{\\celsius}) and against"
+  source: "J(DERIVED, \"tie_rule_checks.pairs\")[\"final_tcore_rise_c:1-3\"][\"threshold\"]"
+  rule: round
+- id: supp-tie-u-g1
+  file: supp
+  snippet: "(\\SIlist{[[0.40]];0.44}{\\celsius} against"
+  source: "J(DERIVED, \"tie_rule_checks.pairs\")[\"walk_utci_c:1-2\"][\"gap\"]"
+  rule: round
+- id: supp-tie-u-g2
+  file: supp
+  snippet: "(\\SIlist{0.40;[[0.44]]}{\\celsius} against"
+  source: "J(DERIVED, \"tie_rule_checks.pairs\")[\"walk_utci_c:1-4\"][\"gap\"]"
+  rule: round
+- id: supp-tie-u-t1
+  file: supp
+  snippet: "against \\SIlist{[[0.51]];0.61}{\\celsius}"
+  source: "J(DERIVED, \"tie_rule_checks.pairs\")[\"walk_utci_c:1-2\"][\"threshold\"]"
+  rule: round
+- id: supp-tie-u-t2
+  file: supp
+  snippet: "against \\SIlist{0.51;[[0.61]]}{\\celsius}"
+  source: "J(DERIVED, \"tie_rule_checks.pairs\")[\"walk_utci_c:1-4\"][\"threshold\"]"
+  rule: round
+- id: supp-tie-1330
+  file: supp
+  snippet: "as these pairs tie at [[13:30]]"
+  kind: skip
+  reason: "checked: at 13:30 R1-R3 core gap 0.0194 < 0.0265 and R1-R2/R1-R4 walk UTCI 0.433/0.454 < 0.508/0.608 (sweep dep_1330)"
+- id: supp-tie-40
+  file: supp
+  snippet: "length: at \\SI{[[40]]}{\\metre}, walk UTCI"
+  source: "40"
+  rule: exact
+  note: "run ranking_uncertainty_ws_corr40m"
+- id: supp-tie-1800
+  file: supp
+  snippet: "no longer resolves Route~1 at [[18:00]]"
+  kind: skip
+  reason: "derived tie_rule_checks.corr40m.1800: R1-R2 walk UTCI 0.533 < 0.684"
+- id: supp-tie-1430
+  file: supp
+  snippet: "over Route~3 at [[14:30]] clears"
+  kind: skip
+  reason: "derived tie_rule_checks.corr40m.1430"
+- id: supp-tie-margin
+  file: supp
+  snippet: "clears its threshold by only \\SI{[[0.0006]]}{\\celsius}"
+  source: "J(DERIVED, \"tie_rule_checks.corr40m\")[\"1430\"][\"core_1_3_gap\"] - J(DERIVED, \"tie_rule_checks.corr40m\")[\"1430\"][\"core_1_3_threshold\"]"
+  rule: round
+- id: supp-slab-a
+  file: supp
+  snippet: '(\SIrange{[[0.02]]}{0.20}{\metre} for metal facades'
+  source: J(r"RUN/lisbon3/thermal_out/materials_used.json", r"metal_facade.depth")
+  rule: exact
+- id: supp-slab-b
+  file: supp
+  snippet: '(\SIrange{0.02}{[[0.20]]}{\metre} for metal facades'
+  source: J(r"RUN/lisbon4/thermal_out/materials_used.json", r"sports_surface.depth")
+  rule: exact
+- id: supp-ins-a
+  file: supp
+  snippet: 'insulation of \SIrange{[[1.0]]}{2.5}{\metre\squared\kelvin\per\watt}'
+  source: 'min(v["insulation_R_m2K_W"] for c in ("lisbon1","lisbon2","lisbon3","lisbon4","lisbon5","lisbon6","MMC") for k, v in J(r"RUN/" + c + "/thermal_out/materials_used.json").items() if k in np.unique(NPY(r"RUN/" + c + "/thermal_out/facet_material_name.npy")).tolist() and v.get("insulation_R_m2K_W"))'
+  rule: exact
+  note: stone_facade R 1.0 (Lisbon 1); materials_used lists only solved materials
+- id: supp-ins-b
+  file: supp
+  snippet: 'insulation of \SIrange{1.0}{[[2.5]]}{\metre\squared\kelvin\per\watt}'
+  source: 'max(v["insulation_R_m2K_W"] for c in ("lisbon1","lisbon2","lisbon3","lisbon4","lisbon5","lisbon6","MMC") for k, v in J(r"RUN/" + c + "/thermal_out/materials_used.json").items() if k in np.unique(NPY(r"RUN/" + c + "/thermal_out/facet_material_name.npy")).tolist() and v.get("insulation_R_m2K_W"))'
+  rule: exact
+- id: supp-ins-wall
+  file: supp
+  snippet: "material (\\num{[[1.5]]} for the generic wall"
+  source: "J(r\"RUN/lisbon1/thermal_out/materials_used.json\", r\"generic_building_facade.insulation_R_m2K_W\")"
+  rule: exact
+- id: supp-ins-roof
+  file: supp
+  snippet: "\\num{[[2.5]]} for the generic roof)"
+  source: "J(r\"RUN/lisbon3/thermal_out/materials_used.json\", r\"generic_roof.insulation_R_m2K_W\")"
+  rule: exact
+- id: supp-globe-med
+  file: supp
+  snippet: "median-filtered over \\num{[[15]]} samples"
+  source: "CODE(r\"/media/harshin/data_drive/route based UTCI/black_globe.py\", r\"smoothing_samples: int = (\\d+)\")"
+  rule: exact
+- id: supp-globe-free
+  file: supp
+  snippet: "free-convection $[[1.4]]\\,(\\Delta T/D)^{0.25}$"
+  source: "CODE(r\"/media/harshin/data_drive/route based UTCI/black_globe.py\", r\"NATURAL_CONVECTION_COEFFICIENT = ([0-9.]+)\")"
+  rule: exact
+- id: supp-rs-400
+  file: supp
+  snippet: "(\\num{[[400]]} shortest by length"
+  source: "CODE(r\"/media/harshin/data_drive/route based UTCI/paper_route_search.py\", r\"(\\d+) k-shortest paths by length\")"
+  rule: exact
+- id: supp-rs-454
+  file: supp
+  snippet: "\\num{[[454]]} distinct), with edges"
+  source: 'TXT(r"PIPE/input/MMC/routes/route_1.json", r"geometry: (\d+) candidate paths")'
+  rule: exact
+  note: the 7 Oct search that produced Route 1, recorded in the route file
+- id: supp-rs-25
+  file: supp
+  snippet: "more than \\SI{[[25]]}{\\percent} beneath building solids"
+  source: "100 * float(CODE(r\"/media/harshin/data_drive/route based UTCI/paper_route_search.py\", r\"^COVER_MAX = ([0-9.]+)\"))"
+  rule: exact
+- id: supp-rs-50
+  file: supp
+  snippet: 'at least \SI{[[50]]}{\metre} longer than an existing route'
+  source: SRC("main-r1-50")
+  rule: exact
+- id: supp-rs-0025
+  file: supp
+  snippet: "than \\SI{[[0.025]]}{\\celsius} less than it"
+  source: "CODE(r\"/media/harshin/data_drive/route based UTCI/paper_route_search.py\", r\"strain more than ([0-9.]+) C less\")"
+  rule: exact
+- id: supp-ho-flip-sun
+  file: supp
+  snippet: 'give \SIlist{[[21.7]];36.5}{\percent}, each between'
+  source: '100 * J(r"heldout_summary.json", r"heldout.pooled.shadow.model_sun_measured_shade") / J(r"heldout_summary.json", r"heldout.pooled.shadow.model_sunlit_fraction")'
+  rule: round
+- id: supp-ho-flip-shade
+  file: supp
+  snippet: 'give \SIlist{21.7;[[36.5]]}{\percent}, each between'
+  source: '100 * J(r"heldout_summary.json", r"heldout.pooled.shadow.model_shade_measured_sun") / (1 - J(r"heldout_summary.json", r"heldout.pooled.shadow.model_sunlit_fraction"))'
+  rule: round
+- id: supp-ho-silva-a
+  file: supp
+  snippet: 'the date Silva et al.\ ([[2024]], Table~3)'
+  kind: skip
+  reason: citation year
+- id: supp-ho-silva-b
+  file: supp
+  snippet: 'Silva et al.\ (2024, Table~[[3]]) give'
+  kind: skip
+  reason: citation table number
+- id: supp-ho-uni
+  file: supp
+  snippet: 'the first-walk rate and the pooled \SI{[[24.1]]}{\percent} of the uniform-flip'
+  source: 100 * (264 + 283) / 2267
+  rule: round
+  note: pooled misclassification rate (264+283)/2267, as the uniform variant's rate in S14
+- id: supp-cp-area
+  file: supp
+  snippet: 'plaza classes (\SI{[[0.3]]}{\percent} of'
+  source: J(DERIVED, "campus_paving_check.selected_area_pct")
+  rule: round
+- id: supp-cp-k
+  file: supp
+  snippet: '(conductivity \SI{[[1.1]]}{\watt\per\metre\per\kelvin}, slab'
+  source: J(DERIVED, "campus_paving_check.campus_k")
+  rule: exact
+- id: supp-cp-d1
+  file: supp
+  snippet: 'slab \SIrange{[[0.25]]}{0.30}{\metre})'
+  source: J(DERIVED, "campus_paving_check.campus_depths")[0]
+  rule: exact
+- id: supp-cp-d2
+  file: supp
+  snippet: 'slab \SIrange{0.25}{[[0.30]]}{\metre})'
+  source: J(DERIVED, "campus_paving_check.campus_depths")[1]
+  rule: exact
+- id: supp-cp-core
+  file: supp
+  snippet: 'change by at most \SI{[[0.0001]]}{\celsius}, mean'
+  source: J(DERIVED, "campus_paving_check.final_tcore_rise_c_max_abs_change")
+  rule: round
+- id: supp-cp-tmrt
+  file: supp
+  snippet: 'mean $T_{\mathrm{mrt}}$ by \SI{[[0.02]]}{\kelvin} and walk'
+  source: J(DERIVED, "campus_paving_check.mean_tmrt_c_max_abs_change")
+  rule: round
+- id: supp-cp-utci
+  file: supp
+  snippet: 'UTCI by \SI{[[0.003]]}{\celsius}.'
+  source: J(DERIVED, "campus_paving_check.walk_utci_c_max_abs_change")
+  rule: round
+- id: main-fv-ml
+  file: main
+  snippet: 'raise the daytime globe bias to \SI{[[+3.6]]}{\kelvin}; instrument'
+  source: 'J(DERIVED, "forcing_variants")["measured_level"]["globe_day_mbe"]'
+  rule: round
+- id: main-fv-wf-a
+  file: main
+  snippet: 'a \num{[[0.5]]} floor adds'
+  source: '0.5'
+  rule: exact
+  note: variant definition (WIND_STREET_RATIO_FLOOR=0.5)
+- id: main-fv-wf-b
+  file: main
+  snippet: '\SI{[[0.4]]}{\kelvin} to the daytime globe bias, Supplementary'
+  source: 'J(DERIVED, "forcing_variants")["wind_floor_0p5"]["globe_day_mbe"] - J(DERIVED, "forcing_variants")["published"]["globe_day_mbe"]'
+  rule: round
+- id: supp-fv-f1
+  file: supp
+  snippet: 'scaled up by \SIrange{[[6.8]]}{12.2}{\percent},'
+  source: '100 * (J(DERIVED, "forcing_variants")["measured_level_factor_range"][0] - 1)'
+  rule: round
+- id: supp-fv-f2
+  file: supp
+  snippet: 'scaled up by \SIrange{6.8}{[[12.2]]}{\percent},'
+  source: '100 * (J(DERIVED, "forcing_variants")["measured_level_factor_range"][1] - 1)'
+  rule: round
+- id: supp-fv-k1
+  file: supp
+  snippet: 'bias becomes \SI{[[+6]]}{\watt\per\metre\squared}'
+  source: 'J(DERIVED, "forcing_variants")["measured_level"]["kdown_day_mbe"]'
+  rule: round
+- id: supp-fv-k0
+  file: supp
+  snippet: '(\SI{[[-55]]}{\watt\per\metre\squared} as reported)'
+  source: 'J(DERIVED, "forcing_variants")["published"]["kdown_day_mbe"]'
+  rule: round
+- id: supp-fv-g0
+  file: supp
+  snippet: 'reported), but the daytime globe bias rises from \SI{[[+2.48]]}{\kelvin}'
+  source: 'J(DERIVED, "forcing_variants")["published"]["globe_day_mbe"]'
+  rule: round
+- id: supp-fv-g1
+  file: supp
+  snippet: 'to \SI{[[+3.60]]}{\kelvin} (RMSE \SI{3.94}{\kelvin}) and the daytime $L\!\uparrow$'
+  source: 'J(DERIVED, "forcing_variants")["measured_level"]["globe_day_mbe"]'
+  rule: round
+- id: supp-fv-r1
+  file: supp
+  snippet: '(RMSE \SI{[[3.94]]}{\kelvin}) and the daytime $L\!\uparrow$'
+  source: 'J(DERIVED, "forcing_variants")["measured_level"]["globe_day_rmse"]'
+  rule: round
+- id: supp-fv-l0
+  file: supp
+  snippet: '{[[+20]]}{+29}{\watt\per\metre\squared}; the night-time'
+  source: 'J(DERIVED, "forcing_variants")["published"]["lup_day_mbe"]'
+  rule: round
+- id: supp-fv-l1
+  file: supp
+  snippet: '{+20}{[[+29]]}{\watt\per\metre\squared};'
+  source: 'J(DERIVED, "forcing_variants")["measured_level"]["lup_day_mbe"]'
+  rule: round
+- id: supp-fv-n
+  file: supp
+  snippet: 'the night-time globe bias changes by \SI{[[0.02]]}{\kelvin}.'
+  source: 'J(DERIVED, "forcing_variants")["measured_level"]["globe_night_mbe"] - J(DERIVED, "forcing_variants")["published"]["globe_night_mbe"]'
+  rule: round
+- id: supp-wf-030
+  file: supp
+  snippet: 'ratio is floored at \num{[[0.30]]}, the lower end'
+  source: 'CODE(r"PIPE/wind_profile.py", r"^MINIMUM_STREET_TO_ROOF_RATIO = ([0-9.]+)")'
+  rule: exact
+- id: supp-wf-r1
+  file: supp
+  snippet: 'the \numrange{[[0.3]]}{0.5} reported'
+  source: 'CODE(r"PIPE/wind_profile.py", r"roughly ([0-9.]+)-[0-9.]+ of")'
+  rule: exact
+- id: supp-wf-r2
+  file: supp
+  snippet: 'the \numrange{0.3}{[[0.5]]} reported'
+  source: 'CODE(r"PIPE/wind_profile.py", r"roughly [0-9.]+-([0-9.]+) of")'
+  rule: exact
+- id: supp-wf-05
+  file: supp
+  snippet: 'With the floor at \num{[[0.5]]}, the daytime'
+  source: '0.5'
+  rule: exact
+- id: supp-wf-g0
+  file: supp
+  snippet: 'globe bias rises from \SI{[[+2.48]]}{\kelvin} to \SI{+2.89}{\kelvin} (Lisbon~1,'
+  source: 'J(DERIVED, "forcing_variants")["published"]["globe_day_mbe"]'
+  rule: round
+- id: supp-wf-g1
+  file: supp
+  snippet: 'to \SI{[[+2.89]]}{\kelvin} (Lisbon~1'
+  source: 'J(DERIVED, "forcing_variants")["wind_floor_0p5"]["globe_day_mbe"]'
+  rule: round
+- id: supp-wf-l1
+  file: supp
+  snippet: '(Lisbon~[[1]],'
+  source: '1'
+  rule: exact
+  note: per_case_day_mbe lisbon1 identical in both runs (3.62)
+- id: supp-wf-n0
+  file: supp
+  snippet: 'night-time bias from \SI{[[+0.08]]}{\kelvin}'
+  source: 'J(DERIVED, "forcing_variants")["published"]["globe_night_mbe"]'
+  rule: round
+- id: supp-wf-n1
+  file: supp
+  snippet: 'to \SI{[[+0.26]]}{\kelvin}, and the daytime'
+  source: 'J(DERIVED, "forcing_variants")["wind_floor_0p5"]["globe_night_mbe"]'
+  rule: round
+- id: supp-wf-lu0
+  file: supp
+  snippet: '{[[+20]]}{+40}{\watt\per\metre\squared}.'
+  source: 'J(DERIVED, "forcing_variants")["published"]["lup_day_mbe"]'
+  rule: round
+- id: supp-wf-lu1
+  file: supp
+  snippet: '{+20}{[[+40]]}{\watt\per\metre\squared}.'
+  source: 'J(DERIVED, "forcing_variants")["wind_floor_0p5"]["lup_day_mbe"]'
+  rule: round

@@ -53,6 +53,7 @@ the whole point -- profile for the vertical, potential flow for the horizontal.
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import dataclass, asdict
 from typing import Any
 
@@ -85,6 +86,10 @@ ATTENUATION_RANGE = (0.5, 4.0)
 # is a documented bound on an ill-posed inversion, not a tuned constant, and
 # whenever it binds the caller is told.
 MINIMUM_STREET_TO_ROOF_RATIO = 0.30
+# Sensitivity tests only: WIND_STREET_RATIO_FLOOR overrides the floor (e.g. the
+# 0.5 upper end of the canyon range). Unset in every published run.
+if os.environ.get("WIND_STREET_RATIO_FLOOR"):
+    MINIMUM_STREET_TO_ROOF_RATIO = float(os.environ["WIND_STREET_RATIO_FLOOR"])
 
 
 class WindProfileError(ValueError):

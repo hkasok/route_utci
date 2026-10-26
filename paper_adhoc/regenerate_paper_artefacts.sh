@@ -26,6 +26,7 @@ run crown          python3 paper_crown_figure.py --paper-dir "$O/crown"
 run lisbon_map     python3 paper_lisbon_map.py --out-dir "$O/lisbon_map"
 run fig_concept    python3 paper_adhoc/make_fig_concept.py "$O/fig_concept/fig_concept.tex"
 run attribution    python3 paper_globe_attribution.py --paper-dir "$O/attribution" --height-run-root 0.8=variants/height_z0p8 1.2=variants/height_z1p2
+run heldout        python3 paper_adhoc/heldout_summary.py --paper-tables-from run_output/lisbon_heldout_validation/summary/heldout_summary.json --out-dir "$O/heldout"
 D=run_output/MMC/postprocessing/departure_sweep
 if [ -f $D/departure_sweep_fixedclothing.csv ] && [ -f $D/departure_sweep.csv ]; then
   run jos3_fixed python3 paper_jos3_figures.py --fixed-clothing --reuse-sweep --paper-dir "$O/jos3_fixed"

@@ -1,0 +1,387 @@
+{
+ "wallview": {
+  "lisbon1": {
+   "wall_view_pct": 2.326002939281028,
+   "dload_m3K": -0.3771819707401147,
+   "facade060_dT": -1.7058528661727905
+  },
+  "lisbon2": {
+   "wall_view_pct": 35.16902964512092,
+   "dload_m3K": -5.729509576310326,
+   "facade060_dT": -0.7674283981323242
+  },
+  "lisbon3": {
+   "wall_view_pct": 22.302661982268077,
+   "dload_m3K": -3.6089147086342734,
+   "facade060_dT": -1.0583946704864502
+  },
+  "lisbon4": {
+   "wall_view_pct": 9.360968774566306,
+   "dload_m3K": -1.4735184516910698,
+   "facade060_dT": -1.0524992942810059
+  },
+  "lisbon5": {
+   "wall_view_pct": 37.7285170675468,
+   "dload_m3K": -5.989144279536795,
+   "facade060_dT": -0.9324366450309753
+  },
+  "lisbon6": {
+   "wall_view_pct": 13.453629775771022,
+   "dload_m3K": -2.0965263203901396,
+   "facade060_dT": -0.8951565623283386
+  }
+ },
+ "phase": {
+  "n_walks": 12,
+  "n_model_ahead": 9,
+  "n_day_ahead": 5,
+  "max_day_lead_s": 105.0,
+  "walks": [
+   [
+    "1",
+    "day",
+    "10",
+    "-37.1"
+   ],
+   [
+    "1",
+    "night",
+    "300",
+    "-1.5"
+   ],
+   [
+    "2",
+    "day",
+    "30",
+    "-0.7"
+   ],
+   [
+    "2",
+    "night",
+    "300",
+    "6.9"
+   ],
+   [
+    "3",
+    "day",
+    "60",
+    "-52.3"
+   ],
+   [
+    "3",
+    "night",
+    "125",
+    "-1.0"
+   ],
+   [
+    "4",
+    "day",
+    "-20",
+    "48.3"
+   ],
+   [
+    "4",
+    "night",
+    "0",
+    "1.2"
+   ],
+   [
+    "5",
+    "day",
+    "80",
+    "-29.2"
+   ],
+   [
+    "5",
+    "night",
+    "155",
+    "0.3"
+   ],
+   [
+    "6",
+    "day",
+    "105",
+    "-9.2"
+   ],
+   [
+    "6",
+    "night",
+    "-30",
+    "0.5"
+   ]
+  ]
+ },
+ "flip_calibration": {
+  "mean_run_2m": 15.805624074987666,
+  "sample_spacing_m": 11.137499999999825,
+  "flip_rate": 0.24128804587560648
+ },
+ "reloc": {
+  "day_moved_frac": 0.04675782973092192,
+  "night_moved_frac": 0.08715986394557823,
+  "median_move_m": 1.5,
+  "moved_day_model_sunlit": 0.5943396226415094,
+  "moved_day_measured_sunlit": 0.6226415094339622,
+  "n_moved_day": 106
+ },
+ "campus_geometry": {
+  "tile_x_km": 1.1744375,
+  "tile_y_km": 0.81175,
+  "route1_covered_pct": 0.0,
+  "route1_within25m_frac": 0.014934660858743,
+  "route2_covered_pct": 2.8745762711864407,
+  "route2_within25m_frac": 0.05125423728813559,
+  "route3_covered_pct": 0.0,
+  "route3_within25m_frac": 0.31913808491648604,
+  "route4_covered_pct": 0.11627906976744186,
+  "route4_within25m_frac": 0.012063953488372093
+ },
+ "jos3_bsa": {
+  "bsa_m2": 1.8643737277366732
+ },
+ "utci_wind10": {
+  "lisbon1_1": 0.6126340914102141,
+  "lisbon1_2": 1.5155864816733566,
+  "lisbon2_1": 0.17971152720991446,
+  "lisbon2_2": 0.433620332786236,
+  "lisbon3_1": 0.18125211072672137,
+  "lisbon3_2": 0.7455561374740695,
+  "lisbon4_1": 0.6837382671538391,
+  "lisbon4_2": 0.8867668225773484,
+  "lisbon5_1": 0.6048902636359652,
+  "lisbon5_2": 0.14700683728115937,
+  "lisbon6_1": 0.839186182646656,
+  "lisbon6_2": 1.0136456378785217
+ },
+ "utci_prefill": {
+  "route1": 2.8342191780819626,
+  "route2": 2.9846672649796777,
+  "route3": 2.667135888501699,
+  "route4": 2.834219178081962
+ },
+ "linke_clim": {
+  "mean": 3.587431693989071,
+  "values": [
+   3.585245901639344,
+   3.5868852459016396,
+   3.6,
+   3.557377049180328,
+   3.588524590163934,
+   3.6065573770491803
+  ]
+ },
+ "geometry": {
+  "view_share_within_5m_pct": {
+   "lisbon1": 71.85,
+   "lisbon2": 61.75,
+   "lisbon3": 53.1,
+   "lisbon4": 65.39,
+   "lisbon5": 49.07,
+   "lisbon6": 63.87,
+   "MMC": 66.68
+  },
+  "view_share_beyond_50m_pct": {
+   "lisbon1": 4.25,
+   "lisbon2": 0.93,
+   "lisbon3": 3.69,
+   "lisbon4": 2.49,
+   "lisbon5": 1.83,
+   "lisbon6": 4.26,
+   "MMC": 1.26
+  },
+  "drop100_dTmrt_p95abs_K": {
+   "pooled_all7": 0.122,
+   "lisbon_pooled": 0.131,
+   "lisbon1": 0.146,
+   "lisbon2": 0.05,
+   "lisbon3": 0.145,
+   "lisbon4": 0.131,
+   "lisbon5": 0.127,
+   "lisbon6": 0.139,
+   "MMC": 0.022
+  },
+  "drop100_dTmrt_max_K": 0.826,
+  "median_crown_solidity": {
+   "lisbon1": 0.6071,
+   "lisbon2": 0.5793,
+   "lisbon3": 0.5666,
+   "lisbon4": 0.5634,
+   "lisbon5": 0.5923,
+   "lisbon6": 0.6121
+  },
+  "route_points_inside_crown_pct": {
+   "lisbon1": 0.304,
+   "lisbon2": 0.79,
+   "lisbon3": 0.404,
+   "lisbon4": 1.171,
+   "lisbon5": 0.163,
+   "lisbon6": 0.388
+  },
+  "figure_crown": {
+   "returns": 5820,
+   "dx": 15.33,
+   "dy": 14.64,
+   "dz": 10.17,
+   "split_dir": "out_crop_test_metric/00_split"
+  },
+  "star_hull_xsec_ge95pct_share": {
+   "out_crop_test_metric": 95.52,
+   "out_crop_test_feet": 96.73,
+   "lisbon1": 99.3
+  }
+ },
+ "linke_campus": {
+  "min": 5.416393442622951,
+  "max": 5.416393442622951,
+  "median": 5.416393442622951
+ },
+ "tie_rule_checks": {
+  "resolved_13h": 42,
+  "would_tie_13h": 12,
+  "pairs": {
+   "walk_utci_c:1-2": {
+    "gap": 0.40295241277880933,
+    "threshold": 0.5076813545070333
+   },
+   "walk_utci_c:1-4": {
+    "gap": 0.44275687833182076,
+    "threshold": 0.6080970180924646
+   },
+   "strong_stress_dose_degmin:1-4": {
+    "gap": -7.295018111060713,
+    "threshold": 13.622506804250339
+   },
+   "final_tcore_rise_c:1-3": {
+    "gap": 0.01761068525470938,
+    "threshold": 0.026474927226526196
+   },
+   "radiation_attributable_rise_c:1-2": {
+    "gap": 0.0064556611973856926,
+    "threshold": 0.012606408770004504
+   },
+   "peak_tcore_rise_c:1-3": {
+    "gap": 0.017279980922751348,
+    "threshold": 0.026153322565678722
+   },
+   "heat_stored_kj:1-3": {
+    "gap": 9.098052278112618,
+    "threshold": 12.906675093207749
+   },
+   "heat_stored_radiant_kj:1-2": {
+    "gap": 1.9743364123273466,
+    "threshold": 5.771008334579909
+   },
+   "heat_stored_radiant_kj:1-3": {
+    "gap": 12.516781752722324,
+    "threshold": 12.906675093207745
+   },
+   "heat_stored_radiant_kj:1-4": {
+    "gap": 5.456074816944067,
+    "threshold": 6.9972982192896325
+   },
+   "heat_stored_radiant_kj:2-4": {
+    "gap": 3.4817384046167206,
+    "threshold": 3.7903021531470467
+   },
+   "heat_stored_radiant_kj:3-4": {
+    "gap": -7.060706935778256,
+    "threshold": 8.166106071963895
+   }
+  },
+  "corr40m": {
+   "1430": {
+    "core_1_3_gap": 0.03344819953203887,
+    "core_1_3_threshold": 0.03288495968850287,
+    "utci_1_2_gap": 0.8579764992227723,
+    "utci_1_2_threshold": 0.6838410525596283,
+    "utci_1_4_gap": 0.8048011126021848,
+    "utci_1_4_threshold": 0.7527342552477249
+   },
+   "1800": {
+    "core_1_3_gap": 0.0346035495963975,
+    "core_1_3_threshold": 0.03288495968850287,
+    "utci_1_2_gap": 0.5333595436769087,
+    "utci_1_2_threshold": 0.6838410525596283,
+    "utci_1_4_gap": 0.6392062977704143,
+    "utci_1_4_threshold": 0.7527342552477249
+   }
+  }
+ },
+ "campus_paving_check": {
+  "final_tcore_rise_c_max_abs_change": 9.301254043236895e-05,
+  "mean_tmrt_c_max_abs_change": 0.015251387946129569,
+  "walk_utci_c_max_abs_change": 0.0033468800429616863,
+  "selected_area_pct": 0.27595200979285256,
+  "campus_k": 1.1,
+  "campus_depths": [
+   0.25,
+   0.3
+  ]
+ },
+ "forcing_variants": {
+  "published": {
+   "globe_day_mbe": 2.4813008789598037,
+   "globe_day_rmse": 2.883511315798383,
+   "globe_night_mbe": 0.0752977742582528,
+   "kdown_day_mbe": -55.25280597412403,
+   "lup_day_mbe": 20.107344063639058,
+   "per_case_day_mbe": {
+    "lisbon1": 3.6182496927125563,
+    "lisbon2": 2.0562535676066407,
+    "lisbon3": 2.6192739838095425,
+    "lisbon4": 2.3360559067447855,
+    "lisbon5": 2.1417657394654577,
+    "lisbon6": 1.9710063529587083
+   }
+  },
+  "control": {
+   "globe_day_mbe": 2.4813008789598037,
+   "globe_day_rmse": 2.883511315798383,
+   "globe_night_mbe": 0.0752977742582528,
+   "kdown_day_mbe": -55.25280597412403,
+   "lup_day_mbe": 20.107344063639058,
+   "per_case_day_mbe": {
+    "lisbon1": 3.6182496927125563,
+    "lisbon2": 2.0562535676066407,
+    "lisbon3": 2.6192739838095425,
+    "lisbon4": 2.3360559067447855,
+    "lisbon5": 2.1417657394654577,
+    "lisbon6": 1.9710063529587083
+   }
+  },
+  "measured_level": {
+   "globe_day_mbe": 3.5968896409859052,
+   "globe_day_rmse": 3.943058468880574,
+   "globe_night_mbe": 0.09519476989252816,
+   "kdown_day_mbe": 6.307305951684342,
+   "lup_day_mbe": 28.70820802480481,
+   "per_case_day_mbe": {
+    "lisbon1": 4.663626643685405,
+    "lisbon2": 2.724972794967347,
+    "lisbon3": 3.715588902215233,
+    "lisbon4": 3.663722936784645,
+    "lisbon5": 2.98625028926624,
+    "lisbon6": 3.1056987006001897
+   }
+  },
+  "wind_floor_0p5": {
+   "globe_day_mbe": 2.8906087480266702,
+   "globe_day_rmse": 3.252182206172996,
+   "globe_night_mbe": 0.2630564374617821,
+   "kdown_day_mbe": -55.25280597412403,
+   "lup_day_mbe": 39.647548615661776,
+   "per_case_day_mbe": {
+    "lisbon1": 3.6182496927125563,
+    "lisbon2": 2.4508305887323996,
+    "lisbon3": 3.2334354012462443,
+    "lisbon4": 2.8060324417024605,
+    "lisbon5": 2.747568391126192,
+    "lisbon6": 2.37348439276565
+   }
+  },
+  "measured_level_factor_range": [
+   1.0676654862599242,
+   1.1223240057962365
+  ]
+ }
+}
