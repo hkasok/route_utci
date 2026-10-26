@@ -9,6 +9,12 @@ import pandas as pd
 from paper_tex import latex_minus
 
 
+
+def signed3(v):
+    """Signed to 3 decimals, but an exact zero after rounding is printed unsigned."""
+    t = f"{v:+.3f}"
+    return "0.000" if float(t) == 0 else t
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--run-output", type=Path, default=Path("run_output"))
@@ -46,7 +52,7 @@ def main():
             f"{label} & {period} & {r.length_m:.0f} & {r.walk_duration_min:.0f} & "
             f"{r.mean_ta_c:.1f} & {r.mean_tmrt_c:.1f} & {r.walk_utci_c:.1f} & "
             f"{r.max_utci_c:.1f} & {r.strong_stress_dose_degmin:.0f} & "
-            f"{r.radiation_attributable_rise_c:+.3f} & "
+            f"{signed3(r.radiation_attributable_rise_c)} & "
             f"{r.final_tcore_rise_c:.3f} \\\\")
         if period == "night" and case < 6:
             lines.append(r"\addlinespace[2pt]")

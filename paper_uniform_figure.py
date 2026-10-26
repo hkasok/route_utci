@@ -79,7 +79,7 @@ def main():
     cb.set_label("Signed error in $\\Delta T_{\\mathrm{core}}$, uniform − measured forcing (°C)",
                  fontsize=8.5)
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(args.out, dpi=250, bbox_inches="tight")
+    fig.savefig(args.out, dpi=400, bbox_inches="tight")
     print(f"wrote {args.out}  (max |error| {lim:.4f} C)")
 
 
