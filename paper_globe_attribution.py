@@ -67,10 +67,13 @@ COMPONENTS = ["globe_sw_direct_Wm2", "globe_sw_diffuse_Wm2",
 # Monte Carlo ranges. ISO 7726 gives no uncertainty for its sphere
 # correlation; +-50 % brackets the outdoor calibrations in the literature
 # (Thorsson et al. 2007 found +27 % on a 38 mm globe). Absorptivity spans matte
-# black paints. Height brackets the stated 1.0 m sensor height on a hand cart.
+# black paints. The globe fluxes are traced at the 1.1 m route-point height
+# (BASE_HEIGHT_M); the photographs put the globe about 0.8 m up, so the height
+# range spans both.
 # A sphere's projected-area factor is exactly 0.25; the range below allows up
 # to 12 % of the beam to be blocked by the globe's stem and mast. The clock
 # offset is the +-60 s quantisation of the source timestamps.
+BASE_HEIGHT_M = 1.1
 MC_RANGES = {
     "h_scale": (0.5, 1.5),
     "sw_absorptivity": (0.90, 0.97),
@@ -371,7 +374,7 @@ def integrate_many(t_s, flux, ta, vent, h_scale, capacity=None):
 
 
 def component_arrays(g: pd.DataFrame, height_runs: dict, case, route) -> dict:
-    """Per-term sphere flux at 1.0 m and its height derivative (per metre)."""
+    """Per-term sphere flux at BASE_HEIGHT_M and its height derivative (per metre)."""
     comps = {c: g[c].to_numpy(float) for c in COMPONENTS}
     slope = {c: np.zeros(len(g)) for c in COMPONENTS}
     if height_runs:
@@ -395,9 +398,9 @@ def monte_carlo(walks, draws, rng, height_runs, qc_keep) -> dict:
     """Pooled daytime bias of the emulated globe under joint parameter draws."""
     params = {k: rng.uniform(lo, hi, size=draws) for k, (lo, hi) in MC_RANGES.items()}
     if not height_runs:
-        params["height_m"] = np.full(draws, 1.0)
+        params["height_m"] = np.full(draws, BASE_HEIGHT_M)
     # one-at-a-time sets, each parameter at both ends with the others nominal
-    nominal = {"h_scale": 1.0, "sw_absorptivity": GLOBE_ALPHA, "height_m": 1.0,
+    nominal = {"h_scale": 1.0, "sw_absorptivity": GLOBE_ALPHA, "height_m": BASE_HEIGHT_M,
                "beam_factor": 0.25, "clock_offset_s": 0.0}
     oat = []
     for k, (lo, hi) in MC_RANGES.items():
@@ -419,7 +422,7 @@ def monte_carlo(walks, draws, rng, height_runs, qc_keep) -> dict:
         vent = g["globe_ventilation_ms"].to_numpy(float)
         tg = g["measured_black_globe_temperature_c"].to_numpy(float)
         keep = (~g["globe_spinup_affected"].astype(bool).to_numpy()) & qc_keep(g)
-        dz = (full["height_m"] - 1.0)[:, None]
+        dz = (full["height_m"] - BASE_HEIGHT_M)[:, None]
         sw = ((comps["globe_sw_direct_Wm2"] + dz * slope["globe_sw_direct_Wm2"])
               * (full["beam_factor"][:, None] / 0.25)
               + comps["globe_sw_diffuse_Wm2"] + dz * slope["globe_sw_diffuse_Wm2"]

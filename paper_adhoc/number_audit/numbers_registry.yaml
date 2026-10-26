@@ -6752,7 +6752,7 @@ entries:
   rule: exact
 - id: sensor-h
   file: main
-  snippet: the \SI{[[1.0]]}{\metre} sensor height, not recorded
+  snippet: The radiometer's \SI{[[1.0]]}{\metre} height
   source: J(r"RUN/lisbon1/mrt_facet_out/radiant_flux_contributions_metadata.json", "sensor_height_m")
   rule: exact
 - id: dt-l1
@@ -9730,3 +9730,28 @@ entries:
   snippet: to 18:00 (\num{[[9]]} departures), the departures
   source: J(r"route_measures_summary.json", r"sweep.best_route_counts.walk_utci_c.1")
   rule: exact
+- id: main-0748-h2
+  file: main
+  snippet: show the globe about \SI{[[0.2]]}{\metre} lower
+  kind: skip
+  reason: read from the published photograph (Silva et al. 2024, Fig. 3)
+- id: main-0748-h3
+  file: main
+  snippet: emulated at the \SI{[[1.1]]}{\metre} route-point height
+  source: CODE(r"/media/harshin/data_drive/route based UTCI/start.sh", r'^Z_HEIGHT="\$\{Z_HEIGHT:-([0-9.]+)\}"')
+  rule: exact
+- id: main-0748-h4
+  file: main
+  snippet: but \SIrange{[[0.8]]}{1.2}{\metre} moves
+  source: J(r"globe_attribution_summary.json", r"monte_carlo.ranges.height_m[0]")
+  rule: exact
+- id: main-0748-h5
+  file: main
+  snippet: but \SIrange{0.8}{[[1.2]]}{\metre} moves
+  source: J(r"globe_attribution_summary.json", r"monte_carlo.ranges.height_m[1]")
+  rule: exact
+- id: main-0748-h6
+  file: main
+  snippet: moves its daytime bias under \SI{[[0.1]]}{\kelvin}
+  source: 'max(abs(J(r"globe_attribution_summary.json", r"monte_carlo.one_at_a_time.height_m")[k]["bias_K"] - J(r"globe_attribution_summary.json", r"monte_carlo.nominal_bias_K")) for k in ("0.8", "1.2"))'
+  rule: lt
