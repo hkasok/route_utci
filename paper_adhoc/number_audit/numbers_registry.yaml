@@ -66,12 +66,12 @@ entries:
   note: = Table tab:uniform, campus absolute grid, max contrast error
 - id: main-0084-a
   file: main
-  snippet: \num{[[500]]} random draws of the validated
+  snippet: \num{[[500]]} random draws of the
   source: J(r"ranking_uncertainty_summary.json", r"draws")
   rule: exact
 - id: main-0085-a
   file: main
-  snippet: shifted gaps by at most \SI{[[0.03]]}{\celsius}. Radiation must
+  snippet: shifted gaps by at most \SI{[[0.03]]}{\celsius}.
   source: J(r"route_measures_summary.json", r"resolution.tcore_rise_c")
   rule: le
   note: largest shift of any route difference (core rise) in the ranking Monte Carlo (state/beam, 5 m, 500 draws) = 0.0269
@@ -305,7 +305,7 @@ entries:
   rule: exact
 - id: main-0695-a
   file: main
-  snippet: with a time constant of about \SI{[[300]]}{\second}.}
+  snippet: time constant of about \SI{[[300]]}{\second}.}
   source: SRC("globe-tau")
   rule: exact
 - id: main-0706-a
@@ -1114,7 +1114,7 @@ entries:
   source: max(J(r"route_measures_summary.json", r"departure_13h.walk_utci_c.2"), J(r"route_measures_summary.json", r"departure_13h.walk_utci_c.3"), J(r"route_measures_summary.json", r"departure_13h.walk_utci_c.4"))
 - id: main-1188-a
   file: main
-  snippet: worst stretch (\SI{[[38.91]]}{\celsius} against
+  snippet: highest $\mathrm{UTCI}_{3}$ (\SI{[[38.91]]}{\celsius} against
   source: J(r"route_measures_summary.json", r"departure_13h.worst_3min_utci_c.3")
 - id: main-1188-b
   file: main
@@ -1287,7 +1287,7 @@ entries:
   rule: pct
 - id: main-1285-a
   file: main
-  snippet: nor the ranking down to \SI{[[-6]]}{\kelvin}, beyond
+  snippet: nor the ranking down to \SI{[[-6]]}{\kelvin},
   source: min(float(k) for k in J("ta_heterogeneity_summary.json", "departures.13.0.canopy.by_anomaly"))
   rule: exact
   note: largest anomaly tested; first_ranking_change_K is null at all departures
@@ -1333,7 +1333,7 @@ entries:
   rule: time
 - id: main-1310-a
   file: main
-  snippet: validated radiant-field error, \num{[[500]]} Monte Carlo draws
+  snippet: radiant-field error, \num{[[500]]} Monte Carlo draws
   source: J(r"ranking_uncertainty_summary.json", r"summary.13.0.n_draws")
   rule: exact
 - id: main-1312-a
@@ -1355,7 +1355,7 @@ entries:
   rule: exact
 - id: main-1328-a
   file: main
-  snippet: ranking is therefore about \SI{[[0.03]]}{\celsius} of core-temperature
+  snippet: \SI{[[0.03]]}{\celsius} of core-temperature
   source: J(r"route_measures_summary.json", r"resolution.tcore_rise_c")
   note: largest shift 0.0269
 - id: main-1350-a
@@ -1377,7 +1377,7 @@ entries:
   source: J(r"validation_summary.json", r"globe.day.mbe")
 - id: main-1374-b
   file: main
-  snippet: neither ISO 7726 nor the one
+  snippet: neither ISO 7726 nor the outdoor calibration
   kind: skip
   reason: standard designation
 - id: main-1382-a
@@ -1410,7 +1410,7 @@ entries:
   source: J(r"convergence_summary.json", r"convergence[5].rms_dT")
 - id: main-1414-a
   file: main
-  snippet: tracks route length ($r = [[0.94]]$), not scene
+  snippet: its size tracks route length ($r = [[0.94]]$,
   source: SRC("r-facets-pts")
 - id: main-1418-a
   file: main
@@ -1435,7 +1435,7 @@ entries:
   rule: pct
 - id: main-1426-a
   file: main
-  snippet: inertia such as the globe or the body. The \SI{[[+2.5]]}{\kelvin} bias
+  snippet: The \SI{[[+2.5]]}{\kelvin} bias
   source: J(r"validation_summary.json", r"globe.day.mbe")
 - id: main-1431-a
   file: main
@@ -1468,27 +1468,27 @@ entries:
   rule: exact
 - id: main-1433-c
   file: main
-  snippet: strained less at \num{21} of \num{[[25]]}, resolvably
+  snippet: strained less at \num{21} of \num{[[25]]},
   source: J(r"route_measures_summary.json", r"sweep.n_departures")
   rule: exact
 - id: main-1434-a
   file: main
-  snippet: \num{25}, resolvably at [[13:00]] and from 14:30 to 18:00; the walk-averaged
+  snippet: at [[13:00]] and from 14:30 to 18:00; the walk-averaged
   source: SRC("sweep-r1r3-res-first")
   rule: time
 - id: main-1434-b
   file: main
-  snippet: \num{25}, resolvably at 13:00 and from 14:30 to [[18:00]]; the walk-averaged
+  snippet: at 13:00 and from 14:30 to [[18:00]]; the walk-averaged
   source: SRC("main-1214-e")
   rule: time
 - id: main-1451-a
   file: main
-  snippet: \num{25}, resolvably at 13:00 and from [[14:30]] to 18:00; the walk-averaged
+  snippet: at 13:00 and from [[14:30]] to 18:00; the walk-averaged
   source: SRC("main-1214-d")
   rule: time
 - id: main-1439-a
   file: main
-  snippet: uniform air temperature and humidity moved route differences by at most \SI{[[0.007]]}{\celsius} and kept
+  snippet: air temperature and humidity moved route differences by at most \SI{[[0.007]]}{\celsius} and kept
   source: SRC("unif-campus-abs-contr")
 - id: main-1441-a
   file: main
@@ -1607,18 +1607,6 @@ entries:
   source: J(r"solweig_lisbon_pooled.json", r"night.K_up.TREC-Route.mbe")
   rule: abs
   note: model 0 minus measured => measured = -MBE = +0.92
-- id: supp-0176-a
-  file: supp
-  snippet: pyranometers ($\tau = $ \SIrange{[[2]]}{6}{\second})
-  source: '2'
-  rule: exact
-  note: lags tested (pyranometer_response_audit tau_2s)
-- id: supp-0176-b
-  file: supp
-  snippet: pyranometers ($\tau = $ \SIrange{2}{[[6]]}{\second})
-  source: '6'
-  rule: exact
-  note: tau_6s
 - id: supp-0178-a
   file: supp
   snippet: range-phrase={ to }]{[[400]]}{384}{\watt
@@ -2183,13 +2171,13 @@ entries:
   note: calibrated 5.3 m rounded (ranking_uncertainty_summary.json correlation_length_m)
 - id: supp-0627-b
   file: supp
-  snippet: correlation lengths from \SIrange{[[3]]}{40}{\metre}, and with either
+  snippet: \SIrange{[[3]]}{40}{\metre}, and with either
   source: min([x["correlation_length_m"] for x in J(r"ranking_mc_sensitivity_summary.json", "runs") if x["flip_model"] == "state" and x["offset_model"] == "beam"])
   rule: exact
   note: state/beam sensitivity runs (ranking_mc_sensitivity_summary.json)
 - id: supp-0628-a
   file: supp
-  snippet: correlation lengths from \SIrange{3}{[[40]]}{\metre}, and with either
+  snippet: \SIrange{3}{[[40]]}{\metre}, and with either
   source: max([x["correlation_length_m"] for x in J(r"ranking_mc_sensitivity_summary.json", "runs") if x["flip_model"] == "state" and x["offset_model"] == "beam"])
   rule: exact
   note: state/beam sensitivity runs (ranking_mc_sensitivity_summary.json)
@@ -2227,11 +2215,11 @@ entries:
   rule: time
 - id: supp-0646-b
   file: supp
-  snippet: at 16:00 and \SI{[[0.051]]}{\celsius} at 17:00. The largest
+  snippet: at 16:00 and \SI{[[0.051]]}{\celsius} at 17:00.
   source: J(r"ranking_uncertainty_summary.json", r"summary.17.0.pairs.1-3.baseline_gap_c")
 - id: supp-0646-c
   file: supp
-  snippet: \SI{0.051}{\celsius} at [[17:00]]. The largest
+  snippet: \SI{0.051}{\celsius} at [[17:00]].
   source: J(r"ranking_uncertainty_summary.json", r"departures[2]")
   rule: time
 - id: supp-0659-a
@@ -2460,22 +2448,22 @@ entries:
   rule: time
 - id: supp-0727-a
   file: supp
-  snippet: resolves Route~1 as the coolest at the \num{[[10]]} departures
+  snippet: to 18:00 (\num{[[10]]} departures)
   source: J(r"route_measures_summary.json", r"sweep.best_route_counts.walk_utci_c.1")
   rule: exact
 - id: supp-0727-b
   file: supp
-  snippet: departures [[13:00]] and 14:00 to 18:00. At the others
+  snippet: coolest at [[13:00]] and from 14:00 to 18:00 (\num{10}
   source: sorted(TXTALL(r"table_route_measures_sweep.tex", r"^(\d\d:\d\d) & 1 &"))[0]
   rule: time
 - id: supp-0727-c
   file: supp
-  snippet: departures 13:00 and 14:00 to [[18:00]]. At the others
+  snippet: coolest at 13:00 and from 14:00 to [[18:00]] (\num{10}
   source: sorted(TXTALL(r"table_route_measures_sweep.tex", r"^(\d\d:\d\d) & 1 &"))[-1]
   rule: time
 - id: supp-0809-a
   file: supp
-  snippet: departures 13:00 and [[14:00]] to 18:00. At the others
+  snippet: coolest at 13:00 and from [[14:00]] to 18:00 (\num{10}
   source: sorted(TXTALL(r"table_route_measures_sweep.tex", r"^(\d\d:\d\d) & 1 &"))[1]
   rule: time
 - id: supp-0728-a
@@ -2495,9 +2483,9 @@ entries:
   rule: exact
 - id: supp-0731-a
   file: supp
-  snippet: Route~4 alone at \num{[[4]]}.
-  source: J(r"route_measures_summary.json", r"sweep.best_route_counts.wettedness_discomfort_min.4")
-  rule: exact
+  snippet: Route~4 alone only at [[14:00]].
+  source: '(lambda h: h[0] if len(h) == 1 else h)(TXTALL(r"table_route_measures_sweep.tex", r"(?m)^(\d\d:\d\d) &[^&]*&[^&]*&[^&]*& 4 &"))'
+  rule: time
 - id: supp-0733-a
   file: supp
   snippet: computed with the [[13:00]] clothing worn
@@ -2520,7 +2508,7 @@ entries:
   source: SRC("cases-tot-faces")/1e6
 - id: highlights-0004-a
   file: highlights
-  snippet: A shaded route [[51]] m longer caused less
+  snippet: shaded route [[51]] m longer
   source: SRC("len-r1-r3")
 - id: cover-0013-a
   file: cover
@@ -6220,12 +6208,12 @@ entries:
   source: sum(J(r"RUN/lisbon{}/surface_materials/material_classification_summary.json".format(i), "mean_confidence_area_weighted")*J(r"RUN/lisbon{}/surface_materials/material_classification_summary.json".format(i), "total_area_m2") for i in range(1, 7))/sum(J(r"RUN/lisbon{}/surface_materials/material_classification_summary.json".format(i), "total_area_m2") for i in range(1, 7))
 - id: alb-limestone
   file: main
-  snippet: limestone properties (albedo \num{[[0.38]]}, conductivity
+  snippet: (albedo \num{[[0.38]]} \cite{oke1987boundary}, conductivity
   source: CODE(r"PIPE/material_library.py", r"_m\(\"calcada_limestone\", CATEGORY_\w+, ([\d.]+)")
   rule: exact
 - id: k-limestone
   file: main
-  snippet: conductivity \SI{[[2.1]]}{\watt\per\metre\per\kelvin}, $\rho c =
+  snippet: conductivity \SI{[[2.1]]}{\watt\per\metre\per\kelvin} \cite{clauser1995thermal}
   source: CODE(r"PIPE/material_library.py", r"_m\(\"calcada_limestone\", CATEGORY_\w+, [\d.]+,\s*[\d.]+,\s*([\d.]+)")
   rule: exact
 - id: rc-limestone
@@ -6234,7 +6222,7 @@ entries:
   source: CODE(r"PIPE/material_library.py", r"_m\(\"calcada_limestone\", CATEGORY_\w+, [\d.]+,\s*[\d.]+,\s*[\d.]+,\s*([\d.]+)")*CODE(r"PIPE/material_library.py", r"_m\(\"calcada_limestone\", CATEGORY_\w+, [\d.]+,\s*[\d.]+,\s*[\d.]+,\s*[\d.]+,\s*([\d.]+)")/1e6
 - id: main-0278-a
   file: main
-  snippet: kept the paving-stone class (albedo \num{[[0.24]]})
+  snippet: kept the paving-stone class (albedo \num{[[0.24]]};
   source: CODE(r"PIPE/material_library.py", r"_m\(\"paving_stone_pedestrian\", CATEGORY_\w+, ([\d.]+)")
   rule: exact
 - id: main-0277-a
@@ -6449,26 +6437,21 @@ entries:
   rule: exact
 - id: main-0476-a
   file: main
-  snippet: allowed below \num{[[2.0]]} (fitted values about
+  snippet: clear sky of turbidity \num{[[2.0]]}, a cap that binds
   source: CODE(r"PIPE/weather_from_sensors.py", r"\"--ceiling-linke-turbidity\", type=float, default=([\d.]+)")
   rule: exact
   note: turbidity floor = the clean-sky ceiling of weather_from_sensors.py
 - id: main-0476-b
   file: main
-  snippet: (fitted values about \num{[[2.35]]}
+  snippet: values about \num{[[2.35]]}
   source: np.mean([J(r"validation_summary.json", r"solar_forcing_audit.by_case.lisbon1.baseline_linke_turbidity"), J(r"validation_summary.json", r"solar_forcing_audit.by_case.lisbon2.baseline_linke_turbidity"), J(r"validation_summary.json", r"solar_forcing_audit.by_case.lisbon3.baseline_linke_turbidity"), J(r"validation_summary.json", r"solar_forcing_audit.by_case.lisbon4.baseline_linke_turbidity"), J(r"validation_summary.json", r"solar_forcing_audit.by_case.lisbon5.baseline_linke_turbidity"), J(r"validation_summary.json", r"solar_forcing_audit.by_case.lisbon6.baseline_linke_turbidity")])
   rule: approx
   tol: 0.02
 - id: main-0477-a
   file: main
-  snippet: against a climatological \num{[[3.6]]})
+  snippet: against a climatological \num{[[3.6]]} \cite{holmgren2018pvlib}
   source: J(DERIVED, r"linke_clim.mean")
   note: pvlib monthly Linke climatology at the case sites/dates (derived)
-- id: main-0479-a
-  file: main
-  snippet: irradiance (\SI{[[0.5]]}{\percent} of daytime samples)
-  source: J(r"validation_summary.json", r"solar_forcing_audit.pooled_fraction_above_toa_horizontal")
-  rule: pct
 - id: forcing-10min
   file: main
   snippet: from the cart as \SI{[[10]]}{\minute} series
@@ -6753,7 +6736,7 @@ entries:
   rule: exact
 - id: globe-eps
   file: main
-  snippet: emittance \num{[[0.957]]}),
+  snippet: emittance \num{[[0.957]]} \cite{campbell2024blackglobe}),
   source: CODE(r"PIPE/black_globe.py", r"_CAMPBELL_EMISSIVITY = ([\d.]+)")
   rule: exact
 - id: globe-tau
@@ -7074,19 +7057,19 @@ entries:
   snippet: subsec:propagation} at [[13:00]] and from 14:30 to 18:00, by
   source: min(float(d) for d, v in J(r"ranking_uncertainty_summary.json", "summary").items() if v["pairs"]["1-3"]["band_95_c"][0] > 0)
   rule: time
-  note: 'tie rule of paper_route_measures_table.py (mc_state_corr5m): at 13:00/16:00/17:00 the MC band of R3-R1 excludes zero; elsewhere R3-R1 on the 1 m route points (route_measures_sweep.csv) must exceed the largest shift of pair 1-3 at those departures (0.0269 C); exceeded 14:30-18:00 (14:00 gap 0.0268)'
+  note: 'tie rule of paper_route_measures_table.py (ws_main): at 13:00/16:00/17:00 the MC band of R3-R1 excludes zero; elsewhere R3-R1 on the 1 m route points (route_measures_sweep.csv) must exceed the largest shift of pair 1-3 at those departures (0.0269 C); exceeded 14:30-18:00 (14:00 gap 0.0268)'
 - id: main-1214-d
   file: main
   snippet: subsec:propagation} at 13:00 and from [[14:30]] to 18:00, by
   source: '(lambda g, s: min(g[g > s].index))((lambda pv: pv[3] - pv[1])(CSV(r"RUN/MMC/postprocessing/route_measures_sweep/route_measures_sweep.csv").pivot(index="dep", columns="route", values="rise")), max(max(abs(v["pairs"]["1-3"]["baseline_gap_c"] - v["pairs"]["1-3"]["band_95_c"][0]), abs(v["pairs"]["1-3"]["band_95_c"][1] - v["pairs"]["1-3"]["baseline_gap_c"])) for v in J(r"ranking_uncertainty_summary.json", "summary").values()))'
   rule: time
-  note: 'tie rule of paper_route_measures_table.py (mc_state_corr5m): at 13:00/16:00/17:00 the MC band of R3-R1 excludes zero; elsewhere R3-R1 on the 1 m route points (route_measures_sweep.csv) must exceed the largest shift of pair 1-3 at those departures (0.0269 C); exceeded 14:30-18:00 (14:00 gap 0.0268)'
+  note: 'tie rule of paper_route_measures_table.py (ws_main): at 13:00/16:00/17:00 the MC band of R3-R1 excludes zero; elsewhere R3-R1 on the 1 m route points (route_measures_sweep.csv) must exceed the largest shift of pair 1-3 at those departures (0.0269 C); exceeded 14:30-18:00 (14:00 gap 0.0268)'
 - id: main-1214-e
   file: main
   snippet: subsec:propagation} at 13:00 and from 14:30 to [[18:00]], by
   source: '(lambda g, s: max(g[g > s].index))((lambda pv: pv[3] - pv[1])(CSV(r"RUN/MMC/postprocessing/route_measures_sweep/route_measures_sweep.csv").pivot(index="dep", columns="route", values="rise")), max(max(abs(v["pairs"]["1-3"]["baseline_gap_c"] - v["pairs"]["1-3"]["band_95_c"][0]), abs(v["pairs"]["1-3"]["band_95_c"][1] - v["pairs"]["1-3"]["baseline_gap_c"])) for v in J(r"ranking_uncertainty_summary.json", "summary").values()))'
   rule: time
-  note: 'tie rule of paper_route_measures_table.py (mc_state_corr5m): at 13:00/16:00/17:00 the MC band of R3-R1 excludes zero; elsewhere R3-R1 on the 1 m route points (route_measures_sweep.csv) must exceed the largest shift of pair 1-3 at those departures (0.0269 C); exceeded 14:30-18:00 (14:00 gap 0.0268)'
+  note: 'tie rule of paper_route_measures_table.py (ws_main): at 13:00/16:00/17:00 the MC band of R3-R1 excludes zero; elsewhere R3-R1 on the 1 m route points (route_measures_sweep.csv) must exceed the largest shift of pair 1-3 at those departures (0.0269 C); exceeded 14:30-18:00 (14:00 gap 0.0268)'
 - id: main-1215-a
   file: main
   snippet: by up to \SI{[[0.051]]}{\celsius} at 17:00, when
@@ -7421,20 +7404,20 @@ entries:
   source: SRC("unif-lis-abs")
 - id: main-1267-a
   file: main
-  snippet: contrast errors up to \SI{[[0.022]]}{\celsius},
+  snippet: Contrast errors reached \SI{[[0.025]]}{\celsius}
   source: SRC("unif-lis-contr")
 - id: main-1268-a
   file: main
-  snippet: two walks \SI{[[0.0005]]}{\celsius} apart reordered
+  snippet: two walks \SI{[[0.0005]]}{\celsius} apart
   source: SRC("unif-lis-gap")
 - id: main-1269-a
   file: main
-  snippet: survived in only \num{[[10]]} of \num{25} cells
+  snippet: survived in \num{[[20]]} of \num{25} cells
   source: SRC("unif-lis-rank")
   rule: exact
 - id: main-1269-b
   file: main
-  snippet: survived in only \num{10} of \num{[[25]]} cells
+  snippet: survived in \num{20} of \num{[[25]]} cells
   source: len(CSV(r"RUN/impact_uniform/ranking_analysis.csv"))
   rule: exact
 - id: main-1269-c
@@ -7521,16 +7504,6 @@ entries:
   snippet: unchanged at all \num{[[25]]} departures
   source: int((CSV(r"RUN/MMC/postprocessing/departure_sweep/departure_sweep.csv").pivot(index="departure_hour", columns="route_id", values="tcore_rise_c").idxmin(axis=1) == CSV(r"RUN/MMC/postprocessing/departure_sweep/departure_sweep_fixedclothing.csv").pivot(index="departure_hour", columns="route_id", values="tcore_rise_c").idxmin(axis=1)).sum())
   rule: exact
-- id: supp-0399-a
-  file: supp
-  snippet: fixed-clothing sweep only at [[08:30]], where
-  source: '[h for h in CSV(r"RUN/MMC/postprocessing/departure_sweep/departure_sweep.csv").pivot(index="departure_hour", columns="route_id", values="tcore_rise_c").index if list(CSV(r"RUN/MMC/postprocessing/departure_sweep/departure_sweep.csv").pivot(index="departure_hour", columns="route_id", values="tcore_rise_c").loc[h].sort_values().index) != list(CSV(r"RUN/MMC/postprocessing/departure_sweep/departure_sweep_fixedclothing.csv").pivot(index="departure_hour", columns="route_id", values="tcore_rise_c").loc[h].sort_values().index)][0]'
-  rule: time
-- id: supp-0400-a
-  file: supp
-  snippet: lie within \SI{[[0.001]]}{\celsius} of each other
-  source: float(abs(CSV(r"RUN/MMC/postprocessing/departure_sweep/departure_sweep.csv").pivot(index="departure_hour", columns="route_id", values="tcore_rise_c").loc[8.5, 1] - CSV(r"RUN/MMC/postprocessing/departure_sweep/departure_sweep.csv").pivot(index="departure_hour", columns="route_id", values="tcore_rise_c").loc[8.5, 3]))
-  rule: le
 - id: supp-0415-a
   file: supp
   snippet: 'manual override
@@ -8788,18 +8761,19 @@ entries:
   source: J(r"review_stats_summary.json", r"2_campaign_bootstrap.night.two_stage_campaign_and_block_95ci.mbe[1]")
 - id: main-0936-b
   file: main
-  snippet: On the \num{[[12]]} held-out daytime walks
-  source: len(J(r"heldout_summary.json", r"heldout.per_walk"))
+  snippet: Pooled over the \num{[[11]]} dated held-out daytime walks
+  source: sum(1 for w in J(r"heldout_summary.json", r"heldout.per_walk").values() if not w.get("date_is_assumed"))
   rule: exact
 - id: main-0937-a
   file: main
-  snippet: forced alike, the bias is \SI{[[+1.74]]}{\kelvin}
+  snippet: dated held-out daytime walks, the bias is \SI{[[+1.74]]}{\kelvin}
   source: J(r"heldout_summary.json", r"heldout.pooled.globe.day.mbe")
   note: pooled over the eleven dated walks (Lisbon 2 w3 excluded)
 - id: main-0938-b
   file: main
-  snippet: (positive on \num{[[11]]})
-  source: sum(1 for w in J(r"heldout_summary.json", r"heldout.per_walk").values() if w["globe"]["day"]["mbe"] > 0)
+  snippet: (positive on \num{[[10]]})
+  source: sum(1 for w in J(r"heldout_summary.json", r"heldout.per_walk").values() if w["globe"]["day"]["mbe"] > 0 and not w.get("date_is_assumed"))
+  note: the pooled held-out figures cover the 11 dated walks (lisbon2_w3's date is assumed)
   rule: exact
 - id: main-0939-c
   file: main
@@ -8812,7 +8786,7 @@ entries:
   rule: pct
 - id: main-0940-a
   file: main
-  snippet: ($\kappa = [[0.40]]$; Supplementary Material S17)
+  snippet: = [[0.40]]$; Supplementary Material S17)
   source: J(r"heldout_summary.json", r"heldout.pooled.shadow.cohen_kappa")
 - id: main-0985-c
   file: main
@@ -8860,12 +8834,12 @@ entries:
   note: 3.1/1.6 = 1.9375
 - id: main-1335-a
   file: main
-  snippet: (sunlit share \SIrange{[[56]]}{63}{\percent})
+  snippet: (sunlit share of route points \SIrange{[[56]]}{63}{\percent})
   source: J(r"ranking_uncertainty_summary.json", r"mean_sunlit_fraction_base")
   rule: pct
 - id: main-1335-b
   file: main
-  snippet: (sunlit share \SIrange{56}{[[63]]}{\percent})
+  snippet: (sunlit share of route points \SIrange{56}{[[63]]}{\percent})
   source: J(r"ranking_uncertainty_summary.json", r"mean_sunlit_fraction_draw")
   rule: pct
 - id: main-1338-a
@@ -9006,7 +8980,7 @@ entries:
   note: campaign fixed-effects estimate; the printed interval is its two-stage (stretches and campaigns) bootstrap
 - id: supp-0228-b
   file: supp
-  snippet: \SI{-0.76}{\kelvin}, has a \SI{[[95]]}{\percent} interval
+  snippet: has a \SI{[[95]]}{\percent} interval
   source: '95'
   rule: exact
   note: interval level (definition)
@@ -9155,11 +9129,11 @@ entries:
   source: J(r"flip_calibration_summary.json", r"state.calibrated_length_m")
 - id: supp-0677-c
   file: supp
-  snippet: $r = [[3.1]]/1.6$, the ratio
+  snippet: = [[3.1]]/1.6$, the ratio
   source: SRC("main-1027-b")
 - id: supp-0677-b
   file: supp
-  snippet: $r = 3.1/[[1.6]]$, the ratio
+  snippet: = 3.1/[[1.6]]$, the ratio
   source: SRC("main-1027-a")
 - id: supp-0680-g
   file: supp
@@ -9170,7 +9144,7 @@ entries:
 - id: supp-0687-c
   file: supp
   snippet: change no band by more than \SI{[[0.001]]}{\celsius}
-  source: '(lambda a, b: max(abs(a[d]["pairs"][p]["band_95_c"][i] - b[d]["pairs"][p]["band_95_c"][i]) for d in a for p in a[d]["pairs"] for i in (0, 1)))(J(r"RUN/MMC/postprocessing/ranking_uncertainty_mc_state/summary.json", "summary"), J(r"RUN/MMC/postprocessing/ranking_uncertainty_mc_state_n2000/summary.json", "summary"))'
+  source: '(lambda a, b: max(abs(a[d]["pairs"][p]["band_95_c"][i] - b[d]["pairs"][p]["band_95_c"][i]) for d in a for p in a[d]["pairs"] for i in (0, 1)))(J(r"RUN/MMC/postprocessing/ranking_uncertainty_ws_corr3m/summary.json", "summary"), J(r"RUN/MMC/postprocessing/ranking_uncertainty_ws_n2000/summary.json", "summary"))'
   rule: le
   note: 'state/beam 3 m: 500 vs 2000 draws, largest band-edge change 0.0005'
 - id: supp-0688-a
@@ -9181,11 +9155,11 @@ entries:
 - id: supp-0689-a
   file: supp
   snippet: the largest mean shift, to \SIrange{[[0.019]]}{0.020}{\celsius}
-  source: '[x for x in J(r"ranking_mc_sensitivity_summary.json", "runs") if x["label"] == "state/uniform offset, 500"][0]["largest_mean_shift_c"]'
+  source: '[x for x in J(r"ranking_mc_sensitivity_summary.json", "runs") if x["label"] == "state/uniform offset, 500, 5 m (walking speed)"][0]["largest_mean_shift_c"]'
 - id: supp-0689-b
   file: supp
   snippet: the largest mean shift, to \SIrange{0.019}{[[0.020]]}{\celsius}
-  source: '[x for x in J(r"ranking_mc_sensitivity_summary.json", "runs") if x["label"] == "uniform/beam offset, 500"][0]["largest_mean_shift_c"]'
+  source: '[x for x in J(r"ranking_mc_sensitivity_summary.json", "runs") if x["label"] == "uniform/beam offset, 500, 5 m (walking speed)"][0]["largest_mean_shift_c"]'
 - id: supp-0700-a
   file: supp
   snippet: Uniform flips use the pooled rate of \SI{[[24.1]]}{\percent}
@@ -9198,17 +9172,17 @@ entries:
   rule: exact
 - id: supp-0716-a
   file: supp
-  snippet: share $q$ of the \num{[[314]]} points of Route~3
+  snippet: share $q$ of the \num{[[314]]} points
   source: J(r"route_robustness_summary.json", r"edge_points.3.n_edge")
   rule: exact
 - id: supp-0716-b
   file: supp
-  snippet: points of Route~3 (\SI{[[32]]}{\percent}) that
+  snippet: points (\SI{[[32]]}{\percent}) of Route~3
   source: J(r"route_robustness_summary.json", r"edge_points.3.fraction_within_edge_m")
   rule: pct
 - id: supp-0717-b
   file: supp
-  snippet: lie within \SI{[[25]]}{\metre} of the LiDAR tile
+  snippet: within \SI{[[25]]}{\metre} of the LiDAR tile
   source: J(r"route_robustness_summary.json", r"edge_m")
   rule: exact
 - id: supp-0719-c
@@ -9262,7 +9236,7 @@ entries:
   note: 144 route-Tmrt time steps per day
 - id: supp-0844-a
   file: supp
-  snippet: absorbs shortwave with absorptivity \num{[[0.95]]}
+  snippet: assumed absorptivity of \num{[[0.95]]} for its matt black finish
   source: CODE(r"PIPE/black_globe.py", r"sw_absorptivity=([\d.]+)")
   rule: exact
   note: CAMPBELL_BLACKGLOBE_L spec
@@ -9298,12 +9272,12 @@ entries:
   rule: exact
 - id: supp-0862-a
   file: supp
-  snippet: the fits lie at \numrange{[[2.2]]}{2.4} on ten walks
+  snippet: the fits lie at \numrange{[[2.2]]}{2.4}
   source: 'sorted(sum([TXTALL(r"RUN/lisbon%d_w%d/weather_from_sensors.log" % (c, w), r"turbidity refitted\s*: Linke ([\d.]+)") for c in range(1, 7) for w in (2, 3)], []))[0]'
   note: 'fitted Linke turbidity of the 12 held-out walks (weather_from_sensors.log): 2.21-2.39 on ten, 3.01 and 3.38 on two'
 - id: supp-0862-b
   file: supp
-  snippet: the fits lie at \numrange{2.2}{[[2.4]]} on ten walks
+  snippet: the fits lie at \numrange{2.2}{[[2.4]]}
   source: 'sorted(sum([TXTALL(r"RUN/lisbon%d_w%d/weather_from_sensors.log" % (c, w), r"turbidity refitted\s*: Linke ([\d.]+)") for c in range(1, 7) for w in (2, 3)], []))[9]'
   note: 'fitted Linke turbidity of the 12 held-out walks (weather_from_sensors.log): 2.21-2.39 on ten, 3.01 and 3.38 on two'
 - id: supp-0862-c
@@ -9318,17 +9292,17 @@ entries:
   note: 'fitted Linke turbidity of the 12 held-out walks (weather_from_sensors.log): 2.21-2.39 on ten, 3.01 and 3.38 on two'
 - id: supp-0863-a
   file: supp
-  snippet: the floor of \num{[[2.0]]} rather than
+  snippet: the floor of \num{[[2.0]]}
   source: SRC("main-0476-a")
   rule: exact
 - id: supp-0863-b
   file: supp
-  snippet: the climatological \numrange{[[3.4]]}{3.6}.
+  snippet: (climatological values \numrange{[[3.4]]}{3.6})
   source: 'sorted(sum([TXTALL(r"RUN/lisbon%d_w%d/weather_from_sensors.log" % (c, w), r"turbidity refitted\s*: Linke [\d.]+ \(climatology ([\d.]+)\)") for c in range(1, 7) for w in (2, 3)], []))[0]'
   note: 'climatological Linke of the 12 held-out walks: 3.36-3.58'
 - id: supp-0863-c
   file: supp
-  snippet: the climatological \numrange{3.4}{[[3.6]]}.
+  snippet: (climatological values \numrange{3.4}{[[3.6]]})
   source: 'sorted(sum([TXTALL(r"RUN/lisbon%d_w%d/weather_from_sensors.log" % (c, w), r"turbidity refitted\s*: Linke [\d.]+ \(climatology ([\d.]+)\)") for c in range(1, 7) for w in (2, 3)], []))[-1]'
 - id: supp-0865-a
   file: supp
@@ -9439,21 +9413,21 @@ entries:
     row: ^State & beam & 500 & 5\$
     col: 7
     n: 0
-  source: '[x for x in J(r"ranking_mc_sensitivity_summary.json", "runs") if x["label"] == "state/beam, 500, 5 m"][0]["largest_shift_c"]'
+  source: '[x for x in J(r"ranking_mc_sensitivity_summary.json", "runs") if x["label"] == "state/beam, 500, 5 m (walking speed)"][0]["largest_shift_c"]'
 - id: table_mc_sensitivity-007
   file: table_mc_sensitivity.tex
   cell:
     row: ^State & beam & 500 & 5\$
     col: 7
     n: 1
-  source: '[x for x in J(r"ranking_mc_sensitivity_summary.json", "runs") if x["label"] == "state/beam, 500, 5 m"][0]["largest_mean_shift_c"]'
+  source: '[x for x in J(r"ranking_mc_sensitivity_summary.json", "runs") if x["label"] == "state/beam, 500, 5 m (walking speed)"][0]["largest_mean_shift_c"]'
 - id: table_mc_sensitivity-008
   file: table_mc_sensitivity.tex
   cell:
     row: '^State & beam & 500 & 3 '
     col: 4
     n: 0
-  source: 100*min(min(v["p_best_unchanged"], v["p_ranking_unchanged"]) for v in J(r"RUN/MMC/postprocessing/ranking_uncertainty_mc_state/summary.json", "summary").values())
+  source: 100*min(min(v["p_best_unchanged"], v["p_ranking_unchanged"]) for v in J(r"RUN/MMC/postprocessing/ranking_uncertainty_ws_corr3m/summary.json", "summary").values())
   rule: exact
 - id: table_mc_sensitivity-009
   file: table_mc_sensitivity.tex
@@ -9461,99 +9435,99 @@ entries:
     row: '^State & beam & 500 & 3 '
     col: 5
     n: 0
-  source: J(r"RUN/MMC/postprocessing/ranking_uncertainty_mc_state/summary.json", "summary")["16.0"]["pairs"]["1-3"]["band_95_c"][0]
+  source: J(r"RUN/MMC/postprocessing/ranking_uncertainty_ws_corr3m/summary.json", "summary")["16.0"]["pairs"]["1-3"]["band_95_c"][0]
 - id: table_mc_sensitivity-010
   file: table_mc_sensitivity.tex
   cell:
     row: '^State & beam & 500 & 3 '
     col: 5
     n: 1
-  source: J(r"RUN/MMC/postprocessing/ranking_uncertainty_mc_state/summary.json", "summary")["16.0"]["pairs"]["1-3"]["band_95_c"][1]
+  source: J(r"RUN/MMC/postprocessing/ranking_uncertainty_ws_corr3m/summary.json", "summary")["16.0"]["pairs"]["1-3"]["band_95_c"][1]
 - id: table_mc_sensitivity-011
   file: table_mc_sensitivity.tex
   cell:
     row: '^State & beam & 500 & 3 '
     col: 6
     n: 0
-  source: J(r"RUN/MMC/postprocessing/ranking_uncertainty_mc_state/summary.json", "summary")["17.0"]["pairs"]["1-3"]["band_95_c"][0]
+  source: J(r"RUN/MMC/postprocessing/ranking_uncertainty_ws_corr3m/summary.json", "summary")["17.0"]["pairs"]["1-3"]["band_95_c"][0]
 - id: table_mc_sensitivity-012
   file: table_mc_sensitivity.tex
   cell:
     row: '^State & beam & 500 & 3 '
     col: 6
     n: 1
-  source: J(r"RUN/MMC/postprocessing/ranking_uncertainty_mc_state/summary.json", "summary")["17.0"]["pairs"]["1-3"]["band_95_c"][1]
+  source: J(r"RUN/MMC/postprocessing/ranking_uncertainty_ws_corr3m/summary.json", "summary")["17.0"]["pairs"]["1-3"]["band_95_c"][1]
 - id: table_mc_sensitivity-013
   file: table_mc_sensitivity.tex
   cell:
     row: '^State & beam & 500 & 3 '
     col: 7
     n: 0
-  source: '[x for x in J(r"ranking_mc_sensitivity_summary.json", "runs") if x["label"] == "state/beam, 500"][0]["largest_shift_c"]'
+  source: '[x for x in J(r"ranking_mc_sensitivity_summary.json", "runs") if x["label"] == "state/beam, 500, 3 m (walking speed)"][0]["largest_shift_c"]'
 - id: table_mc_sensitivity-014
   file: table_mc_sensitivity.tex
   cell:
     row: '^State & beam & 500 & 3 '
     col: 7
     n: 1
-  source: '[x for x in J(r"ranking_mc_sensitivity_summary.json", "runs") if x["label"] == "state/beam, 500"][0]["largest_mean_shift_c"]'
+  source: '[x for x in J(r"ranking_mc_sensitivity_summary.json", "runs") if x["label"] == "state/beam, 500, 3 m (walking speed)"][0]["largest_mean_shift_c"]'
 - id: table_mc_sensitivity-015
   file: table_mc_sensitivity.tex
   cell:
-    row: '^State & beam & 2000 & 3 '
+    row: '^State & beam & 2000 & 5 '
     col: 4
     n: 0
-  source: 100*min(min(v["p_best_unchanged"], v["p_ranking_unchanged"]) for v in J(r"RUN/MMC/postprocessing/ranking_uncertainty_mc_state_n2000/summary.json", "summary").values())
+  source: 100*min(min(v["p_best_unchanged"], v["p_ranking_unchanged"]) for v in J(r"RUN/MMC/postprocessing/ranking_uncertainty_ws_n2000/summary.json", "summary").values())
   rule: exact
 - id: table_mc_sensitivity-016
   file: table_mc_sensitivity.tex
   cell:
-    row: '^State & beam & 2000 & 3 '
+    row: '^State & beam & 2000 & 5 '
     col: 5
     n: 0
-  source: J(r"RUN/MMC/postprocessing/ranking_uncertainty_mc_state_n2000/summary.json", "summary")["16.0"]["pairs"]["1-3"]["band_95_c"][0]
+  source: J(r"RUN/MMC/postprocessing/ranking_uncertainty_ws_n2000/summary.json", "summary")["16.0"]["pairs"]["1-3"]["band_95_c"][0]
 - id: table_mc_sensitivity-017
   file: table_mc_sensitivity.tex
   cell:
-    row: '^State & beam & 2000 & 3 '
+    row: '^State & beam & 2000 & 5 '
     col: 5
     n: 1
-  source: J(r"RUN/MMC/postprocessing/ranking_uncertainty_mc_state_n2000/summary.json", "summary")["16.0"]["pairs"]["1-3"]["band_95_c"][1]
+  source: J(r"RUN/MMC/postprocessing/ranking_uncertainty_ws_n2000/summary.json", "summary")["16.0"]["pairs"]["1-3"]["band_95_c"][1]
 - id: table_mc_sensitivity-018
   file: table_mc_sensitivity.tex
   cell:
-    row: '^State & beam & 2000 & 3 '
+    row: '^State & beam & 2000 & 5 '
     col: 6
     n: 0
-  source: J(r"RUN/MMC/postprocessing/ranking_uncertainty_mc_state_n2000/summary.json", "summary")["17.0"]["pairs"]["1-3"]["band_95_c"][0]
+  source: J(r"RUN/MMC/postprocessing/ranking_uncertainty_ws_n2000/summary.json", "summary")["17.0"]["pairs"]["1-3"]["band_95_c"][0]
 - id: table_mc_sensitivity-019
   file: table_mc_sensitivity.tex
   cell:
-    row: '^State & beam & 2000 & 3 '
+    row: '^State & beam & 2000 & 5 '
     col: 6
     n: 1
-  source: J(r"RUN/MMC/postprocessing/ranking_uncertainty_mc_state_n2000/summary.json", "summary")["17.0"]["pairs"]["1-3"]["band_95_c"][1]
+  source: J(r"RUN/MMC/postprocessing/ranking_uncertainty_ws_n2000/summary.json", "summary")["17.0"]["pairs"]["1-3"]["band_95_c"][1]
 - id: table_mc_sensitivity-020
   file: table_mc_sensitivity.tex
   cell:
-    row: '^State & beam & 2000 & 3 '
+    row: '^State & beam & 2000 & 5 '
     col: 7
     n: 0
-  source: '[x for x in J(r"ranking_mc_sensitivity_summary.json", "runs") if x["label"] == "state/beam, 2000"][0]["largest_shift_c"]'
+  source: '[x for x in J(r"ranking_mc_sensitivity_summary.json", "runs") if x["label"] == "state/beam, 2000, 5 m (walking speed)"][0]["largest_shift_c"]'
 - id: table_mc_sensitivity-021
   file: table_mc_sensitivity.tex
   cell:
-    row: '^State & beam & 2000 & 3 '
+    row: '^State & beam & 2000 & 5 '
     col: 7
     n: 1
-  source: '[x for x in J(r"ranking_mc_sensitivity_summary.json", "runs") if x["label"] == "state/beam, 2000"][0]["largest_mean_shift_c"]'
+  source: '[x for x in J(r"ranking_mc_sensitivity_summary.json", "runs") if x["label"] == "state/beam, 2000, 5 m (walking speed)"][0]["largest_mean_shift_c"]'
 - id: table_mc_sensitivity-022
   file: table_mc_sensitivity.tex
   cell:
     row: '^State & beam & 500 & 10 '
     col: 4
     n: 0
-  source: 100*min(min(v["p_best_unchanged"], v["p_ranking_unchanged"]) for v in J(r"RUN/MMC/postprocessing/ranking_uncertainty_mc_state_corr10m/summary.json", "summary").values())
+  source: 100*min(min(v["p_best_unchanged"], v["p_ranking_unchanged"]) for v in J(r"RUN/MMC/postprocessing/ranking_uncertainty_ws_corr10m/summary.json", "summary").values())
   rule: exact
 - id: table_mc_sensitivity-023
   file: table_mc_sensitivity.tex
@@ -9561,49 +9535,49 @@ entries:
     row: '^State & beam & 500 & 10 '
     col: 5
     n: 0
-  source: J(r"RUN/MMC/postprocessing/ranking_uncertainty_mc_state_corr10m/summary.json", "summary")["16.0"]["pairs"]["1-3"]["band_95_c"][0]
+  source: J(r"RUN/MMC/postprocessing/ranking_uncertainty_ws_corr10m/summary.json", "summary")["16.0"]["pairs"]["1-3"]["band_95_c"][0]
 - id: table_mc_sensitivity-024
   file: table_mc_sensitivity.tex
   cell:
     row: '^State & beam & 500 & 10 '
     col: 5
     n: 1
-  source: J(r"RUN/MMC/postprocessing/ranking_uncertainty_mc_state_corr10m/summary.json", "summary")["16.0"]["pairs"]["1-3"]["band_95_c"][1]
+  source: J(r"RUN/MMC/postprocessing/ranking_uncertainty_ws_corr10m/summary.json", "summary")["16.0"]["pairs"]["1-3"]["band_95_c"][1]
 - id: table_mc_sensitivity-025
   file: table_mc_sensitivity.tex
   cell:
     row: '^State & beam & 500 & 10 '
     col: 6
     n: 0
-  source: J(r"RUN/MMC/postprocessing/ranking_uncertainty_mc_state_corr10m/summary.json", "summary")["17.0"]["pairs"]["1-3"]["band_95_c"][0]
+  source: J(r"RUN/MMC/postprocessing/ranking_uncertainty_ws_corr10m/summary.json", "summary")["17.0"]["pairs"]["1-3"]["band_95_c"][0]
 - id: table_mc_sensitivity-026
   file: table_mc_sensitivity.tex
   cell:
     row: '^State & beam & 500 & 10 '
     col: 6
     n: 1
-  source: J(r"RUN/MMC/postprocessing/ranking_uncertainty_mc_state_corr10m/summary.json", "summary")["17.0"]["pairs"]["1-3"]["band_95_c"][1]
+  source: J(r"RUN/MMC/postprocessing/ranking_uncertainty_ws_corr10m/summary.json", "summary")["17.0"]["pairs"]["1-3"]["band_95_c"][1]
 - id: table_mc_sensitivity-027
   file: table_mc_sensitivity.tex
   cell:
     row: '^State & beam & 500 & 10 '
     col: 7
     n: 0
-  source: '[x for x in J(r"ranking_mc_sensitivity_summary.json", "runs") if x["label"] == "state/beam, 500, 10 m"][0]["largest_shift_c"]'
+  source: '[x for x in J(r"ranking_mc_sensitivity_summary.json", "runs") if x["label"] == "state/beam, 500, 10 m (walking speed)"][0]["largest_shift_c"]'
 - id: table_mc_sensitivity-028
   file: table_mc_sensitivity.tex
   cell:
     row: '^State & beam & 500 & 10 '
     col: 7
     n: 1
-  source: '[x for x in J(r"ranking_mc_sensitivity_summary.json", "runs") if x["label"] == "state/beam, 500, 10 m"][0]["largest_mean_shift_c"]'
+  source: '[x for x in J(r"ranking_mc_sensitivity_summary.json", "runs") if x["label"] == "state/beam, 500, 10 m (walking speed)"][0]["largest_mean_shift_c"]'
 - id: table_mc_sensitivity-029
   file: table_mc_sensitivity.tex
   cell:
     row: '^State & beam & 500 & 40 '
     col: 4
     n: 0
-  source: 100*min(min(v["p_best_unchanged"], v["p_ranking_unchanged"]) for v in J(r"RUN/MMC/postprocessing/ranking_uncertainty_mc_state_corr40m/summary.json", "summary").values())
+  source: 100*min(min(v["p_best_unchanged"], v["p_ranking_unchanged"]) for v in J(r"RUN/MMC/postprocessing/ranking_uncertainty_ws_corr40m/summary.json", "summary").values())
   rule: exact
 - id: table_mc_sensitivity-030
   file: table_mc_sensitivity.tex
@@ -9611,139 +9585,139 @@ entries:
     row: '^State & beam & 500 & 40 '
     col: 5
     n: 0
-  source: J(r"RUN/MMC/postprocessing/ranking_uncertainty_mc_state_corr40m/summary.json", "summary")["16.0"]["pairs"]["1-3"]["band_95_c"][0]
+  source: J(r"RUN/MMC/postprocessing/ranking_uncertainty_ws_corr40m/summary.json", "summary")["16.0"]["pairs"]["1-3"]["band_95_c"][0]
 - id: table_mc_sensitivity-031
   file: table_mc_sensitivity.tex
   cell:
     row: '^State & beam & 500 & 40 '
     col: 5
     n: 1
-  source: J(r"RUN/MMC/postprocessing/ranking_uncertainty_mc_state_corr40m/summary.json", "summary")["16.0"]["pairs"]["1-3"]["band_95_c"][1]
+  source: J(r"RUN/MMC/postprocessing/ranking_uncertainty_ws_corr40m/summary.json", "summary")["16.0"]["pairs"]["1-3"]["band_95_c"][1]
 - id: table_mc_sensitivity-032
   file: table_mc_sensitivity.tex
   cell:
     row: '^State & beam & 500 & 40 '
     col: 6
     n: 0
-  source: J(r"RUN/MMC/postprocessing/ranking_uncertainty_mc_state_corr40m/summary.json", "summary")["17.0"]["pairs"]["1-3"]["band_95_c"][0]
+  source: J(r"RUN/MMC/postprocessing/ranking_uncertainty_ws_corr40m/summary.json", "summary")["17.0"]["pairs"]["1-3"]["band_95_c"][0]
 - id: table_mc_sensitivity-033
   file: table_mc_sensitivity.tex
   cell:
     row: '^State & beam & 500 & 40 '
     col: 6
     n: 1
-  source: J(r"RUN/MMC/postprocessing/ranking_uncertainty_mc_state_corr40m/summary.json", "summary")["17.0"]["pairs"]["1-3"]["band_95_c"][1]
+  source: J(r"RUN/MMC/postprocessing/ranking_uncertainty_ws_corr40m/summary.json", "summary")["17.0"]["pairs"]["1-3"]["band_95_c"][1]
 - id: table_mc_sensitivity-034
   file: table_mc_sensitivity.tex
   cell:
     row: '^State & beam & 500 & 40 '
     col: 7
     n: 0
-  source: '[x for x in J(r"ranking_mc_sensitivity_summary.json", "runs") if x["label"] == "state/beam, 500, 40 m"][0]["largest_shift_c"]'
+  source: '[x for x in J(r"ranking_mc_sensitivity_summary.json", "runs") if x["label"] == "state/beam, 500, 40 m (walking speed)"][0]["largest_shift_c"]'
 - id: table_mc_sensitivity-035
   file: table_mc_sensitivity.tex
   cell:
     row: '^State & beam & 500 & 40 '
     col: 7
     n: 1
-  source: '[x for x in J(r"ranking_mc_sensitivity_summary.json", "runs") if x["label"] == "state/beam, 500, 40 m"][0]["largest_mean_shift_c"]'
+  source: '[x for x in J(r"ranking_mc_sensitivity_summary.json", "runs") if x["label"] == "state/beam, 500, 40 m (walking speed)"][0]["largest_mean_shift_c"]'
 - id: table_mc_sensitivity-036
   file: table_mc_sensitivity.tex
   cell:
-    row: '^State & uniform & 500 & 3 '
+    row: '^State & uniform & 500 & 5 '
     col: 4
     n: 0
-  source: 100*min(min(v["p_best_unchanged"], v["p_ranking_unchanged"]) for v in J(r"RUN/MMC/postprocessing/ranking_uncertainty_mc_state_flip_only/summary.json", "summary").values())
+  source: 100*min(min(v["p_best_unchanged"], v["p_ranking_unchanged"]) for v in J(r"RUN/MMC/postprocessing/ranking_uncertainty_ws_flip_only/summary.json", "summary").values())
   rule: exact
 - id: table_mc_sensitivity-037
   file: table_mc_sensitivity.tex
   cell:
-    row: '^State & uniform & 500 & 3 '
+    row: '^State & uniform & 500 & 5 '
     col: 5
     n: 0
-  source: J(r"RUN/MMC/postprocessing/ranking_uncertainty_mc_state_flip_only/summary.json", "summary")["16.0"]["pairs"]["1-3"]["band_95_c"][0]
+  source: J(r"RUN/MMC/postprocessing/ranking_uncertainty_ws_flip_only/summary.json", "summary")["16.0"]["pairs"]["1-3"]["band_95_c"][0]
 - id: table_mc_sensitivity-038
   file: table_mc_sensitivity.tex
   cell:
-    row: '^State & uniform & 500 & 3 '
+    row: '^State & uniform & 500 & 5 '
     col: 5
     n: 1
-  source: J(r"RUN/MMC/postprocessing/ranking_uncertainty_mc_state_flip_only/summary.json", "summary")["16.0"]["pairs"]["1-3"]["band_95_c"][1]
+  source: J(r"RUN/MMC/postprocessing/ranking_uncertainty_ws_flip_only/summary.json", "summary")["16.0"]["pairs"]["1-3"]["band_95_c"][1]
 - id: table_mc_sensitivity-039
   file: table_mc_sensitivity.tex
   cell:
-    row: '^State & uniform & 500 & 3 '
+    row: '^State & uniform & 500 & 5 '
     col: 6
     n: 0
-  source: J(r"RUN/MMC/postprocessing/ranking_uncertainty_mc_state_flip_only/summary.json", "summary")["17.0"]["pairs"]["1-3"]["band_95_c"][0]
+  source: J(r"RUN/MMC/postprocessing/ranking_uncertainty_ws_flip_only/summary.json", "summary")["17.0"]["pairs"]["1-3"]["band_95_c"][0]
 - id: table_mc_sensitivity-040
   file: table_mc_sensitivity.tex
   cell:
-    row: '^State & uniform & 500 & 3 '
+    row: '^State & uniform & 500 & 5 '
     col: 6
     n: 1
-  source: J(r"RUN/MMC/postprocessing/ranking_uncertainty_mc_state_flip_only/summary.json", "summary")["17.0"]["pairs"]["1-3"]["band_95_c"][1]
+  source: J(r"RUN/MMC/postprocessing/ranking_uncertainty_ws_flip_only/summary.json", "summary")["17.0"]["pairs"]["1-3"]["band_95_c"][1]
 - id: table_mc_sensitivity-041
   file: table_mc_sensitivity.tex
   cell:
-    row: '^State & uniform & 500 & 3 '
+    row: '^State & uniform & 500 & 5 '
     col: 7
     n: 0
-  source: '[x for x in J(r"ranking_mc_sensitivity_summary.json", "runs") if x["label"] == "state/uniform offset, 500"][0]["largest_shift_c"]'
+  source: '[x for x in J(r"ranking_mc_sensitivity_summary.json", "runs") if x["label"] == "state/uniform offset, 500, 5 m (walking speed)"][0]["largest_shift_c"]'
 - id: table_mc_sensitivity-042
   file: table_mc_sensitivity.tex
   cell:
-    row: '^State & uniform & 500 & 3 '
+    row: '^State & uniform & 500 & 5 '
     col: 7
     n: 1
-  source: '[x for x in J(r"ranking_mc_sensitivity_summary.json", "runs") if x["label"] == "state/uniform offset, 500"][0]["largest_mean_shift_c"]'
+  source: '[x for x in J(r"ranking_mc_sensitivity_summary.json", "runs") if x["label"] == "state/uniform offset, 500, 5 m (walking speed)"][0]["largest_mean_shift_c"]'
 - id: table_mc_sensitivity-043
   file: table_mc_sensitivity.tex
   cell:
-    row: '^Uniform & beam & 500 & 2 '
+    row: '^Uniform & beam & 500 & 5 '
     col: 4
     n: 0
-  source: 100*min(min(v["p_best_unchanged"], v["p_ranking_unchanged"]) for v in J(r"RUN/MMC/postprocessing/ranking_uncertainty_mc_uniform_beam/summary.json", "summary").values())
+  source: 100*min(min(v["p_best_unchanged"], v["p_ranking_unchanged"]) for v in J(r"RUN/MMC/postprocessing/ranking_uncertainty_ws_uniform_beam/summary.json", "summary").values())
   rule: exact
 - id: table_mc_sensitivity-044
   file: table_mc_sensitivity.tex
   cell:
-    row: '^Uniform & beam & 500 & 2 '
+    row: '^Uniform & beam & 500 & 5 '
     col: 5
     n: 0
-  source: J(r"RUN/MMC/postprocessing/ranking_uncertainty_mc_uniform_beam/summary.json", "summary")["16.0"]["pairs"]["1-3"]["band_95_c"][0]
+  source: J(r"RUN/MMC/postprocessing/ranking_uncertainty_ws_uniform_beam/summary.json", "summary")["16.0"]["pairs"]["1-3"]["band_95_c"][0]
 - id: table_mc_sensitivity-045
   file: table_mc_sensitivity.tex
   cell:
-    row: '^Uniform & beam & 500 & 2 '
+    row: '^Uniform & beam & 500 & 5 '
     col: 5
     n: 1
-  source: J(r"RUN/MMC/postprocessing/ranking_uncertainty_mc_uniform_beam/summary.json", "summary")["16.0"]["pairs"]["1-3"]["band_95_c"][1]
+  source: J(r"RUN/MMC/postprocessing/ranking_uncertainty_ws_uniform_beam/summary.json", "summary")["16.0"]["pairs"]["1-3"]["band_95_c"][1]
 - id: table_mc_sensitivity-046
   file: table_mc_sensitivity.tex
   cell:
-    row: '^Uniform & beam & 500 & 2 '
+    row: '^Uniform & beam & 500 & 5 '
     col: 6
     n: 0
-  source: J(r"RUN/MMC/postprocessing/ranking_uncertainty_mc_uniform_beam/summary.json", "summary")["17.0"]["pairs"]["1-3"]["band_95_c"][0]
+  source: J(r"RUN/MMC/postprocessing/ranking_uncertainty_ws_uniform_beam/summary.json", "summary")["17.0"]["pairs"]["1-3"]["band_95_c"][0]
 - id: table_mc_sensitivity-047
   file: table_mc_sensitivity.tex
   cell:
-    row: '^Uniform & beam & 500 & 2 '
+    row: '^Uniform & beam & 500 & 5 '
     col: 6
     n: 1
-  source: J(r"RUN/MMC/postprocessing/ranking_uncertainty_mc_uniform_beam/summary.json", "summary")["17.0"]["pairs"]["1-3"]["band_95_c"][1]
+  source: J(r"RUN/MMC/postprocessing/ranking_uncertainty_ws_uniform_beam/summary.json", "summary")["17.0"]["pairs"]["1-3"]["band_95_c"][1]
 - id: table_mc_sensitivity-048
   file: table_mc_sensitivity.tex
   cell:
-    row: '^Uniform & beam & 500 & 2 '
+    row: '^Uniform & beam & 500 & 5 '
     col: 7
     n: 0
-  source: '[x for x in J(r"ranking_mc_sensitivity_summary.json", "runs") if x["label"] == "uniform/beam offset, 500"][0]["largest_shift_c"]'
+  source: '[x for x in J(r"ranking_mc_sensitivity_summary.json", "runs") if x["label"] == "uniform/beam offset, 500, 5 m (walking speed)"][0]["largest_shift_c"]'
 - id: table_mc_sensitivity-049
   file: table_mc_sensitivity.tex
   cell:
-    row: '^Uniform & beam & 500 & 2 '
+    row: '^Uniform & beam & 500 & 5 '
     col: 7
     n: 1
-  source: '[x for x in J(r"ranking_mc_sensitivity_summary.json", "runs") if x["label"] == "uniform/beam offset, 500"][0]["largest_mean_shift_c"]'
+  source: '[x for x in J(r"ranking_mc_sensitivity_summary.json", "runs") if x["label"] == "uniform/beam offset, 500, 5 m (walking speed)"][0]["largest_mean_shift_c"]'

@@ -22,8 +22,9 @@ P(best route unchanged), P(complete ranking unchanged), the distribution of
 every pairwise gap and P(gap keeps its sign), and per pair the mean shift of
 the draws from the baseline gap (systematic) next to the 2.5-97.5 band.
 
-The defaults (--flip-model uniform --offset-model uniform) are the published
-run. Two state-dependent alternatives (20 Oct 2026 review):
+The defaults (--flip-model uniform --offset-model uniform) are the original
+run. The paper reports the state-dependent run below (run ws_main: --flip-model
+state --offset-model beam --correlation-length-m 5; 20-25 Oct 2026 review):
 
   --flip-model state   a point flips with P(measured shaded | modelled sunlit)
                        when modelled sunlit at that time step, and with
@@ -42,7 +43,7 @@ Usage:
     python3 paper_ranking_uncertainty.py --draws 500 --departures 13 16 17
         --flip-rate 0.241 --correlation-length-m 2 --load-offset-range -64 0
     python3 paper_ranking_uncertainty.py --flip-model state --offset-model beam
-        --correlation-length-m 2 --load-offset-range -64 0 --out-name mc_state
+        --correlation-length-m 5 --load-offset-range -64 0 --out-name ws_main   # paper
 """
 from __future__ import annotations
 

@@ -173,9 +173,9 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--viz", default="run_output/MMC/viz")
     p.add_argument("--sweep", default="run_output/MMC/postprocessing/route_measures_sweep")
-    p.add_argument("--mc", default="run_output/MMC/postprocessing/ranking_uncertainty/summary.json",
+    p.add_argument("--mc", default="run_output/MMC/postprocessing/ranking_uncertainty_ws_main",
                    help="Monte Carlo summary.json, or the run directory holding it "
-                        "(e.g. run_output/MMC/postprocessing/ranking_uncertainty_mc_state)")
+                        "(default: the paper's run, ranking_uncertainty_ws_main)")
     p.add_argument("--paper-dir", default="/home/harshin/files/fastUTEC paper")
     a = p.parse_args()
     mc = Path(a.mc)

@@ -18,7 +18,7 @@ run() { name=$1; shift; mkdir -p "$O/$name"; echo "== $name"; nice -n 19 "$@" > 
 run validation     python3 paper_validation_figures.py --paper-dir "$O/validation"
 run lisbon_routes  python3 paper_lisbon_route_table.py --out "$O/lisbon_routes/table_lisbon_routes.tex"
 run convergence    python3 paper_convergence.py --paper-dir "$O/convergence"
-run ranking        python3 paper_ranking_uncertainty.py --table-only --flip-rate 0.241 --correlation-length-m 2 --load-offset-range -64 0 --paper-dir "$O/ranking"
+run ranking        python3 paper_ranking_uncertainty.py --table-only --flip-model state --offset-model beam --correlation-length-m 5 --load-offset-range -64 0 --out-name ws_main --paper-dir "$O/ranking"
 run route_measures python3 paper_route_measures_table.py --paper-dir "$O/route_measures"
 run uniform        python3 paper_uniform_figure.py --out "$O/uniform/uniform_signed_error.png"
 run crown          python3 paper_crown_figure.py --paper-dir "$O/crown"
