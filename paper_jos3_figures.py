@@ -27,6 +27,7 @@ import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.backends import backend_pdf
 from matplotlib.collections import PolyCollection
 from scipy.ndimage import binary_closing
 from scipy.spatial import cKDTree
@@ -37,6 +38,22 @@ from microclimate_field import EnvironmentField
 from weather_provider import WeatherProvider
 
 stage09 = import_module("09_route_thermal_stress_jos3")
+
+# matplotlib 3.6 writes few-colour images as 1-, 2- or 4-bit indexed PNG
+# streams but leaves BitsPerComponent out of the predictor parameters, so PDF
+# readers decode each row as 8-bit and the rasterised map background shears
+# into horizontal streaks. Pass the bit depth through.
+_begin_stream = backend_pdf.PdfFile.beginStream
+
+
+def _begin_stream_with_depth(self, id, len, extra=None, png=None):
+    bits = (extra or {}).get("BitsPerComponent", 8)
+    if png is not None and bits < 8:
+        png = {**png, "BitsPerComponent": bits}
+    return _begin_stream(self, id, len, extra, png)
+
+
+backend_pdf.PdfFile.beginStream = _begin_stream_with_depth
 
 ROUTE_COLORS = {1: "#0072B2", 2: "#E69F00", 3: "#009E73", 4: "#CC79A7"}
 # A marker per route so the routes stay separable in greyscale and for
