@@ -261,7 +261,7 @@ entries:
   note: literature (Fukazawa & Havenith 2009), cited
 - id: main-0634-a
   file: main
-  snippet: when the \SI{[[95]]}{\percent} band of their difference
+  snippet: unless the \SI{[[95]]}{\percent} band of their difference
   source: 100*(0.975-0.025)
   rule: exact
   note: 2.5th-97.5th percentile band (definition)
@@ -1189,22 +1189,6 @@ entries:
   snippet: Route~4 has the lowest strain at every one of the \num{[[25]]}
   source: J(r"route_measures_summary.json", r"sweep.best_route_counts.final_tcore_rise_c.4")
   rule: exact
-- id: main-1218-a
-  file: main
-  snippet: resolves Route~1 as the coolest at [[13:00]] and from 14:00 to 18:00
-  source: sorted(TXTALL(r"table_route_measures_sweep.tex", r"^(\d\d:\d\d) & 1 &"))[0]
-  rule: time
-- id: main-1218-b
-  file: main
-  snippet: resolves Route~1 as the coolest at 13:00 and from 14:00 to [[18:00]]
-  source: sorted(TXTALL(r"table_route_measures_sweep.tex", r"^(\d\d:\d\d) & 1 &"))[-1]
-  rule: time
-- id: main-1223-a
-  file: main
-  snippet: resolves Route~1 as the coolest at 13:00 and from [[14:00]] to 18:00
-  source: sorted(TXTALL(r"table_route_measures_sweep.tex", r"^(\d\d:\d\d) & 1 &"))[1]
-  rule: time
-  note: 'walk-UTCI column of table_route_measures_sweep.tex: 13:00, 14:00-18:00 (10 departures)'
 - id: main-1218-c
   file: main
   snippet: favour Route~4 at all \num{[[25]]} and stored heat
@@ -2406,13 +2390,13 @@ entries:
   rule: time
 - id: supp-0710-d
   file: supp
-  snippet: when the [[2.5]]th--97.5th percentile band of their difference
+  snippet: unless the [[2.5]]th--97.5th percentile band of their difference
   source: '2.5'
   rule: exact
   note: definition
 - id: supp-0710-e
   file: supp
-  snippet: when the 2.5th--[[97.5]]th percentile band of their difference
+  snippet: unless the 2.5th--[[97.5]]th percentile band of their difference
   source: '97.5'
   rule: exact
   note: definition
@@ -2481,11 +2465,6 @@ entries:
   snippet: $t_w$} is zero on every route at \num{[[7]]} departures
   source: J(r"route_measures_summary.json", r"sweep.best_route_counts.wettedness_discomfort_min.none")
   rule: exact
-- id: supp-0731-a
-  file: supp
-  snippet: Route~4 alone only at [[14:00]].
-  source: '(lambda h: h[0] if len(h) == 1 else h)(TXTALL(r"table_route_measures_sweep.tex", r"(?m)^(\d\d:\d\d) &[^&]*&[^&]*&[^&]*& 4 &"))'
-  rule: time
 - id: supp-0733-a
   file: supp
   snippet: computed with the [[13:00]] clothing worn
@@ -7057,19 +7036,19 @@ entries:
   snippet: subsec:propagation} at [[13:00]] and from 14:30 to 18:00, by
   source: min(float(d) for d, v in J(r"ranking_uncertainty_summary.json", "summary").items() if v["pairs"]["1-3"]["band_95_c"][0] > 0)
   rule: time
-  note: 'tie rule of paper_route_measures_table.py (ws_main): at 13:00/16:00/17:00 the MC band of R3-R1 excludes zero; elsewhere R3-R1 on the 1 m route points (route_measures_sweep.csv) must exceed the largest shift of pair 1-3 at those departures (0.0269 C); exceeded 14:30-18:00 (14:00 gap 0.0268)'
+  note: 'bootstrap tie rule of paper_route_measures_table.py (ws_main): R3-R1 on the 1 m route points must exceed the 95th bootstrap percentile of pair 1-3''s largest shift (0.0265 C; pair 1-3 is the measure''s largest, so resolution_upper95 is that threshold); exceeded 14:30-18:00 (14:00 gap 0.0261)'
 - id: main-1214-d
   file: main
   snippet: subsec:propagation} at 13:00 and from [[14:30]] to 18:00, by
-  source: '(lambda g, s: min(g[g > s].index))((lambda pv: pv[3] - pv[1])(CSV(r"RUN/MMC/postprocessing/route_measures_sweep/route_measures_sweep.csv").pivot(index="dep", columns="route", values="rise")), max(max(abs(v["pairs"]["1-3"]["baseline_gap_c"] - v["pairs"]["1-3"]["band_95_c"][0]), abs(v["pairs"]["1-3"]["band_95_c"][1] - v["pairs"]["1-3"]["baseline_gap_c"])) for v in J(r"ranking_uncertainty_summary.json", "summary").values()))'
+  source: '(lambda g, s: min(g[g > s].index))((lambda pv: pv[3] - pv[1])(CSV(r"RUN/MMC/postprocessing/route_measures_sweep/route_measures_sweep.csv").pivot(index="dep", columns="route", values="rise")), J(r"route_measures_summary.json", r"resolution_upper95.tcore_rise_c"))'
   rule: time
-  note: 'tie rule of paper_route_measures_table.py (ws_main): at 13:00/16:00/17:00 the MC band of R3-R1 excludes zero; elsewhere R3-R1 on the 1 m route points (route_measures_sweep.csv) must exceed the largest shift of pair 1-3 at those departures (0.0269 C); exceeded 14:30-18:00 (14:00 gap 0.0268)'
+  note: 'bootstrap tie rule of paper_route_measures_table.py (ws_main): R3-R1 on the 1 m route points must exceed the 95th bootstrap percentile of pair 1-3''s largest shift (0.0265 C; pair 1-3 is the measure''s largest, so resolution_upper95 is that threshold); exceeded 14:30-18:00 (14:00 gap 0.0261)'
 - id: main-1214-e
   file: main
   snippet: subsec:propagation} at 13:00 and from 14:30 to [[18:00]], by
-  source: '(lambda g, s: max(g[g > s].index))((lambda pv: pv[3] - pv[1])(CSV(r"RUN/MMC/postprocessing/route_measures_sweep/route_measures_sweep.csv").pivot(index="dep", columns="route", values="rise")), max(max(abs(v["pairs"]["1-3"]["baseline_gap_c"] - v["pairs"]["1-3"]["band_95_c"][0]), abs(v["pairs"]["1-3"]["band_95_c"][1] - v["pairs"]["1-3"]["baseline_gap_c"])) for v in J(r"ranking_uncertainty_summary.json", "summary").values()))'
+  source: '(lambda g, s: max(g[g > s].index))((lambda pv: pv[3] - pv[1])(CSV(r"RUN/MMC/postprocessing/route_measures_sweep/route_measures_sweep.csv").pivot(index="dep", columns="route", values="rise")), J(r"route_measures_summary.json", r"resolution_upper95.tcore_rise_c"))'
   rule: time
-  note: 'tie rule of paper_route_measures_table.py (ws_main): at 13:00/16:00/17:00 the MC band of R3-R1 excludes zero; elsewhere R3-R1 on the 1 m route points (route_measures_sweep.csv) must exceed the largest shift of pair 1-3 at those departures (0.0269 C); exceeded 14:30-18:00 (14:00 gap 0.0268)'
+  note: 'bootstrap tie rule of paper_route_measures_table.py (ws_main): R3-R1 on the 1 m route points must exceed the 95th bootstrap percentile of pair 1-3''s largest shift (0.0265 C; pair 1-3 is the measure''s largest, so resolution_upper95 is that threshold); exceeded 14:30-18:00 (14:00 gap 0.0261)'
 - id: main-1215-a
   file: main
   snippet: by up to \SI{[[0.051]]}{\celsius} at 17:00, when
@@ -9721,3 +9700,33 @@ entries:
     col: 7
     n: 1
   source: '[x for x in J(r"ranking_mc_sensitivity_summary.json", "runs") if x["label"] == "uniform/beam offset, 500, 5 m (walking speed)"][0]["largest_mean_shift_c"]'
+- id: supp-boot-n
+  file: supp
+  snippet: through \num{[[2000]]} bootstrap resamples
+  source: J(r"route_measures_summary.json", r"tie_rule.bootstrap_resamples")
+  rule: exact
+- id: supp-boot-conf
+  file: supp
+  snippet: on the same side, in \SI{[[95]]}{\percent} of them
+  source: J(r"route_measures_summary.json", r"tie_rule.confidence")
+  rule: pct
+- id: supp-boot-95th
+  file: supp
+  snippet: exceed the [[95]]th percentile of the resampled shift
+  source: J(r"route_measures_summary.json", r"tie_rule.confidence")
+  rule: pct
+- id: supp-boot-pair
+  file: supp
+  snippet: pair thresholds by up to \SI{[[11]]}{\percent}
+  source: J(r"route_measures_summary.json", r"tie_rule.max_pair_threshold_increase")
+  rule: pct
+- id: supp-boot-res
+  file: supp
+  snippet: the resolutions below by up to \SI{[[4]]}{\percent}
+  source: '(lambda d: max(d["resolution_upper95"][k] / d["resolution"][k] - 1 for k in d["resolution"] if d["resolution"][k] > 0))(J(r"route_measures_summary.json"))'
+  rule: le
+- id: supp-wutci-n
+  file: supp
+  snippet: to 18:00 (\num{[[9]]} departures), the departures
+  source: J(r"route_measures_summary.json", r"sweep.best_route_counts.walk_utci_c.1")
+  rule: exact

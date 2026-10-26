@@ -10,16 +10,22 @@ route_measures_summary.json     numbers quoted in the text
 
 Ties use the ranking Monte Carlo (paper_ranking_uncertainty.py), which
 propagates the validated sun/shade and radiant-load error at 13:00, 16:00 and
-17:00. At those departures two routes are tied under a measure when the
-2.5-97.5 percentile band of their difference over the draws includes zero; at
-the other sweep departures, when their difference is within the largest shift
-of that pair's difference found at the three. The measure's resolution quoted
-in the text is the largest such shift over all pairs.
+17:00. The rule allows for the Monte Carlo's own sampling noise by
+bootstrapping the draws (BOOT resamples, fixed seed). At those departures two
+routes are resolved under a measure only when the 2.5-97.5 percentile band of
+their difference excludes zero, on the same side, in at least 95 % of the
+resamples; at the other sweep departures, only when their difference exceeds
+the 95th bootstrap percentile of the largest shift of that pair's difference
+found at the three. Otherwise they are tied. The resolution quoted in the text
+is the largest shift over all pairs (point estimate; its bootstrap upper bound
+is written to the summary as resolution_upper95).
 """
 import argparse
+import itertools
 import json
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 ROUTES = (1, 2, 3, 4)
@@ -56,25 +62,45 @@ BLOCKS = {"route": "Route", "comfort": "Thermal comfort while walking (UTCI)",
           "stress": "Heat-stress exposure (UTCI)", "body": "Physiological response (JOS-3)"}
 
 
-def pair_shifts(mc_measure):
-    """Largest shift of each route pair's difference over the MC departures."""
-    out = {}
-    for key, q in mc_measure["pairs"].items():
-        pair = tuple(int(x) for x in key.split(":")[1].split("-"))
-        lo, hi = q["band"]
-        g = q["baseline_gap"]
-        out[pair] = max(out.get(pair, 0.0), abs(g - lo), abs(hi - g))
-    return out
+BOOT, CONF, SEED = 2000, 0.95, 20261026
 
 
-def tie_rule(mc_measure, departure):
+def bootstrap_rules(mc_dir, measures):
+    """Per measure: which pairs are resolved at the Monte Carlo departures and
+    each pair's tie threshold elsewhere, both with the draws' sampling noise
+    included by bootstrapping the draws."""
+    draws = pd.read_csv(mc_dir / "draws.csv")
+    base = pd.read_csv(mc_dir / "baseline.csv")
+    n = draws["draw"].nunique()
+    idx = np.random.default_rng(SEED).integers(0, n, (BOOT, n))
+    rules = {}
+    for m in measures:
+        resolved, shifts, point = {}, {}, {}
+        for dep, g in draws.groupby("departure_hour"):
+            b0 = base[base["departure_hour"] == dep].set_index("route_id")[m]
+            wide = g.pivot(index="draw", columns="route_id", values=m).sort_index()
+            for a, b in itertools.combinations(ROUTES, 2):
+                gap = (wide[b] - wide[a]).to_numpy()[idx]
+                g0 = float(b0[b] - b0[a])
+                lo = np.percentile(gap, 2.5, axis=1)
+                hi = np.percentile(gap, 97.5, axis=1)
+                resolved[(round(float(dep), 3), (a, b))] = bool(
+                    max(np.mean(lo > 0), np.mean(hi < 0)) >= CONF)
+                lo0, hi0 = np.percentile((wide[b] - wide[a]).to_numpy(), [2.5, 97.5])
+                point[(a, b)] = max(point.get((a, b), 0.0), abs(g0 - lo0), abs(hi0 - g0))
+                s = np.maximum(np.abs(g0 - lo), np.abs(hi - g0))
+                shifts[(a, b)] = np.maximum(shifts.get((a, b), 0.0), s)
+        rules[m] = {"resolved": resolved,
+                    "shift": {p: float(np.quantile(v, CONF)) for p, v in shifts.items()},
+                    "point_shift": point}
+    return rules
+
+
+def tie_rule(rule, departure):
     """Function (values, a, b) -> True if routes a and b are tied."""
-    bands = {}
-    for key, q in mc_measure["pairs"].items():
-        dep, pair = key.split(":")
-        if abs(float(dep) - departure) < 1e-6:
-            bands[tuple(int(x) for x in pair.split("-"))] = q["resolved"]
-    shifts = pair_shifts(mc_measure)
+    bands = {pair: r for (dep, pair), r in rule["resolved"].items()
+             if abs(dep - departure) < 1e-6}
+    shifts = rule["shift"]
 
     def tied(values, a, b):
         pair = tuple(sorted((a, b)))
@@ -179,12 +205,19 @@ def main():
     p.add_argument("--paper-dir", default="/home/harshin/files/fastUTEC paper")
     a = p.parse_args()
     mc = Path(a.mc)
-    res = json.loads((mc / "summary.json" if mc.is_dir() else mc).read_text())["measures"]
+    mc_dir = mc if mc.is_dir() else mc.parent
+    res = json.loads((mc_dir / "summary.json").read_text())["measures"]
+    rules = bootstrap_rules(mc_dir, list(res))
     out = Path(a.paper_dir)
     out.mkdir(parents=True, exist_ok=True)
     summary = {"resolution": {k: v["resolution"] for k, v in res.items()},
-               "departure_13h": main_table(Path(a.viz), out, res),
-               "sweep": sweep_table(Path(a.sweep), out, res)}
+               "resolution_upper95": {k: max(r["shift"].values()) for k, r in rules.items()},
+               "tie_rule": {"bootstrap_resamples": BOOT, "confidence": CONF, "seed": SEED,
+                            "max_pair_threshold_increase": max(
+                                r["shift"][p] / v - 1 for r in rules.values()
+                                for p, v in r["point_shift"].items() if v > 0)},
+               "departure_13h": main_table(Path(a.viz), out, rules),
+               "sweep": sweep_table(Path(a.sweep), out, rules)}
     (out / "route_measures_summary.json").write_text(json.dumps(summary, indent=2))
     print(json.dumps({"resolution": summary["resolution"], "sweep": summary["sweep"]}, indent=1))
 
