@@ -443,5 +443,39 @@
    "lup_day_mbe": 22.992830983464238
   },
   "paving_old_admittance": 12.15851091392033
+ },
+ "supp_review_1027": {
+  "day_samples_before_qc": 2273,
+  "tunnel_lwin_range": [
+   455.3,
+   473.5
+  ],
+  "globe_day_bias_qc": 2.4813008789598037,
+  "globe_day_bias_no_qc": 2.4888595098933077,
+  "preprocessing_s": {
+   "lisbon1": 78.3156955242157,
+   "lisbon2": 330.5906274318695,
+   "lisbon3": 391.6214964389801,
+   "lisbon4": 253.65171241760254,
+   "lisbon5": 293.30094599723816,
+   "lisbon6": 61.3574595451355
+  },
+  "energy_balance_remainder_s": {
+   "lisbon1": 9.587141513824463,
+   "lisbon2": 14.282603025436401,
+   "lisbon3": 17.9441556930542,
+   "lisbon4": 21.473570346832275,
+   "lisbon5": 11.730630159378052,
+   "lisbon6": 11.551058053970337
+  },
+  "ws_corr10m": {
+   "core_1_3_margin_1800": 0.007247466539651214,
+   "utci_1_2_margin_1800": -0.013883871326487496
+  },
+  "ws_corr40m": {
+   "core_1_3_margin_1800": 0.001718589907894627,
+   "utci_1_2_margin_1800": -0.1504815088827196,
+   "heat_stored_route4_alone": 21
+  }
  }
 }

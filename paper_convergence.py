@@ -52,7 +52,7 @@ ABLATION = [
     ("abl_surfaces_at_ta", "Surfaces at $T_a$"),
     ("abl_steady_state", "Steady-state surfaces"),
     ("abl_hemisphere_crowns", "Hemisphere crowns"),
-    ("abl_global_reflected", "Global ground albedo"),
+    ("abl_global_reflected", "Unshaded ground reflection"),
     ("abl_generic_paving", "Paving-stone ground"),
 ]
 

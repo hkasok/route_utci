@@ -1731,9 +1731,10 @@ entries:
   rule: exact
 - id: supp-0223-a
   file: supp
-  snippet: pooled over all [[twelve]] walks
-  source: len([k for k in J("validation_summary.json", "autocorrelation.by_walk")])
+  snippet: pooled over the [[six]] daytime and six night-time walks
+  source: '6'
   rule: exact
+  note: first-walk campaigns
 - id: supp-0223-b
   file: supp
   snippet: walks, \num{[[3165]]} samples carry
@@ -1840,18 +1841,18 @@ entries:
   note: Fig. S2 shows Lisbon 1
 - id: supp-0317-a
   file: supp
-  snippet: removes \num{[[6]]} of \num{4625} samples
+  snippet: removes \num{[[6]]} of
   source: J(r"validation_summary.json", r"measurement_qc.n_rejected")
   rule: exact
 - id: supp-0318-a
   file: supp
-  snippet: \num{6} of \num{[[4625]]} samples (\SI{0.13}
-  source: J(r"validation_summary.json", r"measurement_qc.n_before")
+  snippet: \num{6} of the \num{[[2273]]} daytime samples
+  source: J(DERIVED, "supp_review_1027.day_samples_before_qc")
   rule: exact
 - id: supp-0318-b
   file: supp
-  snippet: samples (\SI{[[0.13]]}{\percent})
-  source: J(r"validation_summary.json", r"measurement_qc.n_rejected")/J(r"validation_summary.json", r"measurement_qc.n_before")
+  snippet: daytime samples (\SI{[[0.26]]}{\percent})
+  source: J(r"validation_summary.json", r"measurement_qc.n_rejected") / J(DERIVED, "supp_review_1027.day_samples_before_qc")
   rule: pct
 - id: supp-0318-c
   file: supp
@@ -1870,7 +1871,7 @@ entries:
   source: J(r"validation_summary.json", r"measurement_qc.extent_m.lisbon1[1]")
 - id: supp-0300-a
   file: supp
-  snippet: every channel at \SIrange{[[1081]]}{1103}{\metre} is the logging dropout
+  snippet: falls to zero at \SIrange{[[1081]]}{1103}{\metre}, in a short
   source: J(r"validation_summary.json", r"measurement_qc.extent_m.lisbon1[0]")
   rule: round
 - id: supp-0309-a
@@ -2196,7 +2197,7 @@ entries:
   source: J(r"ranking_uncertainty_summary.json", r"summary.16.0.pairs.1-3.baseline_gap_c")
 - id: supp-0646-a
   file: supp
-  snippet: \SI{0.048}{\celsius} at [[16:00]] and
+  snippet: R3$-$R1 is \SI{0.047}{\celsius} at [[16:00]] and
   source: J(r"ranking_uncertainty_summary.json", r"departures[1]")
   rule: time
 - id: supp-0646-b
@@ -2442,12 +2443,6 @@ entries:
   snippet: $t_w$} is zero on every route at \num{[[7]]} departures
   source: J(r"route_measures_summary.json", r"sweep.best_route_counts.wettedness_discomfort_min.none")
   rule: exact
-- id: supp-0733-a
-  file: supp
-  snippet: computed with the [[13:00]] clothing worn
-  source: '13'
-  rule: time
-  note: design
 - id: supp-0740-a
   file: supp
   snippet: clothing of the [[13:00]] walk worn throughout. $a
@@ -2920,16 +2915,16 @@ entries:
   rule: pct
 - id: supp-0255-a
   file: supp
-  snippet: \SI{47}{\percent} to \SI{[[45]]}{\percent}, and the admittance
+  snippet: \SI{47}{\percent} to \SI{[[45]]}{\percent}, and the
   source: J(r"validation_summary.json", r"surface_temperature.amplitude.excess_fraction")
   rule: pct
 - id: supp-0256-a
   file: supp
-  snippet: required from \num{[[1.47]]} to
+  snippet: from \num{[[1.47]]} to
   source: J(r"PIPE/variants/abl_generic_paving/fig/validation_summary.json", r"surface_temperature.amplitude.admittance_factor_needed")
 - id: supp-0256-b
   file: supp
-  snippet: required from \num{1.47} to \num{[[1.45]]}. Daytime
+  snippet: from \num{1.47} to \num{[[1.45]]}. Daytime
   source: J(r"validation_summary.json", r"surface_temperature.amplitude.admittance_factor_needed")
 - id: supp-0256-c
   file: supp
@@ -5421,42 +5416,42 @@ entries:
 - id: table_ablation-025
   file: table_ablation.tex
   cell:
-    row: ^Global ground
+    row: ^Unshaded ground
     k: 0
     col: 1
   source: J(r"convergence_summary.json", r"ablation[4].globe_day_mbe")
 - id: table_ablation-026
   file: table_ablation.tex
   cell:
-    row: ^Global ground
+    row: ^Unshaded ground
     k: 0
     col: 2
   source: J(r"convergence_summary.json", r"ablation[4].globe_day_rmse")
 - id: table_ablation-027
   file: table_ablation.tex
   cell:
-    row: ^Global ground
+    row: ^Unshaded ground
     k: 0
     col: 3
   source: J(r"convergence_summary.json", r"ablation[4].globe_night_mbe")
 - id: table_ablation-028
   file: table_ablation.tex
   cell:
-    row: ^Global ground
+    row: ^Unshaded ground
     k: 0
     col: 4
   source: J(r"convergence_summary.json", r"ablation[4].lup_rmse")
 - id: table_ablation-029
   file: table_ablation.tex
   cell:
-    row: ^Global ground
+    row: ^Unshaded ground
     k: 0
     col: 5
   source: J(r"convergence_summary.json", r"ablation[4].ldn_mbe")
 - id: table_ablation-030
   file: table_ablation.tex
   cell:
-    row: ^Global ground
+    row: ^Unshaded ground
     k: 0
     col: 6
   source: J(r"convergence_summary.json", r"ablation[4].kdn_rmse")
@@ -6188,27 +6183,27 @@ entries:
   rule: exact
 - id: rc-paving
   file: supp
-  snippet: \SI{[[2.10]]}{\mega\joule\per\cubic\metre\per\kelvin}$). Its diurnal
+  snippet: \SI{[[2.10]]}{\mega\joule\per\cubic\metre\per\kelvin}$). The class's diurnal
   source: CODE(r"PIPE/material_library.py", r"_m\(\"paving_stone_pedestrian\", CATEGORY_\w+, [\d.]+,\s*[\d.]+,\s*[\d.]+,\s*([\d.]+)")*CODE(r"PIPE/material_library.py", r"_m\(\"paving_stone_pedestrian\", CATEGORY_\w+, [\d.]+,\s*[\d.]+,\s*[\d.]+,\s*[\d.]+,\s*([\d.]+)")/1e6
 - id: supp-0246-a
   file: supp
-  snippet: Those tags cover \SIlist{[[91]];84;95;98;71}{\percent}
+  snippet: tags cover \SIlist{[[91]];84;95;98;71}{\percent}
   source: '(lambda f: 100*f[''area''][f[''material_name''] == ''paving_stone_pedestrian''].sum()/f[''area''][np.isin(f[''material_name''], [''paving_stone_pedestrian'', ''calcada_limestone''])].sum())(np.load(r"/media/harshin/data_drive/route based UTCI/run_output/lisbon%d/thermal_out/facets.npz" % 1, allow_pickle=True))'
 - id: supp-0246-b
   file: supp
-  snippet: Those tags cover \SIlist{91;[[84]];95;98;71}{\percent}
+  snippet: tags cover \SIlist{91;[[84]];95;98;71}{\percent}
   source: '(lambda f: 100*f[''area''][f[''material_name''] == ''paving_stone_pedestrian''].sum()/f[''area''][np.isin(f[''material_name''], [''paving_stone_pedestrian'', ''calcada_limestone''])].sum())(np.load(r"/media/harshin/data_drive/route based UTCI/run_output/lisbon%d/thermal_out/facets.npz" % 2, allow_pickle=True))'
 - id: supp-0246-c
   file: supp
-  snippet: Those tags cover \SIlist{91;84;[[95]];98;71}{\percent}
+  snippet: tags cover \SIlist{91;84;[[95]];98;71}{\percent}
   source: '(lambda f: 100*f[''area''][f[''material_name''] == ''paving_stone_pedestrian''].sum()/f[''area''][np.isin(f[''material_name''], [''paving_stone_pedestrian'', ''calcada_limestone''])].sum())(np.load(r"/media/harshin/data_drive/route based UTCI/run_output/lisbon%d/thermal_out/facets.npz" % 3, allow_pickle=True))'
 - id: supp-0246-d
   file: supp
-  snippet: Those tags cover \SIlist{91;84;95;[[98]];71}{\percent}
+  snippet: tags cover \SIlist{91;84;95;[[98]];71}{\percent}
   source: '(lambda f: 100*f[''area''][f[''material_name''] == ''paving_stone_pedestrian''].sum()/f[''area''][np.isin(f[''material_name''], [''paving_stone_pedestrian'', ''calcada_limestone''])].sum())(np.load(r"/media/harshin/data_drive/route based UTCI/run_output/lisbon%d/thermal_out/facets.npz" % 5, allow_pickle=True))'
 - id: supp-0246-e
   file: supp
-  snippet: Those tags cover \SIlist{91;84;95;98;[[71]]}{\percent}
+  snippet: tags cover \SIlist{91;84;95;98;[[71]]}{\percent}
   source: '(lambda f: 100*f[''area''][f[''material_name''] == ''paving_stone_pedestrian''].sum()/f[''area''][np.isin(f[''material_name''], [''paving_stone_pedestrian'', ''calcada_limestone''])].sum())(np.load(r"/media/harshin/data_drive/route based UTCI/run_output/lisbon%d/thermal_out/facets.npz" % 6, allow_pickle=True))'
 - id: supp-0248-a
   file: supp
@@ -8653,18 +8648,19 @@ entries:
   rule: exact
 - id: supp-0444-a
   file: supp
-  snippet: takes about \SI{[[20]]}{\second}.
-  source: J(r"convergence_summary.json", r"timings_s.lisbon4.Energy bal.") - TXT(r"RUN/lisbon4/variant_run.log", r"done in (\d+)s; f_sky") - TXT(r"RUN/lisbon4/variant_run.log", r"step 144/144 -- (\d+)s elapsed")
-  rule: approx
-  tol: 3
+  snippet: spin-up cycles, takes \SIrange{[[10]]}{21}{\second}
+  source: min(J(DERIVED, "supp_review_1027.energy_balance_remainder_s").values())
+  rule: round
 - id: supp-0478-a
   file: supp
-  snippet: inside a tree crown (\SIrange{[[0.2]]}{1.2}{\percent} of points
+  snippet: Lisbon~1, \SIrange{[[0.2]]}{1.2}{\percent} across scenes)
   source: min(J(DERIVED, "geometry.route_points_inside_crown_pct").values())
+  rule: round
 - id: supp-0478-b
   file: supp
-  snippet: inside a tree crown (\SIrange{0.2}{[[1.2]]}{\percent} of points
+  snippet: Lisbon~1, \SIrange{0.2}{[[1.2]]}{\percent} across scenes)
   source: max(J(DERIVED, "geometry.route_points_inside_crown_pct").values())
+  rule: round
 - id: supp-0480-a
   file: supp
   snippet: only \SI{[[0.4]]}{\percent} of point-times change
@@ -9243,8 +9239,9 @@ entries:
   source: 'sorted(sum([TXTALL(r"RUN/lisbon%d_w%d/weather_from_sensors.log" % (c, w), r"turbidity refitted\s*: Linke [\d.]+ \(climatology ([\d.]+)\)") for c in range(1, 7) for w in (2, 3)], []))[-1]'
 - id: supp-0865-a
   file: supp
-  snippet: The pooled daytime globe bias, \SI{[[+1.74]]}{\kelvin}
+  snippet: (Table~\ref{stab:heldout}), \SI{[[+1.74]]}{\kelvin}, is lower
   source: SRC("main-0937-a")
+  rule: round
 - id: supp-0866-a
   file: supp
   snippet: walks (\SI{[[+2.48]]}{\kelvin}) and positive
@@ -9782,7 +9779,7 @@ entries:
   rule: round
 - id: main-r1-50
   file: main
-  snippet: "for one at least \\SI{[[50]]}{\\metre} longer than Route~3"
+  snippet: for one at least \SI{[[50]]}{\metre} longer than
   source: "CODE(r\"/media/harshin/data_drive/route based UTCI/paper_route_search.py\", r\"at least\\s+(\\d+) m longer\")"
   rule: exact
   note: "screen criterion in the search script docstring"
@@ -9842,8 +9839,8 @@ entries:
   note: route-point height Z_HEIGHT (start.sh default, printed as 'MRT sample height 1.1 m' in every run log)
 - id: supp-tie-42
   file: supp
-  snippet: "of the \\num{[[42]]} route pairs it resolves"
-  source: "J(DERIVED, \"tie_rule_checks.resolved_13h\")"
+  snippet: of the \num{[[42]]} pairwise comparisons over all measures
+  source: J(DERIVED, "tie_rule_checks.resolved_13h")
   rule: exact
 - id: supp-tie-12
   file: supp
@@ -9887,7 +9884,7 @@ entries:
   reason: "checked: at 13:30 R1-R3 core gap 0.0194 < 0.0265 and R1-R2/R1-R4 walk UTCI 0.433/0.454 < 0.508/0.608 (sweep dep_1330)"
 - id: supp-tie-40
   file: supp
-  snippet: "length: at \\SI{[[40]]}{\\metre}, walk UTCI"
+  snippet: 'at \SI{[[40]]}{\metre}, stored heat favours'
   source: "40"
   rule: exact
   note: "run ranking_uncertainty_ws_corr40m"
@@ -9898,7 +9895,7 @@ entries:
   reason: "derived tie_rule_checks.corr40m.1800: R1-R2 walk UTCI 0.533 < 0.684"
 - id: supp-tie-1430
   file: supp
-  snippet: "over Route~3 at [[14:30]] clears"
+  snippet: Route~3 at [[14:30]]
   kind: skip
   reason: "derived tie_rule_checks.corr40m.1430"
 - id: supp-tie-margin
@@ -10158,7 +10155,7 @@ entries:
   rule: round
 - id: supp-0300-b
   file: supp
-  snippet: every channel at \SIrange{1081}{[[1103]]}{\metre} is the logging dropout
+  snippet: falls to zero at \SIrange{1081}{[[1103]]}{\metre}, in a short
   source: J(r"validation_summary.json", r"measurement_qc.extent_m.lisbon1[1]")
   rule: round
 - id: supp-0300-c
@@ -10276,6 +10273,72 @@ entries:
   rule: round
 - id: supp-r2-pav-lup-pub
   file: supp
-  snippet: instead of \SI{[[+20]]}{\watt\per\metre\squared}. Those tags
+  snippet: instead of \SI{[[+20]]}{\watt\per\metre\squared}.
   source: J(DERIVED, "review_checks_1026.paving_published.lup_day_mbe")
+  rule: round
+- id: supp-0444-b
+  file: supp
+  snippet: spin-up cycles, takes \SIrange{10}{[[21]]}{\second}
+  source: max(J(DERIVED, "supp_review_1027.energy_balance_remainder_s").values())
+  rule: round
+- id: supp-sr-crown-l1
+  file: supp
+  snippet: (\SI{[[0.3]]}{\percent} of points in Lisbon~1,
+  source: J(DERIVED, "geometry.route_points_inside_crown_pct")["lisbon1"]
+  rule: round
+- id: supp-sr-lw-lo
+  file: supp
+  snippet: pyrgeometer rises to \SIrange{[[455]]}{474}{\watt\per\metre\squared}
+  source: J(DERIVED, "supp_review_1027.tunnel_lwin_range")[0]
+  rule: round
+- id: supp-sr-lw-hi
+  file: supp
+  snippet: pyrgeometer rises to \SIrange{455}{[[474]]}{\watt\per\metre\squared}
+  source: J(DERIVED, "supp_review_1027.tunnel_lwin_range")[1]
+  rule: round
+- id: supp-sr-67
+  file: supp
+  snippet: sample lies \SI{[[67]]}{\metre} on, at the tunnel's
+  source: J(DERIVED, "review_checks_1026.lisbon1_dropout_gap_m")
+  rule: round
+- id: supp-sr-qc-bias
+  file: supp
+  snippet: daytime globe bias by \SI{[[0.01]]}{\kelvin}. No other
+  source: J(DERIVED, "supp_review_1027.globe_day_bias_no_qc") - J(DERIVED, "supp_review_1027.globe_day_bias_qc")
+  rule: round
+- id: supp-sr-qc-1081
+  file: supp
+  snippet: (\SIrange{[[1081]]}{1103}{\metre}) in a short
+  source: J(r"validation_summary.json", r"measurement_qc.extent_m.lisbon1[0]")
+  rule: round
+- id: supp-sr-qc-1103
+  file: supp
+  snippet: (\SIrange{1081}{[[1103]]}{\metre}) in a short
+  source: J(r"validation_summary.json", r"measurement_qc.extent_m.lisbon1[1]")
+  rule: round
+- id: supp-sr-pre-lo
+  file: supp
+  snippet: it took \SIrange{[[61]]}{392}{\second} per scene
+  source: min(J(DERIVED, "supp_review_1027.preprocessing_s").values())
+  rule: round
+- id: supp-sr-pre-hi
+  file: supp
+  snippet: it took \SIrange{61}{[[392]]}{\second} per scene
+  source: max(J(DERIVED, "supp_review_1027.preprocessing_s").values())
+  rule: round
+- id: supp-sr-10m
+  file: supp
+  snippet: from \SI{[[10]]}{\metre}, walk UTCI no longer
+  source: 10 if J(DERIVED, "supp_review_1027.ws_corr10m.utci_1_2_margin_1800") < 0 else -1
+  rule: exact
+  note: first correlation length tested above 5 m at which the 18:00 walk-UTCI margin is negative
+- id: supp-sr-40-21
+  file: supp
+  snippet: favours Route~4 alone at \num{[[21]]} departures
+  source: J(DERIVED, "supp_review_1027.ws_corr40m.heat_stored_route4_alone")
+  rule: exact
+- id: supp-sr-40-0017
+  file: supp
+  snippet: and \SI{[[0.0017]]}{\celsius} at 18:00, less
+  source: J(DERIVED, "supp_review_1027.ws_corr40m.core_1_3_margin_1800")
   rule: round

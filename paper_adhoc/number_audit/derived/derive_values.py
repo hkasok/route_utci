@@ -373,12 +373,76 @@ def review_checks_1026():
     return out
 
 
+def supp_review_1027():
+    """Supp S5, S10, S15 (supplement review of 27 Oct 2026): the Lisbon 1 tunnel
+    samples removed by QC, per-scene preprocessing times, energy-balance
+    remainder, and tie margins/counts at 10 m and 40 m correlation lengths."""
+    import tempfile
+    from pathlib import Path
+    sys.path.insert(0, R)
+    out = {}
+    fr = []
+    for i in range(1, 7):
+        d = pd.read_csv(f"{R}/run_output/lisbon{i}/validation/mrt_lisbon/radiant_flux_comparison_points.csv")
+        d["case"] = i
+        fr.append(d)
+    d = pd.concat(fr)
+    day = d[d.period == "day"]
+    rej = (day.measured_swin_wm2 < 10) & (day.measured_swout_wm2 < 0)
+    out["day_samples_before_qc"] = int(len(day))
+    out["tunnel_lwin_range"] = [float(day[rej].measured_lwin_wm2.min()), float(day[rej].measured_lwin_wm2.max())]
+    bias = {}
+    for name, x in (("qc", day[~rej]), ("no_qc", day)):
+        x = x[~x.globe_spinup_affected.astype(bool)].dropna(
+            subset=["measured_black_globe_temperature_c", "globe_transient_temperature_C"])
+        bias[name] = float((x.globe_transient_temperature_C - x.measured_black_globe_temperature_c).mean())
+    out["globe_day_bias_qc"] = bias["qc"]
+    out["globe_day_bias_no_qc"] = bias["no_qc"]
+    pre, rem = {}, {}
+    conv = json.load(open(f"{PAPER}/convergence_summary.json"))["timings_s"]
+    import re
+    for i in range(1, 7):
+        c = f"lisbon{i}"
+        rows = [l.split("\t") for l in open(f"{R}/run_output/{c}/stage_timings_steps23.log") if "\t" in l]
+        ts = [(float(a), b.strip()) for a, b in rows]
+        s3 = [x for x, n in ts if n.startswith("STEP 3")][0]
+        pre[c] = s3 - ts[0][0]
+        log = open(f"{R}/run_output/{c}/variant_run.log").read()
+        fsky = float(re.search(r"done in (\d+)s; f_sky", log).group(1))
+        steps = float(re.search(r"step 144/144 -- (\d+)s elapsed", log).group(1))
+        rem[c] = conv[c]["Energy bal."] - fsky - steps
+    out["preprocessing_s"] = pre
+    out["energy_balance_remainder_s"] = rem
+    import paper_route_measures_table as T
+    cwd = os.getcwd()
+    os.chdir(R)
+    try:
+        post = Path("run_output/MMC/postprocessing")
+        sweep = post / "route_measures_sweep"
+        for L in ("ws_corr10m", "ws_corr40m"):
+            r = T.bootstrap_rules(post / f"ranking_uncertainty_{L}", ["tcore_rise_c", "walk_utci_c"])
+            sw = T.load(sweep / "dep_1800")
+            core = sw["jos3"]["final_tcore_rise_c"]
+            utci = sw["utci"]["walk_utci_c"]
+            out[L] = {"core_1_3_margin_1800": float(core.loc[3] - core.loc[1] - r["tcore_rise_c"]["shift"][(1, 3)]),
+                      "utci_1_2_margin_1800": float(utci.loc[2] - utci.loc[1] - r["walk_utci_c"]["shift"][(1, 2)])}
+        mc = post / "ranking_uncertainty_ws_corr40m"
+        res = json.loads((mc / "summary.json").read_text())["measures"]
+        with tempfile.TemporaryDirectory() as tmp:
+            counts = T.sweep_table(sweep, Path(tmp), T.bootstrap_rules(mc, list(res)))["best_route_counts"]
+        out["ws_corr40m"]["heat_stored_route4_alone"] = counts["heat_stored_kj"].get("4", 0)
+    finally:
+        os.chdir(cwd)
+    return out
+
+
 TASKS = {"wallview": wallview, "phase": phase, "flip_calibration": flip_calibration, "reloc": reloc,
          "campus_geometry": campus_geometry, "jos3_bsa": jos3_bsa, "utci_wind10": utci_wind10,
          "utci_prefill": utci_prefill, "linke_clim": linke_clim,
          "linke_campus": linke_campus, "tie_rule_checks": tie_rule_checks,
          "campus_paving_check": campus_paving_check,
-         "forcing_variants": forcing_variants, "review_checks_1026": review_checks_1026}
+         "forcing_variants": forcing_variants, "review_checks_1026": review_checks_1026,
+         "supp_review_1027": supp_review_1027}
 
 for name in (sys.argv[3].split(",") if len(sys.argv) > 3 else TASKS):
     try:
