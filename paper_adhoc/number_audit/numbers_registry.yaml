@@ -731,12 +731,12 @@ entries:
   note: stretch definition
 - id: main-1004-a
   file: main
-  snippet: globe time constant of about \SI{[[300]]}{\second}. (c)
+  snippet: time constant of about \SI{[[300]]}{\second}. (c)
   source: SRC("globe-tau")
   rule: exact
 - id: main-1007-a
   file: main
-  snippet: et al.\ \cite{thorsson2007tmrt} carried to \SI{[[152]]}{\milli\metre} (ISO's
+  snippet: et al.\ \cite{thorsson2007tmrt} carried to \SI{[[152]]}{\milli\metre}
   source: SRC("globe-d")
   rule: exact
 - id: main-1015-a
