@@ -89,7 +89,7 @@ def timings(root: Path) -> pd.DataFrame:
 def table_timings(frame: pd.DataFrame, facets: dict) -> str:
     labels = [label for _, label in STAGES if label in frame.columns]
     L = [r"\begin{tabular}{l" + "r" * (len(labels) + 2) + "}", r"\toprule",
-         "Scene & facets & " + " & ".join(labels) + r" & Total \\",
+         "Scene & Facets & " + " & ".join(labels) + r" & Total \\",
          " & & " + " & ".join(["(s)"] * len(labels)) + r" & (s) \\", r"\midrule"]
     for case, r in frame.iterrows():
         L.append(f"{case.replace('lisbon', 'Lisbon ')} & {num(facets.get(case, ''))} & "

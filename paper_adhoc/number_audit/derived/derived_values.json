@@ -383,5 +383,65 @@
    1.0676654862599242,
    1.1223240057962365
   ]
+ },
+ "review_checks_1026": {
+  "day_model": {
+   "n": 1579,
+   "mbe": 2.4813008789598037,
+   "rmse": 2.883511315798383,
+   "within_crmse": 1.3661266650091457
+  },
+  "day_air_only": {
+   "n": 1579,
+   "mbe": -7.90451741608613,
+   "rmse": 8.071937650869133,
+   "within_crmse": 1.3880844945369264
+  },
+  "night_model": {
+   "n": 1586,
+   "mbe": 0.0752977742582528,
+   "rmse": 0.27990715146329753,
+   "within_crmse": 0.17265722839739053
+  },
+  "night_air_only": {
+   "n": 1586,
+   "mbe": 0.32968915510718816,
+   "rmse": 0.41423510467123953,
+   "within_crmse": 0.17473649138795333
+  },
+  "lisbon1_dropout_gap_m": 67.39999999999986,
+  "sweep2m_core_gap_3_1": {
+   "13.5": 0.020498772011798394,
+   "14.0": 0.02716815451740473,
+   "14.5": 0.03443924014765548
+  },
+  "heldout_published": {
+   "globe_day_mbe": 1.7447432485769234,
+   "globe_day_rmse": 2.7449598356572973,
+   "agreement": 0.726224238986576,
+   "kappa": 0.41980815606426
+  },
+  "heldout_l5w3_fallback": {
+   "globe_day_mbe": 1.7756337623384435,
+   "globe_day_rmse": 2.765444400655307,
+   "agreement": 0.726224238986576,
+   "kappa": 0.41980815606426
+  },
+  "l5w3_anchor_temperature_c": [
+   26.55,
+   28.7
+  ],
+  "l5w3_published_reconstructed_rows": 0,
+  "paving_published": {
+   "globe_day_mbe": 2.4813008789598037,
+   "globe_night_mbe": 0.0752977742582528,
+   "lup_day_mbe": 20.107344063639058
+  },
+  "paving_paving_old": {
+   "globe_day_mbe": 2.526014273463792,
+   "globe_night_mbe": 0.05267714806235581,
+   "lup_day_mbe": 22.992830983464238
+  },
+  "paving_old_admittance": 12.15851091392033
  }
 }

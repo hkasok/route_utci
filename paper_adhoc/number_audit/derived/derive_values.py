@@ -307,12 +307,78 @@ def forcing_variants():
     return out
 
 
+def review_checks_1026():
+    """Main Secs 4.1, 4.5 and Supp S2, S15, S17 (review of 26 Oct 2026): globe
+    statistics of an inputs-only predictor (globe = forcing air temperature),
+    the Lisbon 1 dropout gap, the 14:00 Route 1/3 core-rise margin of the 2 m
+    sweep, and held-out pooling with Lisbon 5 walk 3 forced with the 10 K
+    diurnal fallback (variants/l5w3_diurnal_fallback)."""
+    import warnings
+    from pathlib import Path
+    sys.path.insert(0, os.path.join(R, "paper_adhoc"))
+    sys.path.insert(0, R)
+    out = {}
+    fr = []
+    for i in range(1, 7):
+        d = pd.read_csv(f"{R}/run_output/lisbon{i}/validation/mrt_lisbon/radiant_flux_comparison_points.csv")
+        d["case"] = i
+        fr.append(d)
+    d = pd.concat(fr)
+    d = d[~((d.period == "day") & (d.measured_swin_wm2 < 10) & (d.measured_swout_wm2 < 0))]
+    d = d[~d.globe_spinup_affected.astype(bool)].dropna(
+        subset=["measured_black_globe_temperature_c", "globe_transient_temperature_C"])
+    for per in ("day", "night"):
+        x = d[d.period == per]
+        m = x.measured_black_globe_temperature_c
+        for name, p in (("model", x.globe_transient_temperature_C), ("air_only", x.trec_route_air_temperature_c)):
+            e = p - m
+            ec = e - e.groupby(x.case).transform("mean")
+            out[f"{per}_{name}"] = {"n": int(len(x)), "mbe": float(e.mean()),
+                                    "rmse": float(np.sqrt((e ** 2).mean())),
+                                    "within_crmse": float(np.sqrt((ec ** 2).mean()))}
+    x = pd.read_csv(f"{R}/run_output/lisbon1/validation/mrt_lisbon/radiant_flux_comparison_points.csv")
+    x = x[x.period == "day"].sort_values("timestamp_utc")
+    s = x.distance_along_route_m.to_numpy()
+    j = int(np.where(s <= 1103.3)[0][-1])
+    out["lisbon1_dropout_gap_m"] = float(s[j + 1] - s[j])
+    sw = pd.read_csv(f"{R}/run_output/MMC/postprocessing/departure_sweep/departure_sweep_fixedclothing.csv")
+    sw = sw.pivot(index="departure_hour", columns="route_id", values="tcore_rise_c")
+    out["sweep2m_core_gap_3_1"] = {str(h): float(sw.loc[h, 3] - sw.loc[h, 1]) for h in (13.5, 14.0, 14.5)}
+    import heldout_summary as H
+    cases = [f"lisbon{a}_w{w}" for a in range(1, 7) for w in (2, 3)]
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        for name, root in (("published", Path(R)),
+                           ("l5w3_fallback", Path(R, "variants/l5w3_diurnal_fallback/pooled_root"))):
+            p = H.summarise(cases, root, ["day"], [])["pooled"]
+            out["heldout_" + name] = {"globe_day_mbe": p["globe"]["day"]["mbe"],
+                                      "globe_day_rmse": p["globe"]["day"]["rmse"],
+                                      "agreement": p["shadow"]["classification_agreement"],
+                                      "kappa": p["shadow"]["cohen_kappa"]}
+    prov = json.load(open(f"{R}/variants/l5w3_diurnal_fallback/input_alt/lisbon5_w3/weather/"
+                          "weather_from_sensors_provenance.json"))["meteorology"]["diurnal_fit"]
+    out["l5w3_anchor_temperature_c"] = prov["anchor_temperature_c"]
+    pub = json.load(open(f"{R}/input/lisbon5_w3/weather/weather_from_sensors_provenance.json"))["meteorology"]
+    out["l5w3_published_reconstructed_rows"] = pub["reconstructed_rows"]
+    lis = [f"lisbon{i}" for i in range(1, 7)]
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        for name, root in (("published", Path(R)), ("paving_old", Path(R, "variants/lisbon_paving_old"))):
+            p = H.summarise(lis, root, ["day", "night"], [])["pooled"]
+            out["paving_" + name] = {"globe_day_mbe": p["globe"]["day"]["mbe"],
+                                     "globe_night_mbe": p["globe"]["night"]["mbe"],
+                                     "lup_day_mbe": p["radiometer"]["L_up_day"]["mbe"]}
+    old = json.load(open(f"{R}/run_output/MMC/thermal_out/materials_used.json"))["paving_stone_pedestrian"]
+    out["paving_old_admittance"] = float(np.sqrt(old["k"] * old["C"] * 2 * np.pi / 86400.0))
+    return out
+
+
 TASKS = {"wallview": wallview, "phase": phase, "flip_calibration": flip_calibration, "reloc": reloc,
          "campus_geometry": campus_geometry, "jos3_bsa": jos3_bsa, "utci_wind10": utci_wind10,
          "utci_prefill": utci_prefill, "linke_clim": linke_clim,
          "linke_campus": linke_campus, "tie_rule_checks": tie_rule_checks,
          "campus_paving_check": campus_paving_check,
-         "forcing_variants": forcing_variants}
+         "forcing_variants": forcing_variants, "review_checks_1026": review_checks_1026}
 
 for name in (sys.argv[3].split(",") if len(sys.argv) > 3 else TASKS):
     try:

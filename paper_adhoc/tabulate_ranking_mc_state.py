@@ -134,10 +134,10 @@ def robustness_table(R):
     cell = lambda m, dep: f"{m[dep]['1-3']:+.3f}" if dep in m and "1-3" in m[dep] else "---"
     L.append("Baseline & --- & " + " & ".join(cell(R["baseline_gaps"], d) for d in deps) + r" \\")
     for s, m in sorted(R["radiant_scale_gaps"].items(), key=lambda kv: float(kv[0])):
-        L.append(f"Radiant scaling & $s={float(s):.1f}$ & " + " & ".join(cell(m, d) for d in deps) + r" \\")
+        L.append(f"Radiant scaling & $\\gamma={float(s):.1f}$ & " + " & ".join(cell(m, d) for d in deps) + r" \\")
     zs = {f"{x['departure_hour']:g}": x["s_zero"] for x in R["radiant_scale_sign_change"]}
     if zs:
-        L.append(r" & $s$ at zero & " + " & ".join(
+        L.append(r" & $\gamma$ at zero & " + " & ".join(
             "none in [0.4, 1.6]" if zs.get(d) is None else f"{zs[d]:.2f}" for d in deps) + r" \\")
     for c, m in sorted(R["clothing_gaps"].items(), key=lambda kv: float(kv[0])):
         L.append(f"Clothing & {float(c):+.1f} clo & " + " & ".join(cell(m, d) for d in deps) + r" \\")
