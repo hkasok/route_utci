@@ -1306,17 +1306,17 @@ entries:
   rule: exact
 - id: main-1304-a
   file: main
-  snippet: routes at [[13:00]], 16:00 and 17:00 with the same
+  snippet: routes at [[13:00]], 16:00 and 17:00
   source: J(r"ranking_uncertainty_summary.json", r"departures[0]")
   rule: time
 - id: main-1304-b
   file: main
-  snippet: routes at 13:00, [[16:00]] and 17:00 with the same
+  snippet: routes at 13:00, [[16:00]] and 17:00
   source: J(r"ranking_uncertainty_summary.json", r"departures[1]")
   rule: time
 - id: main-1304-c
   file: main
-  snippet: routes at 13:00, 16:00 and [[17:00]] with the same
+  snippet: routes at 13:00, 16:00 and [[17:00]]
   source: J(r"ranking_uncertainty_summary.json", r"departures[2]")
   rule: time
 - id: main-1310-a
@@ -6943,33 +6943,27 @@ entries:
   snippet: to within \SI{[[0.003]]}{\celsius}.     (a)
   source: '(lambda s, d: float((s.set_index("route_id").final_tcore_rise_c - d[d.departure_hour == 13.0].set_index("route_id").tcore_rise_c).abs().max()))(CSV(r"RUN/MMC/viz/route_jos3/route_ranking_summary.csv"), CSV(r"RUN/MMC/postprocessing/departure_sweep/departure_sweep_fixedclothing.csv"))'
   rule: le
-- id: main-1208-c
-  file: main
-  snippet: it is nil at [[07:00]], rises
-  source: '7'
-  rule: time
-  note: 'value at 07:00: |radiant part| <= 0.0013 C'
 - id: main-1209-a
   file: main
-  snippet: peaks at \SIrange{[[0.10]]}{0.15}{\celsius} between
+  snippet: peaking at \SIrange{[[0.09]]}{0.15}{\celsius}, up to
   source: float(CSV(r"RUN/MMC/postprocessing/departure_sweep/departure_sweep_fixedclothing.csv").pivot(index="departure_hour", columns="route_id", values="radiation_attributable_rise_c").max().min())
 - id: main-1209-b
   file: main
-  snippet: peaks at \SIrange{0.10}{[[0.15]]}{\celsius} between
+  snippet: peaking at \SIrange{0.09}{[[0.15]]}{\celsius}, up to
   source: float(CSV(r"RUN/MMC/postprocessing/departure_sweep/departure_sweep_fixedclothing.csv").pivot(index="departure_hour", columns="route_id", values="radiation_attributable_rise_c").max().max())
 - id: main-1209-c
   file: main
-  snippet: '{\celsius} between [[14:00]] and 16:00'
+  snippet: between [[14:00]] and 16:00
   source: float(CSV(r"RUN/MMC/postprocessing/departure_sweep/departure_sweep_fixedclothing.csv").pivot(index="departure_hour", columns="route_id", values="radiation_attributable_rise_c").idxmax().min())
   rule: time
 - id: main-1209-d
   file: main
-  snippet: between 14:00 and [[16:00]], when
+  snippet: between 14:00 and [[16:00]] (Figure
   source: float(CSV(r"RUN/MMC/postprocessing/departure_sweep/departure_sweep_fixedclothing.csv").pivot(index="departure_hour", columns="route_id", values="radiation_attributable_rise_c").idxmax().max())
   rule: time
 - id: main-1210-a
   file: main
-  snippet: when it is up to \SI{[[29]]}{\percent} of the total
+  snippet: up to \SI{[[29]]}{\percent} of the total
   source: float((CSV(r"RUN/MMC/postprocessing/departure_sweep/departure_sweep_fixedclothing.csv").pivot(index="departure_hour", columns="route_id", values="radiation_attributable_rise_c")/CSV(r"RUN/MMC/postprocessing/departure_sweep/departure_sweep_fixedclothing.csv").pivot(index="departure_hour", columns="route_id", values="tcore_rise_c")).max().max())
   rule: pct
 - id: main-1212-a
